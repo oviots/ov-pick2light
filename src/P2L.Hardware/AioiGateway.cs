@@ -19,7 +19,7 @@ namespace P2L.Hardware;
 ///
 /// Thread-safe: all public methods may be called concurrently.
 /// </summary>
-public sealed class AioiGateway : IAsyncDisposable
+public sealed class AioiGateway : IAsyncDisposable, IDisposable
 {
     private readonly TcpTransport _transport;
     private readonly ILogger      _log;
@@ -235,4 +235,10 @@ public sealed class AioiGateway : IAsyncDisposable
     {
         await _transport.DisposeAsync();
     }
+
+    /// <summary>
+    /// Synchronous disposal for DI containers that call <see cref="IDisposable.Dispose"/>.
+    /// Blocks until the underlying transport is torn down (acceptable at program exit).
+    /// </summary>
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 }

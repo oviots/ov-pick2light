@@ -65,6 +65,9 @@ services.AddTransient<TerminateAllCommand>();
 services.AddTransient<BatchPickCommand>();
 services.AddTransient<ListDevicesCommand>();
 services.AddTransient<ConfigureDeviceCommand>();
+services.AddSingleton<DeviceConfigCsvService>();
+services.AddTransient<ExportCommand>();
+services.AddTransient<ImportCommand>();
 
 // ─── CLI application ──────────────────────────────────────────────────────
 
@@ -94,6 +97,12 @@ app.Configure(cfg =>
 
     cfg.AddCommand<ListDevicesCommand>("devices")
        .WithDescription("Scan and list all connected light modules");
+
+    cfg.AddCommand<ExportCommand>("export")
+       .WithDescription("Export device list to a CSV file for bulk editing");
+
+    cfg.AddCommand<ImportCommand>("import")
+       .WithDescription("Import a CSV file and apply parameter changes to hardware");
 
 #if DEBUG
     cfg.PropagateExceptions();

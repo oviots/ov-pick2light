@@ -1,3 +1,4 @@
+using P2L.CLI.Infrastructure;
 using P2L.Core;
 using P2L.Shared.Enums;
 using P2L.Shared.Models;
@@ -76,17 +77,17 @@ public sealed class ConfigureDeviceCommand : AsyncCommand<ConfigureDeviceCommand
             if (norm.Length != 4 || !norm.All(char.IsAsciiDigit))
                 return ValidationResult.Error("Address must be a 1–4 digit number.");
 
-            if (Color is not null && ParseLightColor(Color) is null)
+            if (Color is not null && ParameterParser.ParseLightColor(Color) is null)
                 return ValidationResult.Error(
-                    $"Unknown colour '{Color}'. Valid: Off Red Green Blue Yellow Cyan Magenta White");
+                    $"Unknown colour '{Color}'. Valid: {ParameterParser.ValidColorsHint}");
 
             foreach (var (opt, name) in new[] {
                 (Mode, "--mode"), (Seg, "--seg"), (Buz, "--buz"),
                 (AfterConfirm, "--after-confirm"), (BuzConfirm, "--buz-confirm") })
             {
-                if (opt is not null && ParseLightState(opt) is null)
+                if (opt is not null && ParameterParser.ParseLightState(opt) is null)
                     return ValidationResult.Error(
-                        $"Unknown value '{opt}' for {name}. Valid: Off On Flash HighFlash NoChange");
+                        $"Unknown value '{opt}' for {name}. Valid: {ParameterParser.ValidAfterHint}");
             }
 
             return ValidationResult.Success();
@@ -122,12 +123,12 @@ public sealed class ConfigureDeviceCommand : AsyncCommand<ConfigureDeviceCommand
 
         // ── Merge command-line overrides ───────────────────────────────────
         var updated = baseline.With(
-            color:           s.Color        is null ? null : ParseLightColor(s.Color),
-            ledMode:         s.Mode         is null ? null : ParseLightState(s.Mode),
-            segMode:         s.Seg          is null ? null : ParseLightState(s.Seg),
-            buzMode:         s.Buz          is null ? null : ParseLightState(s.Buz),
-            afterConfirm:    s.AfterConfirm is null ? null : ParseLightState(s.AfterConfirm),
-            buzAfterConfirm: s.BuzConfirm   is null ? null : ParseLightState(s.BuzConfirm));
+            color:           s.Color        is null ? null : ParameterParser.ParseLightColor(s.Color),
+            ledMode:         s.Mode         is null ? null : ParameterParser.ParseLightState(s.Mode),
+            segMode:         s.Seg          is null ? null : ParameterParser.ParseLightState(s.Seg),
+            buzMode:         s.Buz          is null ? null : ParameterParser.ParseLightState(s.Buz),
+            afterConfirm:    s.AfterConfirm is null ? null : ParameterParser.ParseLightState(s.AfterConfirm),
+            buzAfterConfirm: s.BuzConfirm   is null ? null : ParameterParser.ParseLightState(s.BuzConfirm));
 
         // ── Show before / after summary ────────────────────────────────────
         RenderDiff(addr, baseline, updated, current?.DisplayData, s.Display);
@@ -228,31 +229,6 @@ public sealed class ConfigureDeviceCommand : AsyncCommand<ConfigureDeviceCommand
         var arrow     = changed ? "[yellow]→[/]" : "[grey]·[/]";
         t.AddRow(param, before, $"{arrow} {afterCell}");
     }
-
-    // ─── Parse helpers ────────────────────────────────────────────────────
-
-    internal static LightColor? ParseLightColor(string? s) => s?.ToLowerInvariant() switch
-    {
-        "off"     => LightColor.Off,
-        "red"     => LightColor.Red,
-        "green"   => LightColor.Green,
-        "blue"    => LightColor.Blue,
-        "yellow"  => LightColor.Yellow,
-        "cyan"    => LightColor.Cyan,
-        "magenta" => LightColor.Magenta,
-        "white"   => LightColor.White,
-        _         => null,
-    };
-
-    internal static LightState? ParseLightState(string? s) => s?.ToLowerInvariant() switch
-    {
-        "off"                    => LightState.Off,
-        "on"                     => LightState.On,
-        "flash"                  => LightState.Flash,
-        "highflash" or "hiflash" => LightState.HighFlash,
-        "nochange" or "nc"       => LightState.NoChange,
-        _                        => null,
-    };
 
     // ─── Markup helpers (shared style with ListDevicesCommand) ────────────
 

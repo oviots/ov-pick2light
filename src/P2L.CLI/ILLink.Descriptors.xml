@@ -18,6 +18,10 @@
     <type fullname="P2L.CLI.Commands.ListDevicesCommand/Settings"     preserve="All"/>
     <type fullname="P2L.CLI.Commands.ConfigureDeviceCommand"          preserve="All"/>
     <type fullname="P2L.CLI.Commands.ConfigureDeviceCommand/Settings" preserve="All"/>
+    <type fullname="P2L.CLI.Commands.ExportCommand"                   preserve="All"/>
+    <type fullname="P2L.CLI.Commands.ExportCommand/Settings"          preserve="All"/>
+    <type fullname="P2L.CLI.Commands.ImportCommand"                   preserve="All"/>
+    <type fullname="P2L.CLI.Commands.ImportCommand/Settings"          preserve="All"/>
   </assembly>
   <!-- Preserve Spectre.Console.Cli reflection paths -->
   <assembly fullname="Spectre.Console.Cli">

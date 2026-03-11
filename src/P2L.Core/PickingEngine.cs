@@ -17,9 +17,9 @@ namespace P2L.Core;
 /// </summary>
 public sealed class PickingEngine : IDisposable
 {
-    private readonly AioiGateway        _gateway;
+    private readonly AioiGateway         _gateway;
     private readonly LightModuleRegistry _registry;
-    private readonly ILogger             _log;
+    private readonly ILogger<PickingEngine> _log;
 
     private readonly HashSet<string>    _pendingAddresses = new();
     private readonly object             _lock             = new();
@@ -33,7 +33,7 @@ public sealed class PickingEngine : IDisposable
     public bool IsBatchActive   { get; private set; }
     public bool IsBatchComplete => IsBatchActive && _pendingAddresses.Count == 0;
 
-    public PickingEngine(AioiGateway gateway, LightModuleRegistry registry, ILogger logger)
+    public PickingEngine(AioiGateway gateway, LightModuleRegistry registry, ILogger<PickingEngine> logger)
     {
         _gateway  = gateway;
         _registry = registry;
