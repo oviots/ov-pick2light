@@ -19,6 +19,14 @@ public sealed class MqttSettings
     /// <summary>Topic for bridge health status and Last Will Testament.</summary>
     public string StatusTopic   { get; init; } = "p2l/status";
 
+    /// <summary>
+    /// Path to the offline event buffer file (JSONL).
+    /// Events are appended here when the broker is unreachable and replayed on reconnect.
+    /// Relative paths are resolved from the working directory.
+    /// Set to null or empty to disable file buffering (in-memory channel only).
+    /// </summary>
+    public string OfflineBufferPath { get; init; } = "mqtt_offline_buffer.jsonl";
+
     public MqttTlsSettings Tls  { get; init; } = new();
 }
 

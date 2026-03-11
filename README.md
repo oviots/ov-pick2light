@@ -1,8 +1,8 @@
 # Pick2Light (P2L) — Aioi Light Module Controller
 
 A cross-platform .NET 10 CLI for controlling Aioi Systems L-PICK light modules over TCP.
-Runs as one-shot commands from scripts, CI, or automation pipelines.
-Publishes to a **single self-contained native binary** (Native AOT) with no runtime dependency.
+Runs as one-shot commands, a live dashboard, or a sequential guided-picking runner.
+Publishes to a **single self-contained binary** with no runtime dependency.
 
 ---
 
@@ -17,6 +17,7 @@ Publishes to a **single self-contained native binary** (Native AOT) with no runt
    - [light on / off / terminate](#light--individual-module-control)
    - [light set — adjust parameters](#light-set--adjust-module-parameters)
    - [pick — batch session](#pick--batch-picking-session)
+   - [run — sequential CSV pick](#run--sequential-csv-pick)
    - [devices — scan & list](#devices--scan-and-list)
    - [export — CSV export](#export--export-to-csv)
    - [import — CSV bulk apply](#import--bulk-apply-from-csv)
@@ -37,14 +38,6 @@ P2L targets **net10.0**. The SDK is installed at `~/.dotnet/dotnet` and is **not
 ```bash
 ~/.dotnet/dotnet --version   # Expected: 10.0.x
 ```
-
-### Native AOT toolchain (production builds only)
-
-| Platform | Requirement |
-|---|---|
-| macOS | Xcode Command Line Tools: `xcode-select --install` |
-| Linux (Debian/Ubuntu) | `sudo apt install clang zlib1g-dev` |
-| Windows | Visual Studio Build Tools with C++ workload |
 
 ### NuGet packages (restored automatically)
 
@@ -69,34 +62,35 @@ src/
                        ModuleParameters
   P2L.Hardware/        TCP transport and Aioi protocol codecs
     Protocol/          AioiPacket, AioiEncoder, AioiDecoder
-    Transport/         TcpTransport (Channel-based, auto-reconnect)
-    AioiGateway.cs     High-level domain API over TcpTransport
+    Transport/         TcpTransport (Channel-based, auto-reconnect, SemaphoreSlim stream lock)
+    AioiGateway.cs     High-level domain API — SendImmediateAsync for O-ACK priority
   P2L.Core/            Business logic
-    LightModuleRegistry.cs   Thread-safe module state (ConcurrentDictionary)
+    LightModuleRegistry.cs   Thread-safe module state (ConcurrentDictionary + StateChanged event)
     PickingEngine.cs         Batch orchestration, confirmation tracking
     Services/
       HeartbeatService.cs    Keep-alive loop (Az every 30 s)
       DeviceScanService.cs   Concurrent Az range scan
-  P2L.Mqtt/            Optional MQTT bridge (MQTTnet v5, Native AOT safe)
+      PreemptionGate.cs      Two-priority gate: MQTT commands preempt CSV runner
+      CsvPickTaskRunner.cs   Sequential CSV pick runner with auto-delete and MQTT events
+  P2L.Mqtt/            Optional MQTT bridge (MQTTnet v5, TLS)
     Configuration/     MqttSettings, MqttTlsSettings
-    Messages/          Commands (light_on, batch_start, …)
-                       Events   (confirmed, light_changed, batch_completed, bridge_status)
+    Messages/          Commands (light_on, batch_start, csv_run, csv_control, …)
+                       Events   (confirmed, light_changed, task_event,
+                                 batch_completed, bridge_status)
                        P2LMqttJsonContext (source-gen JSON context for AOT)
-    MqttCommandDispatcher.cs  Deserializes incoming commands → PickingEngine
-    MqttEventPublisher.cs     Subscribes to PickingEngine events → publishes to broker
+    MqttCommandDispatcher.cs  Deserializes commands → PickingEngine / CsvPickTaskRunner
+    MqttEventPublisher.cs     Subscribes to engine + runner events → broker;
+                              offline JSONL buffer when disconnected, auto-replay on reconnect
     MqttBridgeService.cs      Lifecycle owner: TLS connect, reconnect loop, LWT
   P2L.CLI/             Spectre.Console CLI, DI wiring
-    Commands/          RootCommand, LightCommands, ListDevicesCommand,
-                       ConfigureDeviceCommand, ExportCommand, ImportCommand
+    Commands/          RootCommand, LightCommands, RunPickCommand,
+                       ListDevicesCommand, ConfigureDeviceCommand,
+                       ExportCommand, ImportCommand
     Infrastructure/    TypeRegistrar, RotatingFileLogger, ParameterParser,
                        DeviceConfigCsvService
     Configuration/     AppSettings, GatewaySettings
     appsettings.json
-tests/
-  P2L.IntegrationTests/
-docs/                  Aioi hardware PDFs (Command Reference V4.1, Dev Guide V4.0,
-                       Lightstep Programming Guide V3.0)
-publish/               Native AOT binary output (gitignored)
+publish/               Published binary output (gitignored)
 ```
 
 **Dependency order:** `Shared → Hardware → Core → Mqtt → CLI`
@@ -115,7 +109,7 @@ publish/               Native AOT binary output (gitignored)
 ~/.dotnet/dotnet build P2L.sln -c Release
 ```
 
-### Native AOT single-file binary (production)
+### Self-contained single-file binary (production)
 
 ```bash
 # Linux x64 — warehouse industrial PC / Raspberry Pi
@@ -123,10 +117,10 @@ publish/               Native AOT binary output (gitignored)
   -c Release -r linux-x64 --self-contained true \
   -o ./publish/linux-x64
 
-# macOS ARM64 — Apple Silicon dev / handheld
+# macOS x64
 ~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
-  -c Release -r osx-arm64 --self-contained true \
-  -o ./publish/osx-arm64
+  -c Release -r osx-x64 --self-contained true \
+  -o ./publish/osx-x64
 
 # Windows x64
 ~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
@@ -134,15 +128,13 @@ publish/               Native AOT binary output (gitignored)
   -o ./publish/win-x64
 ```
 
-Output: a single `p2l` (or `p2l.exe`) binary (~9 MB) plus `appsettings.json`.
-
 > `appsettings.json` must stay beside the binary — it is read from `AppContext.BaseDirectory` at startup.
 
 ---
 
 ## 4. Configuration
 
-Edit `src/P2L.CLI/appsettings.json` before publishing, or override at runtime with environment variables:
+Edit `appsettings.json` before publishing, or override at runtime with environment variables:
 
 ```json
 {
@@ -151,13 +143,14 @@ Edit `src/P2L.CLI/appsettings.json` before publishing, or override at runtime wi
     "Port":    5003,
     "BlockNo": "00"
   },
-  "LogDirectory":       "logs",
+  "LogDirectory":        "logs",
   "MaxLogFileSizeBytes": 10485760,
   "Logging": {
     "LogLevel": {
-      "Default":          "Information",
-      "P2L.Hardware":     "Debug",
-      "Microsoft.Hosting":"Warning"
+      "Default":           "Information",
+      "P2L.Hardware":      "Debug",
+      "P2L.Mqtt":          "Debug",
+      "Microsoft.Hosting": "Warning"
     }
   },
   "Mqtt": {
@@ -220,9 +213,8 @@ sudo networksetup -ordernetworkservices \
 
 ##### Case B — WiFi is ALSO on `192.168.1.x` (subnet conflict)
 
-Both adapters on the same subnet confuse macOS routing — assigning USB-LAN a static IP breaks
-the WiFi default route. Fix: pin only the Aioi gateway IP to the USB-LAN interface using a
-host route, leaving WiFi as the default for everything else.
+Both adapters on the same subnet confuse macOS routing. Fix: pin only the Aioi gateway IP to the
+USB-LAN interface using a host route, leaving WiFi as the default for everything else.
 
 **Immediate setup (lost on reboot):**
 
@@ -404,9 +396,6 @@ buzzer, and after-CONFIRM behaviour **in-place** without re-instructing the modu
 | `--buz-confirm` | `Off On Flash` | current |
 | `-d, --display` | integer | current displayed value |
 
-Omitted options are read from the module's current registry state and sent unchanged.
-Produces a before/after diff table before sending.
-
 ---
 
 ### `pick` — Batch picking session
@@ -415,18 +404,74 @@ Lights up multiple modules simultaneously using a P1 block command. Each module 
 confirmed (button press) before the batch is considered complete.
 
 ```bash
+# All modules use the same color
 ./p2l pick "0001:5,0002:3,0003:10"
 ./p2l pick "0001:5,0002:3" --color Yellow --block 01
+
+# Per-entry color override (append :color as a third token)
+./p2l pick "0001:5:Red,0002:3,0003:10:Blue" --color Green
+#          ^^^^^^^^^^  ^^^^^^  ^^^^^^^^^^^
+#          Red         Green   Blue
+#                      ↑ no color token → falls back to --color
 ```
 
-Format: comma-separated `<address>:<quantity>` pairs.
+**Format:** `<address>:<quantity>[:<color>]` — comma-separated. Color is case-insensitive and
+optional per entry; omitted entries use the global `--color` (default `Green`).
+
+---
+
+### `run` — Sequential CSV pick
+
+Processes a CSV file of pick tasks **one row at a time**:
+
+1. Light the module specified in the current row.
+2. Wait for the operator to press **CONFIRM** on that module.
+3. **Auto-delete** the confirmed row from the CSV file.
+4. Publish `task_started` / `task_confirmed` events to MQTT.
+5. Advance to the next row.
+
+Real-time MQTT commands arriving on `p2l/commands` are given **strict priority** — the runner
+pauses between tasks to let any in-flight MQTT command complete before starting the next.
+
+```bash
+./p2l run tasks.csv                  # default color = Green
+./p2l run tasks.csv --color Red      # global default color
+./p2l run tasks.csv --color Green --block 01
+```
+
+**CSV format** (`tasks.csv`):
+
+```csv
+# address,quantity[,color][,label]
+# Color is optional — blank entries use the --color default.
+# Lines starting with # and the header row are ignored.
+address,quantity,color,label
+0001,5,Red,Part-A
+0002,3,,Part-B
+0003,10,Blue,Part-C
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--color` | `Green` | Default color for rows that omit the color column |
+| `--block` | `00` | Block number passed to the gateway |
+
+**Resumability:** completed rows are deleted immediately on confirmation. If the process is
+stopped and restarted, it continues from the first remaining row.
+
+**MQTT control while running** (publish to `p2l/commands`):
+
+```json
+{ "type": "csv_control", "action": "pause"  }
+{ "type": "csv_control", "action": "resume" }
+{ "type": "csv_control", "action": "cancel" }
+```
 
 ---
 
 ### `devices` — Scan and list
 
 Probes a range of module addresses via `Az` (status inquiry) and lists all that respond.
-Discovered modules are written into the registry immediately.
 
 ```bash
 ./p2l devices                          # scan 0001–0099
@@ -440,40 +485,24 @@ Discovered modules are written into the registry immediately.
 | `--to` | 99 | Last address to probe (inclusive) |
 | `-c, --concurrency` | 4 | Parallel Az queries (max 16) |
 
-Outputs a rounded table: **Address · Status · Color · Mode · Display · Last Instruction**.
-Absent modules (timeout or `?` response) are silently skipped.
-
 ---
 
 ### `export` — Export to CSV
 
-Writes all currently tracked modules to a UTF-8 CSV file. The file includes a self-documenting
-comment header with valid values and usage instructions.
+Writes all currently tracked modules to a UTF-8 CSV file.
 
 ```bash
 ./p2l export                              # default filename: devices_YYYYMMDD_HHmmss.csv
-./p2l export --output shelf-a.csv         # explicit path
-
-# Scan first, then export (combines devices + export in one step)
-./p2l export --scan
+./p2l export --output shelf-a.csv
+./p2l export --scan                       # scan first, then export
 ./p2l export --scan --from 1 --to 200 --output warehouse.csv
 ```
-
-| Option | Default | Description |
-|---|---|---|
-| `-o, --output` | `devices_YYYYMMDD_HHmmss.csv` | Output file path |
-| `--scan` | off | Scan for modules before exporting |
-| `--from` | 1 | Scan start address (requires `--scan`) |
-| `--to` | 99 | Scan end address (requires `--scan`) |
-| `-c, --concurrency` | 4 | Concurrent scan queries (requires `--scan`) |
-
-Export does **not** require a live gateway connection unless `--scan` is used.
 
 ---
 
 ### `import` — Bulk apply from CSV
 
-Reads a CSV file, validates each row, shows a preview table, then applies the changes to hardware.
+Reads a device-configuration CSV, validates rows, shows a preview, then applies to hardware.
 
 ```bash
 ./p2l import devices.csv               # preview → confirm → apply
@@ -482,25 +511,16 @@ Reads a CSV file, validates each row, shows a preview table, then applies the ch
 ./p2l import devices.csv --skip-invalid  # skip bad rows instead of aborting
 ```
 
-| Option | Description |
-|---|---|
-| `--dry-run` | Show preview table and exit (exit 0) — no commands sent |
-| `-y, --yes` | Skip the `Apply N configurations to hardware?` prompt |
-| `--skip-invalid` | Skip rows with invalid field values; default aborts on first error |
-
 **Import rules:**
-- Column order is flexible (columns are matched by header name, case-insensitive)
+- Column order is flexible (matched by header name, case-insensitive)
 - Comment lines (`#`) and blank lines are ignored
-- An empty field means *keep current registry value*; if the module is unknown, the default for that parameter is used
+- An empty field means *keep current registry value*
 - The `Status` column is informational and ignored on import
 - Addresses are left-padded to 4 digits automatically (`1` → `0001`)
-- Exit code `0` = all rows applied; `1` = one or more failures
 
 ---
 
 ## 7. Bulk CSV Workflow
-
-The export → edit → import cycle lets you configure many modules offline (e.g. in Excel or any text editor) and push the changes to hardware in one step.
 
 ### 1 · Scan and export
 ```bash
@@ -508,155 +528,114 @@ The export → edit → import cycle lets you configure many modules offline (e.
 ```
 
 ### 2 · Edit the file
-Open `warehouse.csv` in any editor or spreadsheet. The file contains a comment header explaining valid values:
 
 ```csv
 # P2L Device Configuration Export
-# Gateway:  192.168.1.254:5003
-# Exported: 2026-03-11 08:30:00 UTC
-#
 # VALID VALUES:
-#   Color:          Off Red Green Blue Yellow Cyan Magenta White
-#   LedMode:        Off On Flash HighFlash
+#   Color:  Off Red Green Blue Yellow Cyan Magenta White
+#   LedMode: Off On Flash HighFlash
 #   ...
-#
 Address,Display,Color,LedMode,SegMode,BuzMode,AfterConfirm,BuzAfterConfirm,Status,Label
 0001,5,Green,On,On,Off,Off,Off,Standby,Shelf A1
 0002,10,Red,Flash,On,Off,Off,Off,Standby,Shelf A2
-0003,3,Yellow,Flash,On,On,Off,On,Standby,Shelf B1
 ```
-
-**Tips:**
-- Leave `Display` blank to keep the currently displayed quantity unchanged.
-- Leave any other parameter blank to preserve its current value.
-- Delete rows you don't want to reconfigure.
-- The `Status` column is read-only; editing it has no effect.
 
 ### 3 · Dry-run preview
 ```bash
 ./p2l import warehouse.csv --dry-run
 ```
-Validates all rows and shows the preview table without touching hardware.
 
 ### 4 · Apply
 ```bash
 ./p2l import warehouse.csv --yes
 ```
-Sends mode + instruction commands sequentially for each valid row.
-A progress bar tracks completion; any per-row failures are reported in the summary.
 
 ---
 
 ## 8. Audit Logs
 
 All hardware TX/RX frames are written to rotating files in the `logs/` directory.
-Rotate at **10 MB** by default (configurable via `MaxLogFileSizeBytes`).
-These logs are the primary evidence source for mis-pick investigations.
 
 ```bash
 ls -lh logs/
 tail -f logs/p2l_*.log
 ```
 
-- File naming: `p2l_YYYYMMDD_HH.log` (rotates hourly or on size limit)
+- File naming: `p2l_YYYYMMDD_HH.log` (rotates hourly or on size limit, default 10 MB)
 - Hardware traffic level: `Debug`
 - Console level: `Information` and above
-
-To see all protocol-level TX/RX in the console, set `P2L.Hardware` log level to `Debug` in `appsettings.json` (already the default).
 
 ---
 
 ## 9. MQTT Bridge
 
-The optional MQTT bridge lets external systems (WMS, ERP, automation scripts) control lights and receive confirmation events over a standard MQTT broker — fully encrypted with TLS.
+The optional MQTT bridge lets external systems (WMS, ERP, automation scripts) control lights
+and receive events over a standard MQTT broker with TLS encryption.
 
 ### Architecture
 
 ```
 External System
-    │  publish  p2l/commands   (JSON command)
+    │  publish  p2l/commands          (JSON command)
     ▼
 [ MQTT Broker ]  ←→  TLS 8883
     │  subscribe p2l/commands
     ▼
 [ MqttBridgeService ]
-    ├── MqttCommandDispatcher → PickingEngine → AioiGateway → Hardware
-    └── MqttEventPublisher   ← PickingEngine events → p2l/events
-                                                     → p2l/status (LWT)
+    ├── MqttCommandDispatcher → PreemptionGate → PickingEngine / CsvPickTaskRunner
+    │                                                  ↓ hardware
+    └── MqttEventPublisher   ← StateChanged / ItemConfirmed / TaskEvent
+                                   │
+                                   ├─→ p2l/events            (confirmations, task events)
+                                   ├─→ p2l/devices/{address} (per-device state, retained)
+                                   └─→ p2l/status            (bridge health, LWT, retained)
 ```
 
-- **Command flow:** broker → P2L → Aioi hardware
-- **Event flow:** hardware confirmation → P2L → broker
-- **Reconnect:** exponential back-off 2 s → 2 min on broker disconnect
+- **Reconnect:** exponential back-off starting at 0.5 s, capped at 2 min
 - **LWT:** broker publishes `bridge_status { online: false }` automatically on ungraceful disconnect
+- **Priority:** every MQTT command calls `PreemptionGate.Preempt()` before executing and
+  `Release()` after — the CSV runner checks the gate between tasks and waits
+- **Offline buffering:** when the broker is unreachable, events are written to a local JSONL file
+  instead of being dropped; on reconnect they are replayed in order before live events resume
 
 ---
 
-### HiveMQ Cloud Setup (free managed broker)
+### EMQX Cloud Setup (free managed broker)
 
-[HiveMQ Cloud](https://www.hivemq.com/mqtt-cloud-broker/) provides a free managed MQTT broker
-with TLS already configured — no certificates to manage. The free tier supports up to
-100 concurrent connections and is suitable for warehouse deployments.
+[EMQX Cloud](https://www.emqx.com/en/cloud) provides a free Serverless tier with TLS included.
 
-#### Step 1 — Create a free account
+#### Step 1 — Create a free deployment
 
-Go to **console.hivemq.cloud** and sign up. After email verification you land on the
-**Clusters** overview.
-
-#### Step 2 — Create a cluster
-
-Click **Create cluster**, choose the **Free** tier, select the nearest region, and click
-**Create**. Cluster creation takes ~1 minute.
-
-Once ready, the cluster card shows a hostname like:
+Sign up at **cloud.emqx.com** → **New Deployment** → **Serverless** → select region → **Deploy**.
+Once ready the overview shows a hostname like:
 
 ```
-xxxxxxxxxxxxxxxx.s1.eu.hivemq.cloud
+xxxxxxxx.ala.asia-southeast1.emqxsl.com
 ```
 
-Copy that hostname — you will use it as `Mqtt.Host`.
+Copy the hostname — use it as `Mqtt.Host`.
 
-#### Step 3 — Create MQTT credentials
+#### Step 2 — Create credentials
 
-In the cluster, open the **Access Management** tab → **Credentials** → **Add new credentials**.
+In the deployment, open **Access Control** → **Authentication** → **Add**.
+Enter a username (e.g. `pick2light`) and password. Click **Confirm**.
 
-- Enter a **username** (e.g. `p2l`)
-- Enter a **password** (store it somewhere safe — it is shown once)
-- Click **Save**
-
-#### Step 4 — Verify connectivity (optional but recommended)
-
-Install [MQTT Explorer](https://mqtt-explorer.com) or use `mosquitto_pub`:
-
-```bash
-# macOS / Linux — brew install mosquitto
-mosquitto_pub \
-  -h xxxxxxxxxxxxxxxx.s1.eu.hivemq.cloud \
-  -p 8883 \
-  --cafile ""  \
-  -u p2l -P secret \
-  -t p2l/test -m "hello" \
-  --tls-version tlsv1.2
-```
-
-Expected output: `Client mosq-xxxx sending CONNECT` → no error = broker is reachable.
-
-#### Step 5 — Configure P2L
-
-Edit `appsettings.json` (or set environment variables) with the cluster details:
+#### Step 3 — Configure P2L
 
 ```json
 {
   "Mqtt": {
-    "Enabled":  true,
-    "Host":     "xxxxxxxxxxxxxxxx.s1.eu.hivemq.cloud",
-    "Port":     8883,
-    "ClientId": "p2l-bridge",
-    "Username": "p2l",
-    "Password": "secret",
-    "CommandTopic": "p2l/commands",
-    "EventTopic":   "p2l/events",
-    "StatusTopic":  "p2l/status",
+    "Enabled":      true,
+    "Host":         "xxxxxxxx.ala.asia-southeast1.emqxsl.com",
+    "Port":         8883,
+    "ClientId":     "p2l-bridge",
+    "Username":     "pick2light",
+    "Password":     "your-password",
+    "CommandTopic":      "p2l/commands",
+    "EventTopic":        "p2l/events",
+    "DevicesTopic":      "p2l/devices",
+    "StatusTopic":       "p2l/status",
+    "OfflineBufferPath": "mqtt_offline_buffer.jsonl",
     "Tls": {
       "Enabled":             true,
       "CaCertPath":          null,
@@ -666,56 +645,34 @@ Edit `appsettings.json` (or set environment variables) with the cluster details:
 }
 ```
 
-> HiveMQ Cloud uses a **Let's Encrypt** certificate trusted by all OS trust stores.
-> Leave `CaCertPath` null and `AllowUntrustedCerts: false` — no extra cert files needed.
+> EMQX Cloud uses a **Let's Encrypt** certificate trusted by all OS trust stores.
+> Leave `CaCertPath` null — no extra cert files needed.
 
-#### Step 6 — Run P2L
+#### Step 4 — Run and verify
 
 ```bash
 ./p2l
 ```
 
-Expected log output on startup:
+Expected log output:
 
 ```
-[MQTT] Bridge starting → xxxxxxxxxxxxxxxx.s1.eu.hivemq.cloud:8883 (TLS=True)
-[MQTT] Connected to xxxxxxxxxxxxxxxx.s1.eu.hivemq.cloud:8883
+[MQTT] Bridge starting → xxxxxxxx.ala.asia-southeast1.emqxsl.com:8883 (TLS=True)
+[MQTT] Connected to xxxxxxxx.ala.asia-southeast1.emqxsl.com:8883
+[MQTT] Published  bridge_status → p2l/status
 ```
 
-Subscribe to all P2L topics to watch events in real time:
+Subscribe to watch all events (MQTT Explorer, EMQX Console WebSocket, or CLI):
 
 ```bash
-mosquitto_sub \
-  -h xxxxxxxxxxxxxxxx.s1.eu.hivemq.cloud \
-  -p 8883 \
-  -u p2l -P secret \
-  -t "p2l/#" -v \
-  --tls-version tlsv1.2
+mosquitto_sub -h xxxxxxxx.ala.asia-southeast1.emqxsl.com -p 8883 \
+  -u pick2light -P your-password --tls-version tlsv1.2 \
+  -t "p2l/#" -v
 ```
-
-#### Step 7 — Send a test command
-
-In a second terminal, publish a `light_on` command:
-
-```bash
-mosquitto_pub \
-  -h xxxxxxxxxxxxxxxx.s1.eu.hivemq.cloud \
-  -p 8883 \
-  -u p2l -P secret \
-  -t p2l/commands \
-  --tls-version tlsv1.2 \
-  -m '{"type":"light_on","address":"0001","quantity":5,"color":"Green"}'
-```
-
-The `mosquitto_sub` terminal should immediately show a `light_changed` event, and the physical
-module at address `0001` lights up. When the operator presses CONFIRM, a `confirmed` event
-appears on `p2l/events`.
 
 ---
 
 ### Enable the bridge
-
-Set `Mqtt.Enabled: true` in `appsettings.json` (or via environment variable):
 
 ```json
 {
@@ -726,9 +683,11 @@ Set `Mqtt.Enabled: true` in `appsettings.json` (or via environment variable):
     "ClientId":     "p2l-bridge",
     "Username":     "p2l",
     "Password":     "secret",
-    "CommandTopic": "p2l/commands",
-    "EventTopic":   "p2l/events",
-    "StatusTopic":  "p2l/status",
+    "CommandTopic":      "p2l/commands",
+    "EventTopic":        "p2l/events",
+    "DevicesTopic":      "p2l/devices",
+    "StatusTopic":       "p2l/status",
+    "OfflineBufferPath": "mqtt_offline_buffer.jsonl",
     "Tls": {
       "Enabled":             true,
       "CaCertPath":          null,
@@ -741,33 +700,71 @@ Set `Mqtt.Enabled: true` in `appsettings.json` (or via environment variable):
 }
 ```
 
-Or via environment variables:
-
-```bash
-export P2L_Mqtt__Enabled=true
-export P2L_Mqtt__Host=mqtt.example.com
-export P2L_Mqtt__Username=p2l
-export P2L_Mqtt__Password=secret
-./p2l
-```
-
 ### TLS configuration
 
 | Scenario | Settings |
 |---|---|
-| Public broker with valid cert (e.g. Let's Encrypt) | `Tls.Enabled: true`, leave `CaCertPath` null — OS trust store is used |
-| Self-signed / private CA | Set `Tls.CaCertPath` to your CA `.crt` file |
-| Mutual TLS (client cert) — PFX | Set `ClientCertPath` to `.pfx`, `CertPassword` if encrypted |
-| Mutual TLS (client cert) — PEM | Set `ClientCertPath` to cert `.pem`, `ClientKeyPath` to key `.pem` |
-| Dev/test only — skip cert validation | `AllowUntrustedCerts: true` — **never use in production** |
+| Public broker with valid cert (Let's Encrypt) | `Tls.Enabled: true`, `CaCertPath: null` — OS trust store |
+| Self-signed / private CA | Set `CaCertPath` to your CA `.crt` file |
+| Mutual TLS — PFX | Set `ClientCertPath` to `.pfx`, `CertPassword` if encrypted |
+| Mutual TLS — PEM | Set `ClientCertPath` to cert `.pem`, `ClientKeyPath` to key `.pem` |
+| Dev/test — skip cert validation | `AllowUntrustedCerts: true` — **never use in production** |
+
+---
+
+### Offline Buffering
+
+When the MQTT broker is unreachable P2L never freezes or drops events. Instead the drain loop
+writes every pending event to a local **JSONL** file and polls for reconnection every 500 ms.
+On reconnect, all buffered lines are replayed to the broker in order before live events resume.
+The file is deleted after a complete replay; after a partial replay (e.g. the broker drops again
+mid-sync) only the un-synced tail is kept so the next reconnect picks up exactly where it left off.
+The buffer also survives process restarts — events written before a crash are replayed on the
+next successful connect.
+
+**Buffer file format** (`mqtt_offline_buffer.jsonl`):
+```json
+{"topic":"p2l/events","retain":false,"payload":"eyJ0eXBlIjoiY29uZmlybWVkIiwi..."}
+{"topic":"p2l/devices/0003","retain":true,"payload":"eyJ0eXBlIjoibGlnaHRf..."}
+```
+
+Each line stores the pre-serialized payload as base64 together with the target topic and retain
+flag — no re-serialization is needed during replay.
+
+**Configuration:**
+
+| Key | Default | Description |
+|---|---|---|
+| `OfflineBufferPath` | `mqtt_offline_buffer.jsonl` | Path to the JSONL buffer file (relative to working directory) |
+
+Set `OfflineBufferPath` to an empty string `""` to disable file buffering and fall back to the
+in-memory channel only (events are dropped when the channel fills up after 1 000 entries).
+
+**Log output during offline/replay:**
+```
+[MQTT] Offline buffered → p2l/events
+[MQTT] Replaying 42 offline buffered event(s) from mqtt_offline_buffer.jsonl
+[MQTT] Buffer replay complete — 42 event(s) synced
+```
+
+---
 
 ### MQTT Topics
 
-| Topic | Direction | Description |
-|---|---|---|
-| `p2l/commands` | subscribe | Incoming light control commands (QoS 1) |
-| `p2l/events` | publish | Confirmation and state-change events (QoS 1) |
-| `p2l/status` | publish | Bridge health + Last Will Testament (QoS 1, retain) |
+| Topic | Direction | Retain | Description |
+|---|---|---|---|
+| `p2l/commands` | subscribe | — | Incoming light control commands (QoS 1) |
+| `p2l/events` | publish | no | Confirmations, task events, batch completed (QoS 1) |
+| `p2l/devices/{address}` | publish | **yes** | Latest state per module — updated on every change |
+| `p2l/status` | publish | **yes** | Bridge health + Last Will Testament (QoS 1) |
+
+**Receiving queued events:** subscribers that connect with `CleanStart: false` and a
+`SessionExpiryInterval > 0` will receive all `p2l/events` messages published while offline.
+
+**Per-device state:** subscribe to `p2l/devices/+` (wildcard) to receive retained state for all
+modules immediately on connect, even without pressing a button.
+
+---
 
 ### Command messages
 
@@ -792,15 +789,12 @@ All commands are JSON with a `type` discriminator field. Publish to `p2l/command
 | `quantity` | yes | — | Number to display |
 | `color` | no | `Green` | `Off Red Green Blue Yellow Cyan Magenta White` |
 | `ledMode` | no | `On` | `On` or `Flash` |
-| `blockNo` | no | `"00"` | Block number (matches gateway block) |
+| `blockNo` | no | `"00"` | Block number |
 | `correlationId` | no | null | Echoed back in `confirmed` event |
 
 #### `light_off` — Extinguish a single module
 ```json
-{
-  "type":    "light_off",
-  "address": "0003"
-}
+{ "type": "light_off", "address": "0003" }
 ```
 
 #### `batch_start` — Light multiple modules simultaneously
@@ -818,20 +812,44 @@ All commands are JSON with a `type` discriminator field. Publish to `p2l/command
 }
 ```
 
-#### `batch_finish` — Terminate a block (turn off all lights in block)
+#### `batch_finish` — Terminate a block
+```json
+{ "type": "batch_finish", "blockNo": "01" }
+```
+
+#### `terminate_all` — Emergency stop
+```json
+{ "type": "terminate_all" }
+```
+
+#### `get_snapshot` — Dump current state of all known modules
+Triggers one `light_changed` event per tracked module on `p2l/devices/{address}`.
+```json
+{ "type": "get_snapshot" }
+```
+
+#### `csv_run` — Start a sequential CSV pick task
 ```json
 {
-  "type":    "batch_finish",
-  "blockNo": "01"
+  "type":    "csv_run",
+  "file":    "tasks.csv",
+  "color":   "Green",
+  "blockNo": "00"
 }
 ```
 
-#### `terminate_all` — Emergency stop: extinguish all modules
+The `file` path is resolved on the machine running P2L. The runner processes one row at a time,
+waits for confirmation, deletes the row, then advances. Real-time MQTT commands keep strict
+priority.
+
+#### `csv_control` — Pause / resume / cancel the CSV runner
 ```json
-{
-  "type": "terminate_all"
-}
+{ "type": "csv_control", "action": "pause"  }
+{ "type": "csv_control", "action": "resume" }
+{ "type": "csv_control", "action": "cancel" }
 ```
+
+---
 
 ### Event messages
 
@@ -843,23 +861,9 @@ P2L publishes events to `p2l/events`. All events include `type` and `timestamp` 
   "type":            "confirmed",
   "timestamp":       "2026-03-11T08:30:00.000Z",
   "address":         "0003",
-  "status":          "Confirmed",
+  "status":          "Normal",
   "adjustedDisplay": null,
   "correlationId":   "order-42"
-}
-```
-
-#### `light_changed` — Module state changed
-```json
-{
-  "type":         "light_changed",
-  "timestamp":    "2026-03-11T08:30:00.000Z",
-  "address":      "0003",
-  "moduleStatus": "Active",
-  "color":        "Green",
-  "ledMode":      "On",
-  "displayData":  "00005",
-  "blockNo":      "00"
 }
 ```
 
@@ -871,7 +875,69 @@ P2L publishes events to `p2l/events`. All events include `type` and `timestamp` 
 }
 ```
 
-#### `bridge_status` — Bridge health / Last Will Testament
+#### `task_started` — CSV runner lit a module
+```json
+{
+  "type":      "task_started",
+  "timestamp": "2026-03-11T08:30:00.000Z",
+  "address":   "0001",
+  "quantity":  5,
+  "color":     "Red",
+  "label":     "Part-A"
+}
+```
+
+#### `task_confirmed` — Operator confirmed a CSV task row (row deleted from CSV)
+```json
+{
+  "type":      "task_confirmed",
+  "timestamp": "2026-03-11T08:30:08.000Z",
+  "address":   "0001",
+  "quantity":  5,
+  "color":     "Red",
+  "label":     "Part-A"
+}
+```
+
+#### `task_error` — Error processing a CSV row (row skipped)
+```json
+{
+  "type":      "task_error",
+  "timestamp": "2026-03-11T08:30:01.000Z",
+  "address":   "0001",
+  "quantity":  5,
+  "color":     "Red",
+  "label":     "Part-A"
+}
+```
+
+#### `csv_completed` — All rows in the CSV file have been confirmed
+```json
+{
+  "type":      "csv_completed",
+  "timestamp": "2026-03-11T08:35:00.000Z",
+  "address":   ""
+}
+```
+
+#### `light_changed` — Module state changed (published to `p2l/devices/{address}`)
+```json
+{
+  "type":             "light_changed",
+  "timestamp":        "2026-03-11T08:30:00.000Z",
+  "address":          "0003",
+  "moduleStatus":     "Active",
+  "color":            "Green",
+  "ledMode":          "On",
+  "displayData":      "00005",
+  "blockNo":          "00",
+  "adjustedQuantity": 5,
+  "lastInstructionAt":"2026-03-11T08:30:00.000Z",
+  "lastConfirmedAt":  null
+}
+```
+
+#### `bridge_status` — Bridge health / Last Will Testament (published to `p2l/status`)
 ```json
 {
   "type":             "bridge_status",
@@ -881,7 +947,7 @@ P2L publishes events to `p2l/events`. All events include `type` and `timestamp` 
 }
 ```
 
-Published on connect and on gateway connection changes. `online: false` is also the LWT payload — the broker delivers it automatically if P2L disconnects ungracefully.
+Published on connect and on gateway connection changes. `online: false` is also the LWT payload.
 
 ---
 
@@ -919,12 +985,19 @@ sudo systemctl start  p2l
 sudo systemctl status p2l
 ```
 
+For a CSV-based guided pick session that restarts automatically:
+
+```ini
+ExecStart=/opt/p2l/p2l run /opt/p2l/tasks.csv --color Green
+```
+
 ---
 
 ## 11. Protocol Notes
 
 ### Initialization sequence
-Every command sends `Z` (full initialization) once before any operation instruction. This resets all modules to standby. Subsequent commands within the same process skip the second `Z` (idempotent via `EnsureInitializedAsync`).
+Every command sends `Z` once before any operation. This resets all modules to standby.
+Subsequent commands within the same process skip the second `Z` (idempotent via `EnsureInitializedAsync`).
 
 ### `light on` protocol (single module)
 ```
@@ -933,30 +1006,24 @@ Z  →  P1 <blockNo> <addr><display>   (block operation instruction, steady)
    →  FP1 <blockNo> <addr><display>  (block operation instruction, flash)
 ```
 
-`P1` and `FP1` are block commands — even single-module instructions use the block framing.
-Flash mode is encoded in the command prefix (`FP1` / `FP5`) rather than a separate mode command.
-
 ### `pick` protocol (batch)
 ```
-Z  →  P1  <blockNo> <addr1><disp1> <addr2><disp2> ...   (steady block instruction)
+Z  →  P1  <blockNo> <addr1><disp1> <addr2><disp2> ...   (steady)
    or
-   →  FP1 <blockNo> <addr1><disp1> <addr2><disp2> ...   (flash block instruction)
+   →  FP1 <blockNo> <addr1><disp1> <addr2><disp2> ...   (flash)
 ```
 
-Overwrite (rewrite active instructions without re-confirming) uses `P5` / `FP5`.
+Overwrite uses `P5` / `FP5`.
 
 ### Confirmation interrupt
-The gateway pushes an unsolicited `t` packet when an operator presses CONFIRM. P2L ACKs it immediately with `O` (highest-priority response).
-
-### Nack handling
-The controller responds `o` (ACK) or `n` (NACK) to every command. P2L throws an error on `n`:
-```
-Error: Gateway rejected command 'P10000001000005' with 'n' — check command format/address.
-```
-If you see this, enable `Debug` logging to inspect the raw TX bytes and compare against the Aioi Command Reference.
+The gateway pushes an unsolicited `t` packet when an operator presses CONFIRM. P2L ACKs it
+immediately with `O` via `SendImmediateAsync` — bypasses the send queue to guarantee
+sub-millisecond response regardless of pending commands.
 
 ### Forbidden bytes
-Commands must **not** contain `0x02` (STX) or `0x03` (ETX) in data bytes — these are the packet frame delimiters. Additionally, avoid `0x11` (XON) and `0x13` (XOFF) in data bytes — some gateway firmware strips these as legacy serial flow-control characters, silently corrupting packet length. P2L uses `NoChange` (0xFF) instead of `Off` (0x11) for after-confirm LED states to avoid this issue.
+Commands must **not** contain `0x02` (STX) or `0x03` (ETX). Also avoid `0x11` (XON) and
+`0x13` (XOFF) — some gateway firmware strips these silently as legacy serial flow-control bytes.
+P2L uses `NoChange` (0xFF) instead of `Off` (0x11) for after-confirm LED states.
 
 ---
 
@@ -965,18 +1032,22 @@ Commands must **not** contain `0x02` (STX) or `0x03` (ETX) in data bytes — the
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `Cannot connect to 192.168.1.254:5003` (repeated) | USB-LAN has no IP or route missing | Re-run `networksetup -setmanual` and host route steps in §5 |
-| `nc: No route to host 192.168.1.254` | USB-LAN static IP not applied or host route lost after reboot | Re-apply static IP; re-run `route add -host 192.168.1.254 -interface en2`; install launchd plist for persistence |
-| Gateway reachable but internet broken via WiFi | WiFi and USB-LAN on same `192.168.1.x` subnet — USB-LAN took the default route | Follow Case B in §5: use host route for gateway, keep WiFi first in service order |
-| Internet works but gateway unreachable after reboot | Host route lost on reboot | Install the launchd plist in §5 Case B to restore it automatically |
-| `Timeout waiting for ACK` on `Z` | Gateway powered off or busy | Power-cycle gateway; check physical LED status |
-| `Gateway rejected command ... with 'n'` | Invalid command format or address | Enable Debug logging; check address range; verify hardware model matches TW/AW series |
-| `devices` scan returns 0 modules | Modules off, wrong address range, or wiring fault | Widen `--from`/`--to`; verify wiring |
-| `light set` shows no change on hardware | Module already terminated (Standby) | Re-instruct with `light on` first, then use `light set` |
-| Light doesn't turn on, no error shown | Module not at that address | Run `./p2l devices` to discover actual addresses |
-| `import` aborts with "Unknown Color value" | Typo in CSV Color column | Fix value; re-run with `--dry-run` to verify |
-| Build error `clang not found` | Native AOT requires C compiler | Install Xcode CLT (macOS) or `clang` (Linux) |
-| `appsettings.json not found` warning | Binary moved without config file | Keep `appsettings.json` next to the `p2l` binary |
-| `[MQTT] Connection failed` (repeated) | Broker unreachable or TLS mismatch | Check host/port; verify cert chain; try `AllowUntrustedCerts: true` in dev |
-| MQTT commands received but no hardware action | Bridge connected but gateway disconnected | Check `bridge_status.gatewayConnected` on `p2l/status` topic |
-| `bridge_status { online: false }` on broker | LWT triggered — P2L crashed or lost network | Restart P2L service; bridge auto-reconnects on next start |
-| MQTT events published but `correlationId` missing | Command sent without `correlationId` field | Include `correlationId` in `light_on` command to correlate with `confirmed` events |
+| `nc: No route to host 192.168.1.254` | Static IP or host route lost after reboot | Re-apply; install launchd plist for persistence |
+| Gateway reachable but internet broken | WiFi and USB-LAN on same subnet | Follow Case B in §5 |
+| `Timeout waiting for ACK` on `Z` | Gateway powered off or busy | Power-cycle gateway; check LED status |
+| `Gateway rejected command ... with 'n'` | Invalid command format or address | Enable Debug logging; check address range |
+| `devices` scan returns 0 modules | Modules off, wrong address range | Widen `--from`/`--to`; verify wiring |
+| `light set` shows no change on hardware | Module already terminated | Re-instruct with `light on` first |
+| Light doesn't turn on, no error | Module not at that address | Run `./p2l devices` to discover actual addresses |
+| `import` aborts with "Unknown Color value" | Typo in CSV Color column | Fix value; re-run with `--dry-run` |
+| `appsettings.json not found` | Binary moved without config file | Keep `appsettings.json` next to `p2l` |
+| `[MQTT] Connection failed` (repeated) | Broker unreachable or TLS mismatch | Check host/port; try `AllowUntrustedCerts: true` in dev |
+| MQTT commands received but no hardware action | Gateway disconnected | Check `bridge_status.gatewayConnected` on `p2l/status` |
+| `bridge_status { online: false }` on broker | LWT triggered — P2L crashed | Restart P2L; bridge auto-reconnects |
+| `run` CSV runner stops mid-file | Process killed or error on a row | Restart `./p2l run` — confirmed rows were deleted, picks up from next row |
+| CSV runner ignores MQTT commands | Commands arrive while row is in-flight | Expected — runner finishes current row confirm then yields; MQTT preempts between rows |
+| No data on `p2l/events` | No subscriber active when event published | Subscribe before running; or use persistent session (`CleanStart: false`) |
+| No data on `p2l/devices/+` | No pick commands sent yet | Send `get_snapshot` MQTT command to dump all known module states |
+| `mqtt_offline_buffer.jsonl` grows indefinitely | Broker permanently unreachable | Fix broker connectivity; file is auto-deleted after successful replay |
+| Buffer replay log shows partial sync on every connect | Broker rejects some message type | Check `[MQTT] Buffer replay rejected` warnings in log for the specific reason code |
+| Want to discard buffered events and start fresh | Stale buffer from a different session | Delete `mqtt_offline_buffer.jsonl` manually before starting P2L |

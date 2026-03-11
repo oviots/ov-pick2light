@@ -55,3 +55,17 @@ public sealed record BridgeStatusEvt : MqttEvent
     public bool Online           { get; init; }
     public bool GatewayConnected { get; init; }
 }
+
+// ─── task_event ────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Published for each CSV pick-task lifecycle step:
+///   task_started, task_confirmed, task_error, csv_completed.
+/// </summary>
+public sealed record TaskEvt : MqttEvent
+{
+    public string     Address  { get; init; } = "";
+    public int        Quantity { get; init; }
+    public LightColor Color    { get; init; }
+    public string?    Label    { get; init; }
+}

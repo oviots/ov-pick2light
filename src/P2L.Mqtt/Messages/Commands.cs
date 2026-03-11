@@ -69,3 +69,21 @@ public sealed record TerminateAllCmd : MqttCommand { }
 /// P2L responds by publishing one <c>light_changed</c> event per tracked module.
 /// </summary>
 public sealed record GetSnapshotCmd : MqttCommand { }
+
+// ─── csv_run ───────────────────────────────────────────────────────────────
+
+/// <summary>Start processing a CSV pick-task file sequentially.</summary>
+public sealed record CsvRunCmd : MqttCommand
+{
+    public required string File    { get; init; }
+    public LightColor      Color   { get; init; } = LightColor.Green;
+    public string          BlockNo { get; init; } = "00";
+}
+
+// ─── csv_control ───────────────────────────────────────────────────────────
+
+/// <summary>Control a running CSV task: action = pause | resume | cancel</summary>
+public sealed record CsvControlCmd : MqttCommand
+{
+    public required string Action { get; init; }  // "pause" | "resume" | "cancel"
+}

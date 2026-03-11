@@ -56,6 +56,8 @@ services.AddSingleton<LightModuleRegistry>();
 services.AddSingleton<PickingEngine>();
 services.AddSingleton<HeartbeatService>();
 services.AddSingleton<DeviceScanService>();
+services.AddSingleton<PreemptionGate>();
+services.AddSingleton<CsvPickTaskRunner>();
 
 // MQTT bridge (optional — only registered when Enabled=true)
 if (appSettings.Mqtt.Enabled)
@@ -75,6 +77,7 @@ services.AddTransient<ConfigureDeviceCommand>();
 services.AddSingleton<DeviceConfigCsvService>();
 services.AddTransient<ExportCommand>();
 services.AddTransient<ImportCommand>();
+services.AddTransient<RunPickCommand>();
 
 // ─── CLI application ──────────────────────────────────────────────────────
 
@@ -110,6 +113,9 @@ app.Configure(cfg =>
 
     cfg.AddCommand<ImportCommand>("import")
        .WithDescription("Import a CSV file and apply parameter changes to hardware");
+
+    cfg.AddCommand<RunPickCommand>("run")
+       .WithDescription("Run a CSV pick-task file sequentially with auto-delete on confirmation");
 
 #if DEBUG
     cfg.PropagateExceptions();

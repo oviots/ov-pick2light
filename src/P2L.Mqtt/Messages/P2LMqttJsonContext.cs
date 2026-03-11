@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using P2L.Mqtt;
 
 namespace P2L.Mqtt.Messages;
 
@@ -14,6 +15,10 @@ namespace P2L.Mqtt.Messages;
 [JsonSerializable(typeof(BatchFinishCmd))]
 [JsonSerializable(typeof(TerminateAllCmd))]
 [JsonSerializable(typeof(GetSnapshotCmd))]
+[JsonSerializable(typeof(TaskEvt))]
+[JsonSerializable(typeof(CsvRunCmd))]
+[JsonSerializable(typeof(CsvControlCmd))]
+[JsonSerializable(typeof(BufferedEntry))]
 [JsonSerializable(typeof(ConfirmedEvt))]
 [JsonSerializable(typeof(LightChangedEvt))]
 [JsonSerializable(typeof(BatchCompletedEvt))]

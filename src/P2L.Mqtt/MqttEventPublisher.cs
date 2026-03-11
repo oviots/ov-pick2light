@@ -4,8 +4,10 @@ using Microsoft.Extensions.Logging;
 using MQTTnet;
 using MQTTnet.Protocol;
 using P2L.Core;
+using P2L.Core.Services;
 using P2L.Mqtt.Configuration;
 using P2L.Mqtt.Messages;
+using P2L.Shared.Enums;
 using P2L.Shared.Models;
 // IMqttClient lives in the root MQTTnet namespace in v5
 
@@ -14,9 +16,10 @@ namespace P2L.Mqtt;
 /// <summary>
 /// Publishes light module state changes and picking events as JSON to MQTT topics.
 ///
-/// Real-time source: <see cref="LightModuleRegistry.StateChanged"/> fires on every
-/// mutation (instruct, confirm, terminate, configure, scan) and enqueues a
-/// <c>light_changed</c> event immediately.
+/// Offline buffering: when the broker is unreachable, events are written to a local
+/// JSONL file instead of being dropped. On reconnect the file is replayed line-by-line
+/// before live events are processed, then deleted. If the process is killed mid-replay
+/// the file is truncated to remove only the events that were successfully sent.
 ///
 /// Uses a bounded Channel as a non-blocking queue so event handlers never block
 /// the caller thread waiting for MQTT I/O.
@@ -28,13 +31,14 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
     private readonly PickingEngine        _engine;
     private readonly LightModuleRegistry  _registry;
     private readonly ILogger              _log;
+    private readonly string?              _bufferPath;
 
     private readonly Channel<MqttEvent> _queue =
         Channel.CreateBounded<MqttEvent>(new BoundedChannelOptions(1000)
         {
-            FullMode         = BoundedChannelFullMode.DropOldest,
-            SingleReader     = true,
-            SingleWriter     = false,
+            FullMode     = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = false,
         });
 
     private readonly CancellationTokenSource _cts  = new();
@@ -44,11 +48,14 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
                                PickingEngine engine, LightModuleRegistry registry,
                                ILogger<MqttEventPublisher> log)
     {
-        _client   = client;
-        _settings = settings;
-        _engine   = engine;
-        _registry = registry;
-        _log      = log;
+        _client     = client;
+        _settings   = settings;
+        _engine     = engine;
+        _registry   = registry;
+        _log        = log;
+        _bufferPath = string.IsNullOrWhiteSpace(settings.OfflineBufferPath)
+                      ? null
+                      : settings.OfflineBufferPath;
     }
 
     // ─── Lifecycle ────────────────────────────────────────────────────────
@@ -94,13 +101,31 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
     private void OnBatchCompleted()
         => _queue.Writer.TryWrite(new BatchCompletedEvt { Type = "batch_completed" });
 
-    // ─── Snapshot (on-demand full state dump) ────────────────────────────
+    // ─── Snapshot / task events ───────────────────────────────────────────
 
     public void EnqueueSnapshot()
     {
         foreach (var module in _registry.All)
             _queue.Writer.TryWrite(StateToEvt(module));
     }
+
+    public void EnqueueTaskEvent(CsvTaskEvent taskEvt)
+        => _queue.Writer.TryWrite(new TaskEvt
+        {
+            Type     = taskEvt.EventType,
+            Address  = taskEvt.Row?.Address  ?? "",
+            Quantity = taskEvt.Row?.Quantity ?? 0,
+            Color    = taskEvt.Row?.Color    ?? LightColor.Green,
+            Label    = taskEvt.Row?.Label,
+        });
+
+    public void EnqueueStatus(bool online, bool gatewayConnected)
+        => _queue.Writer.TryWrite(new BridgeStatusEvt
+        {
+            Type             = "bridge_status",
+            Online           = online,
+            GatewayConnected = gatewayConnected,
+        });
 
     // ─── Helpers ──────────────────────────────────────────────────────────
 
@@ -120,61 +145,104 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
         LastConfirmedAt   = s.LastConfirmedAt,
     };
 
+    /// <summary>
+    /// Resolves the MQTT topic, retain flag, and serialized payload for an event.
+    /// Returns null for unknown event types (no-op).
+    /// </summary>
+    private (string Topic, bool Retain, byte[] Payload)? BuildMessage(MqttEvent evt)
+    {
+        switch (evt)
+        {
+            case ConfirmedEvt e:
+                return (_settings.EventTopic, false,
+                    JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.ConfirmedEvt));
+
+            case LightChangedEvt e:
+                return ($"{_settings.DevicesTopic}/{e.Address}", true,
+                    JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.LightChangedEvt));
+
+            case BatchCompletedEvt e:
+                return (_settings.EventTopic, false,
+                    JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.BatchCompletedEvt));
+
+            case BridgeStatusEvt e:
+                return (_settings.StatusTopic, true,
+                    JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.BridgeStatusEvt));
+
+            case TaskEvt e:
+                return (_settings.EventTopic, false,
+                    JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.TaskEvt));
+
+            default:
+                return null;
+        }
+    }
+
     // ─── Drain loop ───────────────────────────────────────────────────────
 
     private async Task DrainAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
-            // Block until there is something in the queue
+            // ── Offline path ─────────────────────────────────────────────
+            if (!_client.IsConnected)
+            {
+                // Flush any pending in-memory events to the buffer file immediately —
+                // this is non-blocking (TryRead never waits).
+                while (_queue.Reader.TryRead(out var evt))
+                {
+                    var msg = BuildMessage(evt);
+                    if (msg is not null)
+                        AppendToBuffer(msg.Value.Topic, msg.Value.Retain, msg.Value.Payload);
+                }
+
+                // Poll for reconnection every 500 ms
+                await Task.Delay(500, ct);
+                continue;
+            }
+
+            // ── Reconnected: replay buffer before live events ─────────────
+            if (_bufferPath is not null && File.Exists(_bufferPath))
+                await ReplayBufferAsync(ct);
+
+            // ── Live publish path ─────────────────────────────────────────
+            // WaitToReadAsync blocks until an event arrives or the channel closes.
             if (!await _queue.Reader.WaitToReadAsync(ct)) break;
 
-            // Wait until MQTT is connected before consuming the event
-            while (!_client.IsConnected && !ct.IsCancellationRequested)
-                await Task.Delay(200, ct);
+            // Connection may have dropped while we were waiting
+            if (!_client.IsConnected) continue;
 
-            if (!_queue.Reader.TryRead(out var evt)) continue;
+            if (!_queue.Reader.TryRead(out var liveEvt)) continue;
 
-            try   { await PublishAsync(evt, ct); }
+            var liveMsg = BuildMessage(liveEvt);
+            if (liveMsg is null) continue;
+
+            try
+            {
+                await PublishAsync(liveMsg.Value.Topic, liveMsg.Value.Retain,
+                                   liveMsg.Value.Payload, liveEvt.Type, ct);
+            }
             catch (OperationCanceledException) { break; }
-            catch (Exception ex) { _log.LogError("[MQTT] Publish exception: {Err}", ex.Message); }
+            catch (Exception ex)
+            {
+                _log.LogError("[MQTT] Publish exception: {Err}", ex.Message);
+            }
+        }
+
+        // On shutdown: buffer any remaining in-memory events so they survive restart
+        while (_queue.Reader.TryRead(out var remaining))
+        {
+            var msg = BuildMessage(remaining);
+            if (msg is not null)
+                AppendToBuffer(msg.Value.Topic, msg.Value.Retain, msg.Value.Payload);
         }
     }
 
-    private async Task PublishAsync(MqttEvent evt, CancellationToken ct)
+    // ─── Live publish ─────────────────────────────────────────────────────
+
+    private async Task PublishAsync(string topic, bool retain, byte[] payload,
+                                    string evtType, CancellationToken ct)
     {
-        string  topic;
-        byte[]? payload;
-        bool    retain = false;
-
-        switch (evt)
-        {
-            case ConfirmedEvt e:
-                topic   = _settings.EventTopic;
-                payload = JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.ConfirmedEvt);
-                break;
-            case LightChangedEvt e:
-                // Device state goes to per-device topic with retain=true so new subscribers
-                // immediately see the current state of each module.
-                topic   = $"{_settings.DevicesTopic}/{e.Address}";
-                retain  = true;
-                payload = JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.LightChangedEvt);
-                break;
-            case BatchCompletedEvt e:
-                topic   = _settings.EventTopic;
-                payload = JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.BatchCompletedEvt);
-                break;
-            case BridgeStatusEvt e:
-                // Status goes to its own topic with retain=true so new subscribers
-                // immediately see the current bridge/gateway state.
-                topic   = _settings.StatusTopic;
-                retain  = true;
-                payload = JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.BridgeStatusEvt);
-                break;
-            default:
-                return;
-        }
-
         var msg = new MqttApplicationMessageBuilder()
             .WithTopic(topic)
             .WithPayload(payload)
@@ -182,25 +250,126 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
             .WithRetainFlag(retain)
             .Build();
 
-        _log.LogDebug("[MQTT] Publishing {Type} → {Topic}", evt.Type, topic);
+        _log.LogDebug("[MQTT] Publishing {Type} → {Topic}", evtType, topic);
         var result = await _client.PublishAsync(msg, ct);
-        // NoMatchingSubscribers (0x10) is an MQTT v5 success code — message reached the broker,
-        // no subscriber was connected at that moment. Retained messages are still stored.
+
+        // NoMatchingSubscribers (0x10) is an MQTT v5 success code — message reached the broker.
         if (result.ReasonCode is MqttClientPublishReasonCode.Success
                                or MqttClientPublishReasonCode.NoMatchingSubscribers)
-            _log.LogDebug("[MQTT] Published  {Type} → {Topic}", evt.Type, topic);
+            _log.LogDebug("[MQTT] Published  {Type} → {Topic}", evtType, topic);
         else
             _log.LogWarning("[MQTT] Publish rejected: type={Type} topic={Topic} reason={Reason}",
-                evt.Type, topic, result.ReasonCode);
+                evtType, topic, result.ReasonCode);
     }
 
-    // ─── Public enqueue for bridge-status events ─────────────────────────
+    // ─── Offline buffer ───────────────────────────────────────────────────
 
-    public void EnqueueStatus(bool online, bool gatewayConnected)
-        => _queue.Writer.TryWrite(new BridgeStatusEvt
+    /// <summary>
+    /// Appends one event to the offline JSONL buffer file.
+    /// Each line: { "topic": "...", "retain": true, "payload": "<base64>" }
+    /// </summary>
+    private void AppendToBuffer(string topic, bool retain, byte[] payload)
+    {
+        if (_bufferPath is null) return;
+        try
         {
-            Type             = "bridge_status",
-            Online           = online,
-            GatewayConnected = gatewayConnected,
-        });
+            var entry = new BufferedEntry(topic, retain, Convert.ToBase64String(payload));
+            var line  = JsonSerializer.Serialize(entry, P2LMqttJsonContext.Default.BufferedEntry);
+            File.AppendAllText(_bufferPath, line + "\n");
+            _log.LogDebug("[MQTT] Offline buffered → {Topic}", topic);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning("[MQTT] Failed to write offline buffer: {Err}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Replays all lines from the offline buffer file to the broker.
+    /// Successfully replayed lines are removed; the remainder is kept for the next attempt.
+    /// The file is deleted when fully replayed.
+    /// </summary>
+    private async Task ReplayBufferAsync(CancellationToken ct)
+    {
+        if (_bufferPath is null || !File.Exists(_bufferPath)) return;
+
+        string[] lines;
+        try   { lines = File.ReadAllLines(_bufferPath); }
+        catch { return; }
+
+        int total = lines.Length;
+        if (total == 0) { TryDeleteBuffer(); return; }
+
+        _log.LogInformation("[MQTT] Replaying {N} offline buffered event(s) from {File}",
+            total, Path.GetFileName(_bufferPath));
+
+        int replayed = 0;
+        foreach (var line in lines)
+        {
+            if (ct.IsCancellationRequested || !_client.IsConnected) break;
+            if (string.IsNullOrWhiteSpace(line)) { replayed++; continue; }
+
+            try
+            {
+                var entry = JsonSerializer.Deserialize(line,
+                    P2LMqttJsonContext.Default.BufferedEntry);
+                if (entry is null) { replayed++; continue; } // skip malformed lines
+
+                var payload = Convert.FromBase64String(entry.Payload);
+                var msg = new MqttApplicationMessageBuilder()
+                    .WithTopic(entry.Topic)
+                    .WithPayload(payload)
+                    .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
+                    .WithRetainFlag(entry.Retain)
+                    .Build();
+
+                var result = await _client.PublishAsync(msg, ct);
+                if (result.ReasonCode is MqttClientPublishReasonCode.Success
+                                       or MqttClientPublishReasonCode.NoMatchingSubscribers)
+                    replayed++;
+                else
+                {
+                    _log.LogWarning("[MQTT] Buffer replay rejected: topic={Topic} reason={R}",
+                        entry.Topic, result.ReasonCode);
+                    break; // stop on broker rejection; retry next connect
+                }
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                _log.LogWarning("[MQTT] Buffer replay line {N} skipped: {Err}", replayed + 1, ex.Message);
+                replayed++; // skip corrupted line rather than retrying forever
+            }
+        }
+
+        if (replayed >= total)
+        {
+            _log.LogInformation("[MQTT] Buffer replay complete — {N} event(s) synced", replayed);
+            TryDeleteBuffer();
+        }
+        else
+        {
+            // Persist only the un-replayed tail for the next reconnect attempt
+            try { File.WriteAllLines(_bufferPath, lines.Skip(replayed)); }
+            catch (Exception ex)
+            {
+                _log.LogWarning("[MQTT] Failed to truncate buffer after partial replay: {Err}", ex.Message);
+            }
+            _log.LogInformation("[MQTT] Buffer partially replayed: {Done}/{Total}; {Rem} event(s) remain",
+                replayed, total, total - replayed);
+        }
+    }
+
+    private void TryDeleteBuffer()
+    {
+        if (_bufferPath is null) return;
+        try   { File.Delete(_bufferPath); }
+        catch { /* best-effort */ }
+    }
 }
+
+/// <summary>
+/// One entry in the offline JSONL buffer file.
+/// Stores the already-serialized payload as base64 so replay needs no re-serialization.
+/// </summary>
+internal sealed record BufferedEntry(string Topic, bool Retain, string Payload);

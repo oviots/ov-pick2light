@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using MQTTnet;
 using MQTTnet.Protocol;
 using P2L.Core;
+using P2L.Core.Services;
 using P2L.Hardware;
 using P2L.Mqtt.Configuration;
 using P2L.Mqtt.Messages;
@@ -29,6 +30,8 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     private readonly ILogger               _log;
     private readonly IMqttClient           _client;
     private readonly MqttClientOptions     _options;
+    private readonly PreemptionGate        _gate;
+    private readonly CsvPickTaskRunner?    _csvRunner;
 
     private readonly CancellationTokenSource _cts = new();
     private          Task?                   _connectLoop;
@@ -36,15 +39,18 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
 
     public MqttBridgeService(MqttSettings settings, AioiGateway gateway,
                               PickingEngine engine, LightModuleRegistry registry,
+                              PreemptionGate gate, CsvPickTaskRunner? csvRunner,
                               ILoggerFactory loggerFactory)
     {
         _settings   = settings;
         _gateway    = gateway;
+        _gate       = gate;
+        _csvRunner  = csvRunner;
         _log        = loggerFactory.CreateLogger<MqttBridgeService>();
         _client     = new MqttClientFactory().CreateMqttClient();
         _publisher  = new MqttEventPublisher(_client, settings, engine, registry,
                           loggerFactory.CreateLogger<MqttEventPublisher>());
-        _dispatcher = new MqttCommandDispatcher(engine, _publisher,
+        _dispatcher = new MqttCommandDispatcher(engine, _publisher, gate, csvRunner,
                           loggerFactory.CreateLogger<MqttCommandDispatcher>());
         _options    = BuildOptions(settings);
 
@@ -54,6 +60,9 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
 
         _gateway.ConnectionChanged += connected =>
             _publisher.EnqueueStatus(online: true, gatewayConnected: connected);
+
+        if (_csvRunner is not null)
+            _csvRunner.TaskEvent += e => _publisher.EnqueueTaskEvent(e);
     }
 
     // ─── Lifecycle ────────────────────────────────────────────────────────
