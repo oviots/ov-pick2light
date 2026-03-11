@@ -12,8 +12,10 @@ public sealed class MqttSettings
 
     /// <summary>Topic to subscribe for incoming light control commands (QoS 1).</summary>
     public string CommandTopic  { get; init; } = "p2l/commands";
-    /// <summary>Topic to publish light operation events (confirmations, state changes).</summary>
+    /// <summary>Topic to publish light operation events (confirmations, batch_completed).</summary>
     public string EventTopic    { get; init; } = "p2l/events";
+    /// <summary>Topic prefix for per-device state. Each module publishes to {DevicesTopic}/{address} with retain=true.</summary>
+    public string DevicesTopic  { get; init; } = "p2l/devices";
     /// <summary>Topic for bridge health status and Last Will Testament.</summary>
     public string StatusTopic   { get; init; } = "p2l/status";
 

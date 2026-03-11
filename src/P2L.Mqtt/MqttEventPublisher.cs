@@ -154,7 +154,10 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
                 payload = JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.ConfirmedEvt);
                 break;
             case LightChangedEvt e:
-                topic   = _settings.EventTopic;
+                // Device state goes to per-device topic with retain=true so new subscribers
+                // immediately see the current state of each module.
+                topic   = $"{_settings.DevicesTopic}/{e.Address}";
+                retain  = true;
                 payload = JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.LightChangedEvt);
                 break;
             case BatchCompletedEvt e:

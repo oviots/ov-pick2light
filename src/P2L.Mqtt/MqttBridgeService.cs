@@ -97,7 +97,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
 
     private async Task ConnectLoopAsync(CancellationToken ct)
     {
-        var delay = TimeSpan.FromSeconds(2);
+        var delay = TimeSpan.FromSeconds(0.5);
 
         while (!ct.IsCancellationRequested)
         {
@@ -105,7 +105,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
             {
                 _disconnectedTcs = new TaskCompletionSource();
                 await _client.ConnectAsync(_options, ct);
-                delay = TimeSpan.FromSeconds(2); // reset back-off on success
+                delay = TimeSpan.FromSeconds(0.5); // reset back-off on success
 
                 // Wait here until the broker disconnects us
                 await _disconnectedTcs.Task.WaitAsync(ct);
