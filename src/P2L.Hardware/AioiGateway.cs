@@ -92,11 +92,11 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         await Task.Delay(1_500, ct);
     }
 
-    // ─── Mode configuration ───────────────────────────────────────────────
+    // ─── Mode configuration (reserved for future use) ─────────────────────
 
     /// <summary>
-    /// Configures the LED/SEG/BUZ mode array for subsequent PP1/L instructions.
-    /// Must be called whenever the desired color or flash pattern changes.
+    /// Sends the M (mode array) command. Not used in normal operation — flash mode
+    /// is controlled via FP1/FP5 command prefixes. Kept for diagnostic purposes.
     /// </summary>
     public Task SetModeForColorAsync(LightColor color,
                                      LightState  ledMode = LightState.On,
@@ -106,38 +106,37 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     // ─── Pick operations ──────────────────────────────────────────────────
 
     /// <summary>
-    /// Lights up a batch of modules in one P1 block command (most efficient).
-    /// Note: M (mode array) command is skipped — the gateway uses its built-in default
-    /// LED/SEG/BUZ mode, which is consistent with how Flowlight operates.
+    /// Lights up a batch of modules using P1 (steady) or FP1 (flash).
+    /// M command is not used — this gateway controls flash mode via command prefix.
+    /// All items in the batch should share the same LED mode.
     /// </summary>
     public async Task InstructBatchAsync(IReadOnlyList<PickingInstruction> instructions,
                                          CancellationToken ct = default)
     {
         if (instructions.Count == 0) return;
 
+        var ledMode = instructions[0].LedMode;
         var blockNo = instructions[0].BlockNo;
-        await SendAndWaitAsync(AioiEncoder.BlockInstruct(blockNo, instructions), ct);
+        await SendAndWaitAsync(AioiEncoder.BlockInstruct(blockNo, instructions, ledMode), ct);
 
-        _log.LogInformation("Instructed {Count} modules (block {Block})",
-            instructions.Count, blockNo);
+        _log.LogInformation("Instructed {Count} modules (block {Block} mode {Mode})",
+            instructions.Count, blockNo, ledMode);
     }
 
     /// <summary>
-    /// Overwrites an in-progress batch with new data using P5.
-    /// Use this instead of InstructBatchAsync when modules may already be active.
+    /// Overwrites an in-progress batch using P5 (steady) or FP5 (flash).
     /// </summary>
     public async Task OverwriteBatchAsync(IReadOnlyList<PickingInstruction> instructions,
                                           CancellationToken ct = default)
     {
         if (instructions.Count == 0) return;
+        var ledMode = instructions[0].LedMode;
         var blockNo = instructions[0].BlockNo;
-        await SendAndWaitAsync(AioiEncoder.BlockInstructOverwrite(blockNo, instructions), ct);
+        await SendAndWaitAsync(AioiEncoder.BlockInstructOverwrite(blockNo, instructions, ledMode), ct);
     }
 
     /// <summary>
-    /// Lights a single module using a P1 block command with one item.
-    /// The gateway does not support the L command directly — P1 is used for all instructions,
-    /// consistent with how Flowlight operates.
+    /// Lights a single module using M (mode/color) + P1 (block instruct with one item).
     /// </summary>
     public Task InstructSingleAsync(PickingInstruction instruction,
                                     CancellationToken ct = default)

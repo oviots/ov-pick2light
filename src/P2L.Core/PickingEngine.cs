@@ -94,7 +94,8 @@ public sealed class PickingEngine : IDisposable
     /// Lights a single module. Does not affect active batch tracking.
     /// </summary>
     public Task QuickLightAsync(string address, int quantity,
-                                LightColor color = LightColor.Green,
+                                LightColor color   = LightColor.Green,
+                                LightState ledMode = LightState.On,
                                 CancellationToken ct = default)
     {
         var inst = new PickingInstruction
@@ -102,6 +103,7 @@ public sealed class PickingEngine : IDisposable
             Address  = address,
             Quantity = quantity,
             Color    = color,
+            LedMode  = ledMode,
         };
         _registry.SetInstructed(inst);
         return _gateway.InstructSingleAsync(inst, ct);
@@ -122,8 +124,8 @@ public sealed class PickingEngine : IDisposable
         var current = _registry.Get(addr);
 
         var displayData = newQuantity.HasValue
-            ? newQuantity.Value.ToString().PadLeft(5)
-            : (current?.DisplayData ?? "    0");
+            ? newQuantity.Value.ToString().PadLeft(5, '0')
+            : (current?.DisplayData ?? "00000");
 
         await _gateway.ConfigureModuleAsync(addr, displayData, parameters, ct);
         _registry.SetConfigured(addr, parameters, displayData);

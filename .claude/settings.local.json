@@ -9,7 +9,23 @@
       "Read(//usr/**)",
       "Bash(export:*)",
       "Bash(chmod +x:*)",
-      "Bash(~/.dotnet/dotnet:*)"
+      "Bash(~/.dotnet/dotnet:*)",
+      "Read(//private/tmp/**)",
+      "Bash(unzip -o '/Volumes/GTeck/Projects/1shot/light/docs/Flowlight 1.7E.zip' -d flowlight)",
+      "Bash(grep -E \"^[A-Z][a-z0-9]{0,2}[0-9]{4}\")",
+      "Bash(ilspycmd /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>/dev/null | grep -A 20 -E \"void.*[Mm]ode|string.*[Cc]ommand|BuildCommand|ModeArray|SetMode\" | head -80)",
+      "Bash(ilspycmd /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>/dev/null | grep -E \"class |namespace \" | head -20)",
+      "Bash(ilspycmd /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.Lightstep.dll 2>/dev/null | grep -E \"class |namespace |void |string \" | head -40)",
+      "Bash(ilspycmd /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.Lightstep.dll 2>&1 | head -20)",
+      "Bash(~/.dotnet/tools/ilspycmd /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.Lightstep.dll 2>&1 | head -50)",
+      "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/ilspycmd /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.Lightstep.dll 2>&1 | grep -E \"namespace|class \" | head -30)",
+      "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/ilspycmd /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.Lightstep.dll 2>&1 | wc -l)",
+      "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/ilspycmd /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.Lightstep.dll 2>&1)",
+      "Bash(strings /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.Lightstep.dll | grep -E \"^[MPZLDOtHTA][0-9a-zA-Z]{0,3}$|m[124]|P[15]|^[A-Z]$\" | sort -u | head -50)",
+      "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/ilspycmd --list-assemblies /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>&1 | head -5; DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/ilspycmd --list-all /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>&1 | head -30)",
+      "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/dotnet-ildasm /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>&1 | grep -E \"ldstr|\\\\\"[A-Z][0-9]|\\\\\"[mM][0-9]|\\\\\"[ZPL]|\\\\\"[Dd][0-9]\" | head -40)",
+      "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/dotnet-ildasm /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>&1 | wc -l)",
+      "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/dotnet-ildasm /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>&1)"
     ]
   }
 }

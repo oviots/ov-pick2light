@@ -70,9 +70,11 @@ public static class AioiEncoder
     public static string SetModeForColor(LightColor color, LightState ledMode = LightState.On)
     {
         var (led2, led1, led0) = color.ToLedStates(ledMode);
+        // afterConfirm uses NoChange (0xF nibbles) instead of Off (0x1 nibbles) to avoid
+        // producing 0x11 (XON) / 0x13 (XOFF) bytes that some gateway firmware strips from TCP.
         return SetModeArray(
-            normal:       (led2,          led1,          led0,          LightState.On,  LightState.Off),
-            afterConfirm: (LightState.Off, LightState.Off, LightState.Off, LightState.Off, LightState.Off));
+            normal:       (led2,              led1,              led0,              LightState.On,       LightState.Off),
+            afterConfirm: (LightState.NoChange, LightState.NoChange, LightState.NoChange, LightState.NoChange, LightState.NoChange));
     }
 
     /// <summary>
@@ -82,10 +84,11 @@ public static class AioiEncoder
     public static string SetModeForParameters(ModuleParameters p)
     {
         var (led2, led1, led0) = p.Color.ToLedStates(p.LedMode);
-        var ac = p.AfterConfirm;
+        // Use NoChange if caller passes Off for afterConfirm to avoid XON (0x11) bytes.
+        var ac = p.AfterConfirm == LightState.Off ? LightState.NoChange : p.AfterConfirm;
         return SetModeArray(
             normal:       (led2, led1, led0, p.SegMode,  p.BuzMode),
-            afterConfirm: (ac,   ac,   ac,   ac,         p.BuzAfterConfirm));
+            afterConfirm: (ac,   ac,   ac,   ac,         p.BuzAfterConfirm == LightState.Off ? LightState.NoChange : p.BuzAfterConfirm));
     }
 
     // ─── Per-address mode commands (alternative to M mode array) ──────────
@@ -127,21 +130,20 @@ public static class AioiEncoder
     // ─── Block operation instructions ─────────────────────────────────────
 
     /// <summary>
-    /// P1 — Block operation instruction (recommended; not overwritable).
-    ///
-    /// Format: P1[BlockNo(2)][Item...] where each Item = [Addr(4)][Display(5)]
-    /// The M command must be sent before P1 to configure LED/SEG/BUZ modes.
-    ///
-    /// Use P5 when you need to overwrite an in-progress instruction.
+    /// P1 — Steady-on block instruction. Format: P1[BlockNo(2)][Addr(4)][Display(5)]...
+    /// FP1 — Flash-mode block instruction. Same format, LED flashes instead of steady on.
+    /// Use P5/FP5 when you need to overwrite an in-progress instruction.
     /// </summary>
-    public static string BlockInstruct(string blockNo, IEnumerable<PickingInstruction> items)
-        => BuildBlockCommand("P1", blockNo, items);
+    public static string BlockInstruct(string blockNo, IEnumerable<PickingInstruction> items,
+                                       LightState ledMode = LightState.On)
+        => BuildBlockCommand(ledMode == LightState.Flash ? "FP1" : "P1", blockNo, items);
 
     /// <summary>
-    /// P5 — Rewritable block operation instruction (overwrites in-progress instruction).
+    /// P5/FP5 — Rewritable block operation instruction (overwrites in-progress instruction).
     /// </summary>
-    public static string BlockInstructOverwrite(string blockNo, IEnumerable<PickingInstruction> items)
-        => BuildBlockCommand("P5", blockNo, items);
+    public static string BlockInstructOverwrite(string blockNo, IEnumerable<PickingInstruction> items,
+                                                LightState ledMode = LightState.On)
+        => BuildBlockCommand(ledMode == LightState.Flash ? "FP5" : "P5", blockNo, items);
 
     private static string BuildBlockCommand(string cmd, string blockNo, IEnumerable<PickingInstruction> items)
     {

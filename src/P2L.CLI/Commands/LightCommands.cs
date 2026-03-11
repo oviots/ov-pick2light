@@ -54,7 +54,8 @@ public sealed class LightOnCommand : AsyncCommand<LightOnCommand.Settings>
 
         try
         {
-            await _engine.QuickLightAsync(s.Address, s.Quantity, s.Color, cts.Token);
+            var ledMode = s.Flash ? LightState.Flash : LightState.On;
+            await _engine.QuickLightAsync(s.Address, s.Quantity, s.Color, ledMode, cts.Token);
             AnsiConsole.MarkupLine($"[green]Light ON:[/] addr=[bold]{s.Address}[/] qty=[bold]{s.Quantity}[/] color=[bold]{s.Color}[/]");
             return 0;
         }
