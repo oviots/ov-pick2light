@@ -22,7 +22,8 @@ public sealed class AioiPacket
     /// </summary>
     public byte[] ToBytes()
     {
-        var cmdBytes = Encoding.ASCII.GetBytes(Command);
+        // Latin1 preserves all byte values 0–255 (required for binary mode-array bytes).
+        var cmdBytes = Encoding.Latin1.GetBytes(Command);
         var frame    = new byte[1 + 3 + 4 + cmdBytes.Length + 1];
         int pos      = 0;
 

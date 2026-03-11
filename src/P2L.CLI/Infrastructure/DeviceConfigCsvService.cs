@@ -43,7 +43,9 @@ public sealed class DeviceConfigCsvService
                        string filePath,
                        string gatewayDescription = "")
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(filePath) ?? ".");
+        var dir = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
 
         using var w = new StreamWriter(filePath, append: false, Encoding.UTF8);
 

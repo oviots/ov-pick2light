@@ -6,6 +6,7 @@ using P2L.Shared.Models;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 
 namespace P2L.CLI.Commands;
 
@@ -59,8 +60,9 @@ public sealed class ListDevicesCommand : AsyncCommand<ListDevicesCommand.Setting
 
     public override async Task<int> ExecuteAsync(CommandContext ctx, Settings s)
     {
-        using var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+        using var cts     = new CancellationTokenSource();
+        using var sigInt  = PosixSignalRegistration.Create(PosixSignal.SIGINT,  sig => { sig.Cancel = true; cts.Cancel(); });
+        using var sigTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, sig => { sig.Cancel = true; cts.Cancel(); });
 
         if (!_gateway.IsConnected)
         {

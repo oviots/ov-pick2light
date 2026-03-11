@@ -27,27 +27,39 @@ public static class AioiEncoder
     /// <summary>
     /// M — Mode array: defines LED/SEG/BUZ behavior for all subsequent PP1/L instructions.
     ///
-    /// Format: M[m1][m2][m3][m4]
-    ///   m1 = normal operation states   (LED2 LED1 LED0 SEG)
-    ///   m2 = after-CONFIRM states      (LED2 LED1 LED0 SEG)
-    ///   m3 = after-Fn-key states       (LED2 LED1 LED0 SEG)
-    ///   m4 = BUZ states               (normal afterConfirm afterFn –)
+    /// Uses the Aioi mode array format: M m1[3 bytes] m2[3 bytes] m4[1 byte]
+    ///   m1 = display status during instruction
+    ///   m2 = display status after CONFIRM press
+    ///   m4 = CONFIRM/Fn key configuration (0x40 = both enabled)
     ///
-    /// Each nibble: 1=Off 2=On 3=Flash 4=HighFlash F=NoChange
+    /// Binary byte encoding per Aioi spec §4.4.2:
+    ///   LED2 byte:      0x30 | state_nibble  (high nibble is fixed 0x3 prefix)
+    ///   LED1+LED0 byte: (LED1_nibble &lt;&lt; 4) | LED0_nibble
+    ///   SEG+BUZ byte:   (SEG_nibble  &lt;&lt; 4) | BUZ_nibble
+    /// State nibbles: Off=1, On=2, Flash=3, HighFlash=4, NoChange=0xF
+    ///
+    /// IMPORTANT: These bytes are binary (not ASCII). AioiPacket.ToBytes() must
+    /// use Latin1 encoding to preserve byte values above 0x7F.
     /// </summary>
     public static string SetModeArray(
-        (LightState Led2, LightState Led1, LightState Led0, LightState Seg) normal,
-        (LightState Led2, LightState Led1, LightState Led0, LightState Seg) afterConfirm,
-        (LightState Led2, LightState Led1, LightState Led0, LightState Seg) afterFn,
-        (LightState Buz, LightState BuzAfterConfirm, LightState BuzAfterFn) buz)
+        (LightState Led2, LightState Led1, LightState Led0, LightState Seg, LightState Buz) normal,
+        (LightState Led2, LightState Led1, LightState Led0, LightState Seg, LightState Buz) afterConfirm)
     {
-        static char N(LightState s) => s.ToCommandChar();
+        // LED2 byte: high nibble is fixed 0x3 prefix, low nibble is the state
+        static char Led2B(LightState s)                => (char)(0x30 | (byte)s);
+        // Packed-nibble byte: high nibble = first state, low nibble = second state
+        static char Pack(LightState hi, LightState lo) => (char)(((byte)hi << 4) | (byte)lo);
 
         return new StringBuilder("M")
-            .Append(N(normal.Led2)).Append(N(normal.Led1)).Append(N(normal.Led0)).Append(N(normal.Seg))
-            .Append(N(afterConfirm.Led2)).Append(N(afterConfirm.Led1)).Append(N(afterConfirm.Led0)).Append(N(afterConfirm.Seg))
-            .Append(N(afterFn.Led2)).Append(N(afterFn.Led1)).Append(N(afterFn.Led0)).Append(N(afterFn.Seg))
-            .Append(N(buz.Buz)).Append(N(buz.BuzAfterConfirm)).Append(N(buz.BuzAfterFn)).Append('1')
+            .Append("m1")
+            .Append(Led2B(normal.Led2))
+            .Append(Pack(normal.Led1,        normal.Led0))
+            .Append(Pack(normal.Seg,         normal.Buz))
+            .Append("m2")
+            .Append(Led2B(afterConfirm.Led2))
+            .Append(Pack(afterConfirm.Led1,  afterConfirm.Led0))
+            .Append(Pack(afterConfirm.Seg,   afterConfirm.Buz))
+            .Append("m4\x40")   // CONFIRM + Fn key: enabled; Fn-decrement: disabled
             .ToString();
     }
 
@@ -59,26 +71,21 @@ public static class AioiEncoder
     {
         var (led2, led1, led0) = color.ToLedStates(ledMode);
         return SetModeArray(
-            normal:       (led2, led1, led0, LightState.On),
-            afterConfirm: (LightState.Off, LightState.Off, LightState.Off, LightState.Off),
-            afterFn:      (LightState.NoChange, LightState.NoChange, LightState.NoChange, LightState.NoChange),
-            buz:          (LightState.Off, LightState.Off, LightState.Off));
+            normal:       (led2,          led1,          led0,          LightState.On,  LightState.Off),
+            afterConfirm: (LightState.Off, LightState.Off, LightState.Off, LightState.Off, LightState.Off));
     }
 
     /// <summary>
     /// Builds a full M-command from a <see cref="ModuleParameters"/> instance,
     /// giving control over SEG mode, buzzer, and after-CONFIRM behaviour.
-    /// After-Fn channels are left as NoChange (rarely adjusted in the field).
     /// </summary>
     public static string SetModeForParameters(ModuleParameters p)
     {
         var (led2, led1, led0) = p.Color.ToLedStates(p.LedMode);
         var ac = p.AfterConfirm;
         return SetModeArray(
-            normal:       (led2,             led1,             led0,             p.SegMode),
-            afterConfirm: (ac,               ac,               ac,               ac),
-            afterFn:      (LightState.NoChange, LightState.NoChange, LightState.NoChange, LightState.NoChange),
-            buz:          (p.BuzMode,        p.BuzAfterConfirm, LightState.Off));
+            normal:       (led2, led1, led0, p.SegMode,  p.BuzMode),
+            afterConfirm: (ac,   ac,   ac,   ac,         p.BuzAfterConfirm));
     }
 
     // ─── Block operation instructions ─────────────────────────────────────

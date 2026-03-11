@@ -6,6 +6,8 @@ using P2L.Hardware;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using System.ComponentModel;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
 
 namespace P2L.CLI.Commands;
 
@@ -81,19 +83,36 @@ public sealed class ExportCommand : AsyncCommand<ExportCommand.Settings>
 
     public override async Task<int> ExecuteAsync(CommandContext ctx, Settings s)
     {
-        using var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+        using var cts     = new CancellationTokenSource();
+        using var sigInt  = PosixSignalRegistration.Create(PosixSignal.SIGINT,  sig => { sig.Cancel = true; cts.Cancel(); });
+        using var sigTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, sig => { sig.Cancel = true; cts.Cancel(); });
 
-        // ── Optional: scan before export ──────────────────────────────────
-        if (s.Scan)
+        // ── Scan: explicit flag, or auto-triggered when registry is empty ─────
+        bool autoScan = !s.Scan && _registry.All.Count == 0;
+        if (s.Scan || autoScan)
         {
-            AnsiConsole.MarkupLine("[bold]Scanning for modules before export...[/]");
+            if (autoScan)
+                AnsiConsole.MarkupLine("[yellow]Registry is empty — auto-scanning for modules...[/]");
+            else
+                AnsiConsole.MarkupLine("[bold]Scanning for modules before export...[/]");
+
+            // ── Quick connectivity check before the full scan ──────────────
+            if (!await GatewayReachableAsync(_appSettings.Gateway.Host, _appSettings.Gateway.Port, cts.Token))
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]Cannot connect to gateway[/] [bold]{_appSettings.Gateway.Host}:{_appSettings.Gateway.Port}[/]");
+                AnsiConsole.MarkupLine("[grey]  • Check the gateway is powered on and on the same subnet[/]");
+                AnsiConsole.MarkupLine("[grey]  • Verify the address in [cyan]appsettings.json[/] → [bold]Gateway.Host / Gateway.Port[/][/]");
+                return 1;
+            }
+
             await _gateway.StartAsync(cts.Token);
 
             int total = s.To - s.From + 1;
             await AnsiConsole.Progress()
                 .AutoRefresh(true)
                 .HideCompleted(false)
+                .AutoClear(false)
                 .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(),
                          new PercentageColumn(), new RemainingTimeColumn(), new SpinnerColumn())
                 .StartAsync(async ctx2 =>
@@ -114,22 +133,52 @@ public sealed class ExportCommand : AsyncCommand<ExportCommand.Settings>
         var modules = _registry.All;
 
         if (modules.Count == 0)
+        {
             AnsiConsole.MarkupLine(
-                "[yellow]Registry is empty.[/] " +
-                "Run [grey]p2l devices[/] or use [grey]--scan[/] to discover modules first.");
+                "[yellow]No modules found.[/] Check gateway address/range or verify hardware is powered on.");
+            return 1;
+        }
 
-        var gwDesc = $"{_appSettings.Gateway.Host}:{_appSettings.Gateway.Port}";
-        _csv.Export(modules, outputPath, gwDesc);
+        AnsiConsole.MarkupLine($"[grey]Writing {modules.Count} module(s)...[/]");
+
+        var gwDesc   = $"{_appSettings.Gateway.Host}:{_appSettings.Gateway.Port}";
+        var fullPath = Path.GetFullPath(outputPath);
+        try
+        {
+            _csv.Export(modules, outputPath, gwDesc);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Failed to write CSV:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
 
         AnsiConsole.MarkupLine(
             $"[green]Exported[/] [bold]{modules.Count}[/] module(s) → " +
-            $"[cyan]{Path.GetFullPath(outputPath)}[/]");
-
-        if (modules.Count > 0)
-            AnsiConsole.MarkupLine(
-                "[grey]Edit the file, then run:[/] p2l import " +
-                $"{Path.GetFileName(outputPath)}");
+            $"[cyan]{Markup.Escape(fullPath)}[/]");
+        AnsiConsole.MarkupLine(
+            $"[grey]Edit the file, then run:[/] p2l import {Markup.Escape(Path.GetFileName(outputPath))}");
 
         return 0;
+    }
+
+    /// <summary>
+    /// Attempts a TCP connection with a 3-second timeout to verify the gateway is reachable
+    /// before committing to a full scan (which can take minutes on an unreachable host).
+    /// </summary>
+    private static async Task<bool> GatewayReachableAsync(string host, int port, CancellationToken ct)
+    {
+        using var client  = new TcpClient();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(3_000);
+        try
+        {
+            await client.ConnectAsync(host, port, timeout.Token);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

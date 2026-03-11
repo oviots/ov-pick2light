@@ -15,7 +15,6 @@ var config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: true)
     .AddEnvironmentVariables("P2L_")
-    .AddCommandLine(args)
     .Build();
 
 var appSettings = config.Get<AppSettings>() ?? new AppSettings();
@@ -71,8 +70,8 @@ services.AddTransient<ImportCommand>();
 
 // ─── CLI application ──────────────────────────────────────────────────────
 
-var registrar = new TypeRegistrar(services);
-var app       = new CommandApp<RootCommand>(registrar);
+var registrar  = new TypeRegistrar(services);
+var app        = new CommandApp<RootCommand>(registrar);
 
 app.Configure(cfg =>
 {
@@ -110,4 +109,10 @@ app.Configure(cfg =>
 #endif
 });
 
-return await app.RunAsync(args);
+var exitCode = await app.RunAsync(args);
+
+// Explicitly await async disposal so IAsyncDisposable singletons
+// (HeartbeatService, AioiGateway, etc.) are fully torn down before exit.
+await registrar.DisposeAsync();
+
+return exitCode;

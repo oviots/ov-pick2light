@@ -1,9 +1,11 @@
 using P2L.Core;
+using P2L.Hardware;
 using P2L.Shared.Enums;
 using P2L.Shared.Models;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 
 namespace P2L.CLI.Commands;
 
@@ -12,8 +14,13 @@ namespace P2L.CLI.Commands;
 public sealed class LightOnCommand : AsyncCommand<LightOnCommand.Settings>
 {
     private readonly PickingEngine _engine;
+    private readonly AioiGateway   _gateway;
 
-    public LightOnCommand(PickingEngine engine) => _engine = engine;
+    public LightOnCommand(PickingEngine engine, AioiGateway gateway)
+    {
+        _engine  = engine;
+        _gateway = gateway;
+    }
 
     public sealed class Settings : CommandSettings
     {
@@ -37,10 +44,30 @@ public sealed class LightOnCommand : AsyncCommand<LightOnCommand.Settings>
 
     public override async Task<int> ExecuteAsync(CommandContext ctx, Settings s)
     {
-        var mode = s.Flash ? LightState.Flash : LightState.On;
-        await _engine.QuickLightAsync(s.Address, s.Quantity, s.Color);
-        AnsiConsole.MarkupLine($"[green]Light ON:[/] addr=[bold]{s.Address}[/] qty=[bold]{s.Quantity}[/] color=[bold]{s.Color}[/]");
-        return 0;
+        using var cts     = new CancellationTokenSource();
+        using var sigInt  = PosixSignalRegistration.Create(PosixSignal.SIGINT,  sig => { sig.Cancel = true; cts.Cancel(); });
+        using var sigTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, sig => { sig.Cancel = true; cts.Cancel(); });
+
+        if (!_gateway.IsConnected)
+            await _gateway.StartAsync(cts.Token);
+        await _gateway.EnsureInitializedAsync(cts.Token);
+
+        try
+        {
+            await _engine.QuickLightAsync(s.Address, s.Quantity, s.Color, cts.Token);
+            AnsiConsole.MarkupLine($"[green]Light ON:[/] addr=[bold]{s.Address}[/] qty=[bold]{s.Quantity}[/] color=[bold]{s.Color}[/]");
+            return 0;
+        }
+        catch (TimeoutException ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Timeout:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
     }
 }
 
@@ -49,8 +76,13 @@ public sealed class LightOnCommand : AsyncCommand<LightOnCommand.Settings>
 public sealed class LightOffCommand : AsyncCommand<LightOffCommand.Settings>
 {
     private readonly PickingEngine _engine;
+    private readonly AioiGateway   _gateway;
 
-    public LightOffCommand(PickingEngine engine) => _engine = engine;
+    public LightOffCommand(PickingEngine engine, AioiGateway gateway)
+    {
+        _engine  = engine;
+        _gateway = gateway;
+    }
 
     public sealed class Settings : CommandSettings
     {
@@ -61,9 +93,30 @@ public sealed class LightOffCommand : AsyncCommand<LightOffCommand.Settings>
 
     public override async Task<int> ExecuteAsync(CommandContext ctx, Settings s)
     {
-        await _engine.ExtinguishAsync(s.Address);
-        AnsiConsole.MarkupLine($"[grey]Light OFF:[/] addr=[bold]{s.Address}[/]");
-        return 0;
+        using var cts     = new CancellationTokenSource();
+        using var sigInt  = PosixSignalRegistration.Create(PosixSignal.SIGINT,  sig => { sig.Cancel = true; cts.Cancel(); });
+        using var sigTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, sig => { sig.Cancel = true; cts.Cancel(); });
+
+        if (!_gateway.IsConnected)
+            await _gateway.StartAsync(cts.Token);
+        await _gateway.EnsureInitializedAsync(cts.Token);
+
+        try
+        {
+            await _engine.ExtinguishAsync(s.Address, cts.Token);
+            AnsiConsole.MarkupLine($"[grey]Light OFF:[/] addr=[bold]{s.Address}[/]");
+            return 0;
+        }
+        catch (TimeoutException ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Timeout:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
     }
 }
 
@@ -72,8 +125,13 @@ public sealed class LightOffCommand : AsyncCommand<LightOffCommand.Settings>
 public sealed class TerminateAllCommand : AsyncCommand<TerminateAllCommand.Settings>
 {
     private readonly PickingEngine _engine;
+    private readonly AioiGateway   _gateway;
 
-    public TerminateAllCommand(PickingEngine engine) => _engine = engine;
+    public TerminateAllCommand(PickingEngine engine, AioiGateway gateway)
+    {
+        _engine  = engine;
+        _gateway = gateway;
+    }
 
     public sealed class Settings : CommandSettings
     {
@@ -85,9 +143,30 @@ public sealed class TerminateAllCommand : AsyncCommand<TerminateAllCommand.Setti
 
     public override async Task<int> ExecuteAsync(CommandContext ctx, Settings s)
     {
-        await _engine.FinishBatchAsync(s.BlockNo);
-        AnsiConsole.MarkupLine("[green]All lights terminated.[/]");
-        return 0;
+        using var cts     = new CancellationTokenSource();
+        using var sigInt  = PosixSignalRegistration.Create(PosixSignal.SIGINT,  sig => { sig.Cancel = true; cts.Cancel(); });
+        using var sigTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, sig => { sig.Cancel = true; cts.Cancel(); });
+
+        if (!_gateway.IsConnected)
+            await _gateway.StartAsync(cts.Token);
+        await _gateway.EnsureInitializedAsync(cts.Token);
+
+        try
+        {
+            await _engine.FinishBatchAsync(s.BlockNo, cts.Token);
+            AnsiConsole.MarkupLine("[green]All lights terminated.[/]");
+            return 0;
+        }
+        catch (TimeoutException ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Timeout:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
     }
 }
 
@@ -96,8 +175,13 @@ public sealed class TerminateAllCommand : AsyncCommand<TerminateAllCommand.Setti
 public sealed class BatchPickCommand : AsyncCommand<BatchPickCommand.Settings>
 {
     private readonly PickingEngine _engine;
+    private readonly AioiGateway   _gateway;
 
-    public BatchPickCommand(PickingEngine engine) => _engine = engine;
+    public BatchPickCommand(PickingEngine engine, AioiGateway gateway)
+    {
+        _engine  = engine;
+        _gateway = gateway;
+    }
 
     public sealed class Settings : CommandSettings
     {
@@ -116,6 +200,10 @@ public sealed class BatchPickCommand : AsyncCommand<BatchPickCommand.Settings>
 
     public override async Task<int> ExecuteAsync(CommandContext ctx, Settings s)
     {
+        using var cts     = new CancellationTokenSource();
+        using var sigInt  = PosixSignalRegistration.Create(PosixSignal.SIGINT,  sig => { sig.Cancel = true; cts.Cancel(); });
+        using var sigTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, sig => { sig.Cancel = true; cts.Cancel(); });
+
         var instructions = ParseInstructions(s.Instructions, s.Color, s.BlockNo);
         if (instructions.Count == 0)
         {
@@ -123,9 +211,26 @@ public sealed class BatchPickCommand : AsyncCommand<BatchPickCommand.Settings>
             return 1;
         }
 
-        await _engine.StartBatchAsync(instructions);
-        AnsiConsole.MarkupLine($"[green]Batch started:[/] {instructions.Count} modules lit");
-        return 0;
+        if (!_gateway.IsConnected)
+            await _gateway.StartAsync(cts.Token);
+        await _gateway.EnsureInitializedAsync(cts.Token);
+
+        try
+        {
+            await _engine.StartBatchAsync(instructions, cts.Token);
+            AnsiConsole.MarkupLine($"[green]Batch started:[/] {instructions.Count} modules lit");
+            return 0;
+        }
+        catch (TimeoutException ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Timeout:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
     }
 
     private static IReadOnlyList<PickingInstruction> ParseInstructions(

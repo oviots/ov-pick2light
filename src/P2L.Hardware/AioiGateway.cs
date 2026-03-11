@@ -28,6 +28,11 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     private readonly ConcurrentDictionary<int, TaskCompletionSource<AioiDecoder.ParsedResponse>>
         _pending = new();
 
+    private int _initialized; // 0 = no, 1 = yes (Interlocked flag)
+
+    /// <summary>True after a successful Z initialization command has been sent.</summary>
+    public bool IsInitialized => _initialized == 1;
+
     /// <summary>Fires each time the controller reports a button-press confirmation.</summary>
     public event Action<ConfirmationEvent>? Confirmed;
 
@@ -57,8 +62,24 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     /// Sends the Z (full initialization) command and waits for the "o" ACK.
     /// Call this once after connecting before sending any other commands.
     /// </summary>
-    public Task InitializeAsync(CancellationToken ct = default)
-        => SendAndWaitAsync(AioiEncoder.Initialize(), ct);
+    public async Task InitializeAsync(CancellationToken ct = default)
+    {
+        await SendAndWaitAsync(AioiEncoder.Initialize(), ct);
+        Interlocked.Exchange(ref _initialized, 1);
+    }
+
+    /// <summary>
+    /// Ensures Z initialization has been sent. Safe to call multiple times — only
+    /// sends Z once per gateway instance. Call before any M/L/PP1/D commands.
+    /// </summary>
+    public async Task EnsureInitializedAsync(CancellationToken ct = default)
+    {
+        if (Interlocked.CompareExchange(ref _initialized, 1, 0) == 0)
+        {
+            _log.LogInformation("Auto-initializing gateway (Z command)");
+            await SendAndWaitAsync(AioiEncoder.Initialize(), ct);
+        }
+    }
 
     /// <summary>
     /// Sends Z1 (hardware reset) and waits for ACK.
@@ -238,7 +259,7 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Synchronous disposal for DI containers that call <see cref="IDisposable.Dispose"/>.
-    /// Blocks until the underlying transport is torn down (acceptable at program exit).
+    /// Fire-and-forget: the OS will reclaim the TCP socket at process exit.
     /// </summary>
-    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
+    public void Dispose() => _ = DisposeAsync().AsTask();
 }

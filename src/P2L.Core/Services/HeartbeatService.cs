@@ -8,7 +8,7 @@ namespace P2L.Core.Services;
 /// Sends periodic keep-alive messages to the gateway to prevent TCP timeout during idle periods.
 /// Uses Az0000 (error display module status inquiry) — a harmless read-only operation.
 /// </summary>
-public sealed class HeartbeatService : IAsyncDisposable
+public sealed class HeartbeatService : IAsyncDisposable, IDisposable
 {
     private readonly AioiGateway _gateway;
     private readonly ILogger     _log;
@@ -55,4 +55,7 @@ public sealed class HeartbeatService : IAsyncDisposable
         }
         _cts.Dispose();
     }
+
+    /// <summary>Synchronous wrapper for DI containers that call IDisposable.Dispose.</summary>
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 }
