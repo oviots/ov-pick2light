@@ -184,11 +184,14 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
 
         _log.LogDebug("[MQTT] Publishing {Type} → {Topic}", evt.Type, topic);
         var result = await _client.PublishAsync(msg, ct);
-        if (result.ReasonCode != MqttClientPublishReasonCode.Success)
+        // NoMatchingSubscribers (0x10) is an MQTT v5 success code — message reached the broker,
+        // no subscriber was connected at that moment. Retained messages are still stored.
+        if (result.ReasonCode is MqttClientPublishReasonCode.Success
+                               or MqttClientPublishReasonCode.NoMatchingSubscribers)
+            _log.LogDebug("[MQTT] Published  {Type} → {Topic}", evt.Type, topic);
+        else
             _log.LogWarning("[MQTT] Publish rejected: type={Type} topic={Topic} reason={Reason}",
                 evt.Type, topic, result.ReasonCode);
-        else
-            _log.LogDebug("[MQTT] Published  {Type} → {Topic}", evt.Type, topic);
     }
 
     // ─── Public enqueue for bridge-status events ─────────────────────────
