@@ -1,0 +1,40 @@
+using P2L.Shared.Enums;
+
+namespace P2L.Shared.Models;
+
+/// <summary>
+/// Tracks the live state of a single Aioi light module (address 0001–7999).
+/// Thread-safe by design; store in a <see cref="System.Collections.Concurrent.ConcurrentDictionary{TKey,TValue}"/>.
+/// </summary>
+public sealed class LightModuleState
+{
+    /// <summary>4-digit BCD address string, e.g. "0001".</summary>
+    public string Address { get; init; } = string.Empty;
+
+    /// <summary>Current operational status reported by the controller.</summary>
+    public ModuleStatus Status { get; set; } = ModuleStatus.Standby;
+
+    /// <summary>Active display value (up to 5 chars, right-aligned).</summary>
+    public string DisplayData { get; set; } = "     ";
+
+    /// <summary>Currently lit color.</summary>
+    public LightColor Color { get; set; } = LightColor.Off;
+
+    /// <summary>Active LED display mode (steady, flash, etc.).</summary>
+    public LightState LedMode { get; set; } = LightState.Off;
+
+    /// <summary>UTC time of last instruction sent to this module.</summary>
+    public DateTime? LastInstructionAt { get; set; }
+
+    /// <summary>UTC time the last CONFIRM button press was received.</summary>
+    public DateTime? LastConfirmedAt { get; set; }
+
+    /// <summary>Quantity after +/- key adjustment (shortage mode).</summary>
+    public int? AdjustedQuantity { get; set; }
+
+    /// <summary>Block number this module belongs to ("00"–"99").</summary>
+    public string BlockNo { get; set; } = "00";
+
+    public override string ToString() =>
+        $"[{Address}] {Status} | {Color}/{LedMode} | \"{DisplayData}\"";
+}

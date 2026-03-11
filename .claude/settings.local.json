@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(brew install:*)",
+      "Bash(pdftotext:*)",
+      "Bash(python3:*)",
+      "Bash(pip3 install:*)",
+      "Read(//usr/local/share/dotnet/**)",
+      "Read(//usr/**)",
+      "Bash(export:*)",
+      "Bash(chmod +x:*)",
+      "Bash(~/.dotnet/dotnet:*)"
+    ]
+  }
+}

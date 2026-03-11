@@ -1,0 +1,92 @@
+using Microsoft.Extensions.Logging;
+
+namespace P2L.CLI.Infrastructure;
+
+/// <summary>
+/// A minimal AOT-compatible rotating file logger for hardware TX/RX audit trails.
+///
+/// Creates files named p2l_YYYYMMDD_HH.log in the configured directory.
+/// Rolls to a new file when the size limit is reached or the hour changes.
+/// </summary>
+public sealed class RotatingFileLogger : ILogger
+{
+    private readonly string _category;
+    private readonly RotatingFileLoggerProvider _provider;
+
+    public RotatingFileLogger(string category, RotatingFileLoggerProvider provider)
+    {
+        _category = category;
+        _provider = provider;
+    }
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+    public bool IsEnabled(LogLevel level) => level >= _provider.MinLevel;
+
+    public void Log<TState>(LogLevel level, EventId eventId, TState state,
+        Exception? exception, Func<TState, Exception?, string> formatter)
+    {
+        if (!IsEnabled(level)) return;
+        var message = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level,-11}] [{_category}] {formatter(state, exception)}";
+        if (exception is not null)
+            message += $"\n{exception}";
+        _provider.Write(message);
+    }
+}
+
+public sealed class RotatingFileLoggerProvider : ILoggerProvider
+{
+    private readonly string  _directory;
+    private readonly long    _maxBytes;
+    public  LogLevel MinLevel { get; }
+
+    private StreamWriter? _writer;
+    private string        _currentPath = "";
+    private long          _currentSize;
+    private readonly object _lock = new();
+
+    public RotatingFileLoggerProvider(string directory, long maxBytes, LogLevel minLevel = LogLevel.Debug)
+    {
+        _directory = directory;
+        _maxBytes  = maxBytes;
+        MinLevel   = minLevel;
+        Directory.CreateDirectory(directory);
+    }
+
+    public ILogger CreateLogger(string categoryName) =>
+        new RotatingFileLogger(categoryName, this);
+
+    public void Write(string line)
+    {
+        lock (_lock)
+        {
+            EnsureWriter();
+            _writer!.WriteLine(line);
+            _writer.Flush();
+            _currentSize += line.Length + Environment.NewLine.Length;
+
+            if (_currentSize >= _maxBytes)
+            {
+                _writer.Dispose();
+                _writer = null;
+            }
+        }
+    }
+
+    private void EnsureWriter()
+    {
+        var path = Path.Combine(_directory,
+            $"p2l_{DateTime.Now:yyyyMMdd_HH}.log");
+
+        if (_writer is not null && path == _currentPath) return;
+
+        _writer?.Dispose();
+        _currentPath = path;
+        _writer      = new StreamWriter(path, append: true) { AutoFlush = false };
+        _currentSize = new FileInfo(path).Exists ? new FileInfo(path).Length : 0;
+    }
+
+    public void Dispose()
+    {
+        lock (_lock) _writer?.Dispose();
+    }
+}

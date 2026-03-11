@@ -1,0 +1,8 @@
+{
+  "GatewayHost":    "192.168.1.254",
+  "GatewayPort":    5003,
+  "TestModuleAddr": "0001",
+  "LightOnMs":      2000,
+  "PingTimeoutMs":  1000,
+  "TcpTimeoutMs":   5000
+}

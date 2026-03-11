@@ -1,0 +1,72 @@
+using P2L.CLI.Dashboard;
+using P2L.Core;
+using P2L.Core.Services;
+using P2L.Hardware;
+using Spectre.Console;
+using Spectre.Console.Cli;
+using System.ComponentModel;
+
+namespace P2L.CLI.Commands;
+
+/// <summary>
+/// Root command: launches the interactive live dashboard.
+/// Running `p2l` with no sub-command opens the full warehouse operator view.
+/// </summary>
+public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
+{
+    private readonly AioiGateway        _gateway;
+    private readonly LightModuleRegistry _registry;
+    private readonly HeartbeatService    _heartbeat;
+
+    public RootCommand(AioiGateway gateway, LightModuleRegistry registry, HeartbeatService heartbeat)
+    {
+        _gateway   = gateway;
+        _registry  = registry;
+        _heartbeat = heartbeat;
+    }
+
+    public sealed class Settings : CommandSettings
+    {
+        [CommandOption("--no-init")]
+        [Description("Skip sending the Z initialization command on startup")]
+        public bool NoInit { get; init; }
+    }
+
+    public override async Task<int> ExecuteAsync(CommandContext ctx, Settings settings)
+    {
+        using var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            cts.Cancel();
+        };
+
+        AnsiConsole.MarkupLine("[bold yellow]Pick2Light[/] starting...");
+
+        await _gateway.StartAsync(cts.Token);
+        _heartbeat.Start();
+
+        if (!settings.NoInit)
+        {
+            AnsiConsole.Status()
+                .Start("Initializing gateway...", _ => { });
+            try
+            {
+                await _gateway.InitializeAsync(cts.Token);
+                AnsiConsole.MarkupLine("[green]Gateway initialized.[/]");
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[red]Init failed:[/] {ex.Message}");
+                AnsiConsole.MarkupLine("[grey]Dashboard will retry connection automatically.[/]");
+            }
+        }
+
+        var dashboard = new WarehouseDashboard(_gateway, _registry);
+        await dashboard.RunAsync(cts.Token);
+
+        AnsiConsole.MarkupLine("[grey]Shutting down...[/]");
+        await _gateway.TerminateBlockAsync(ct: CancellationToken.None);
+        return 0;
+    }
+}

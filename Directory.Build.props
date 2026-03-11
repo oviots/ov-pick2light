@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <!-- Treat warnings as errors in CI -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+</Project>
