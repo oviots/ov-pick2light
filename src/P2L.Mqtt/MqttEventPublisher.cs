@@ -99,9 +99,17 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
 
     private async Task DrainAsync(CancellationToken ct)
     {
-        await foreach (var evt in _queue.Reader.ReadAllAsync(ct))
+        while (!ct.IsCancellationRequested)
         {
-            if (!_client.IsConnected) continue;
+            // Block until there is something in the queue
+            if (!await _queue.Reader.WaitToReadAsync(ct)) break;
+
+            // Wait until MQTT is connected before consuming the event
+            while (!_client.IsConnected && !ct.IsCancellationRequested)
+                await Task.Delay(200, ct);
+
+            if (!_queue.Reader.TryRead(out var evt)) continue;
+
             try   { await PublishAsync(evt, ct); }
             catch (OperationCanceledException) { break; }
             catch (Exception ex) { _log.LogWarning("[MQTT] Publish failed: {Err}", ex.Message); }
@@ -110,25 +118,40 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
 
     private Task PublishAsync(MqttEvent evt, CancellationToken ct)
     {
-        var payload = evt switch
-        {
-            ConfirmedEvt    e => JsonSerializer.SerializeToUtf8Bytes(e,
-                                    P2LMqttJsonContext.Default.ConfirmedEvt),
-            LightChangedEvt e => JsonSerializer.SerializeToUtf8Bytes(e,
-                                    P2LMqttJsonContext.Default.LightChangedEvt),
-            BatchCompletedEvt e => JsonSerializer.SerializeToUtf8Bytes(e,
-                                    P2LMqttJsonContext.Default.BatchCompletedEvt),
-            BridgeStatusEvt e => JsonSerializer.SerializeToUtf8Bytes(e,
-                                    P2LMqttJsonContext.Default.BridgeStatusEvt),
-            _ => null,
-        };
+        string  topic;
+        byte[]? payload;
+        bool    retain = false;
 
-        if (payload is null) return Task.CompletedTask;
+        switch (evt)
+        {
+            case ConfirmedEvt e:
+                topic   = _settings.EventTopic;
+                payload = JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.ConfirmedEvt);
+                break;
+            case LightChangedEvt e:
+                topic   = _settings.EventTopic;
+                payload = JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.LightChangedEvt);
+                break;
+            case BatchCompletedEvt e:
+                topic   = _settings.EventTopic;
+                payload = JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.BatchCompletedEvt);
+                break;
+            case BridgeStatusEvt e:
+                // Status goes to its own topic with retain=true so new subscribers
+                // immediately see the current bridge/gateway state.
+                topic   = _settings.StatusTopic;
+                retain  = true;
+                payload = JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.BridgeStatusEvt);
+                break;
+            default:
+                return Task.CompletedTask;
+        }
 
         var msg = new MqttApplicationMessageBuilder()
-            .WithTopic(_settings.EventTopic)
+            .WithTopic(topic)
             .WithPayload(payload)
             .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
+            .WithRetainFlag(retain)
             .Build();
 
         return _client.PublishAsync(msg, ct);
