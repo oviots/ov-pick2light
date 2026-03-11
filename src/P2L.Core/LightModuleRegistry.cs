@@ -82,6 +82,37 @@ public sealed class LightModuleRegistry
     }
 
     /// <summary>
+    /// Updates a module's state after a <c>ConfigureModuleAsync</c> call.
+    /// Overwrites colour, LED/SEG/BUZ modes and display data; preserves confirmation history.
+    /// </summary>
+    public LightModuleState SetConfigured(string address, ModuleParameters parameters, string displayData)
+    {
+        var addr = Normalize(address);
+        return _modules.AddOrUpdate(addr,
+            _ => new LightModuleState
+            {
+                Address           = addr,
+                Status            = ModuleStatus.Operating,
+                DisplayData       = displayData,
+                Color             = parameters.Color,
+                LedMode           = parameters.LedMode,
+                SegMode           = parameters.SegMode,
+                BuzMode           = parameters.BuzMode,
+                LastInstructionAt = DateTime.UtcNow,
+            },
+            (_, existing) =>
+            {
+                existing.DisplayData       = displayData;
+                existing.Color             = parameters.Color;
+                existing.LedMode           = parameters.LedMode;
+                existing.SegMode           = parameters.SegMode;
+                existing.BuzMode           = parameters.BuzMode;
+                existing.LastInstructionAt = DateTime.UtcNow;
+                return existing;
+            });
+    }
+
+    /// <summary>
     /// Registers a module discovered via an Az scan.
     /// If the module is already tracked, only its status is refreshed; other fields are preserved.
     /// </summary>

@@ -23,6 +23,12 @@ public sealed class LightModuleState
     /// <summary>Active LED display mode (steady, flash, etc.).</summary>
     public LightState LedMode { get; set; } = LightState.Off;
 
+    /// <summary>Active 7-segment display mode.</summary>
+    public LightState SegMode { get; set; } = LightState.On;
+
+    /// <summary>Active buzzer mode.</summary>
+    public LightState BuzMode { get; set; } = LightState.Off;
+
     /// <summary>UTC time of last instruction sent to this module.</summary>
     public DateTime? LastInstructionAt { get; set; }
 

@@ -107,6 +107,28 @@ public sealed class PickingEngine : IDisposable
         return _gateway.InstructSingleAsync(inst, ct);
     }
 
+    /// <summary>
+    /// Reconfigures a module's lighting and display parameters in-place using M + L commands.
+    /// If <paramref name="newQuantity"/> is null the currently displayed quantity is preserved;
+    /// if the module is not yet in the registry, the display defaults to zero.
+    /// Does not affect active batch tracking.
+    /// </summary>
+    public async Task ConfigureModuleAsync(string           address,
+                                           int?             newQuantity,
+                                           ModuleParameters parameters,
+                                           CancellationToken ct = default)
+    {
+        var addr    = address.PadLeft(4, '0');
+        var current = _registry.Get(addr);
+
+        var displayData = newQuantity.HasValue
+            ? newQuantity.Value.ToString().PadLeft(5)
+            : (current?.DisplayData ?? "    0");
+
+        await _gateway.ConfigureModuleAsync(addr, displayData, parameters, ct);
+        _registry.SetConfigured(addr, parameters, displayData);
+    }
+
     /// <summary>Turns off a single module immediately.</summary>
     public Task ExtinguishAsync(string address, CancellationToken ct = default)
     {

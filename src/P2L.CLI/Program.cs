@@ -64,6 +64,7 @@ services.AddTransient<LightOffCommand>();
 services.AddTransient<TerminateAllCommand>();
 services.AddTransient<BatchPickCommand>();
 services.AddTransient<ListDevicesCommand>();
+services.AddTransient<ConfigureDeviceCommand>();
 
 // ─── CLI application ──────────────────────────────────────────────────────
 
@@ -84,6 +85,8 @@ app.Configure(cfg =>
               .WithDescription("Turn off a module");
         branch.AddCommand<TerminateAllCommand>("terminate")
               .WithDescription("Terminate all (or block) modules");
+        branch.AddCommand<ConfigureDeviceCommand>("set")
+              .WithDescription("Adjust colour, mode, SEG, buzzer or display of a module");
     });
 
     cfg.AddCommand<BatchPickCommand>("pick")

@@ -148,6 +148,26 @@ public sealed class AioiGateway : IAsyncDisposable
                                                                     CancellationToken ct = default)
         => SendAndWaitAsync(AioiEncoder.ModuleStatusInquiry(address), ct);
 
+    /// <summary>
+    /// Reconfigures an active module's lighting and display parameters in-place
+    /// by sending an M command (mode array) followed by an L command (display data).
+    /// Use this to adjust colour, flash mode, SEG mode, buzzer, or after-CONFIRM
+    /// behaviour without stopping and restarting a picking operation.
+    /// </summary>
+    public async Task ConfigureModuleAsync(string address,
+                                           string displayData,
+                                           ModuleParameters parameters,
+                                           CancellationToken ct = default)
+    {
+        await SendAndWaitAsync(AioiEncoder.SetModeForParameters(parameters), ct);
+        await SendAndWaitAsync(AioiEncoder.SingleInstruct(address, displayData), ct);
+
+        _log.LogInformation(
+            "[CONFIG] addr={Addr} color={C} mode={M} seg={S} buz={B} afterConfirm={AC}",
+            address, parameters.Color, parameters.LedMode,
+            parameters.SegMode, parameters.BuzMode, parameters.AfterConfirm);
+    }
+
     // ─── Internal ─────────────────────────────────────────────────────────
 
     private async Task<AioiDecoder.ParsedResponse> SendAndWaitAsync(string command,

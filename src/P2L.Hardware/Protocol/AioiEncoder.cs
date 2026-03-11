@@ -65,6 +65,22 @@ public static class AioiEncoder
             buz:          (LightState.Off, LightState.Off, LightState.Off));
     }
 
+    /// <summary>
+    /// Builds a full M-command from a <see cref="ModuleParameters"/> instance,
+    /// giving control over SEG mode, buzzer, and after-CONFIRM behaviour.
+    /// After-Fn channels are left as NoChange (rarely adjusted in the field).
+    /// </summary>
+    public static string SetModeForParameters(ModuleParameters p)
+    {
+        var (led2, led1, led0) = p.Color.ToLedStates(p.LedMode);
+        var ac = p.AfterConfirm;
+        return SetModeArray(
+            normal:       (led2,             led1,             led0,             p.SegMode),
+            afterConfirm: (ac,               ac,               ac,               ac),
+            afterFn:      (LightState.NoChange, LightState.NoChange, LightState.NoChange, LightState.NoChange),
+            buz:          (p.BuzMode,        p.BuzAfterConfirm, LightState.Off));
+    }
+
     // ─── Block operation instructions ─────────────────────────────────────
 
     /// <summary>
