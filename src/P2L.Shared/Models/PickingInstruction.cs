@@ -33,7 +33,7 @@ public sealed class PickingInstruction
 
     /// <summary>Formats the quantity as the 5-character display data string.</summary>
     public string FormattedDisplay =>
-        Quantity.ToString().PadLeft(AioiConstants.DisplayDataLength);
+        Quantity.ToString().PadLeft(AioiConstants.DisplayDataLength, '0');
 
     private static class AioiConstants
     {

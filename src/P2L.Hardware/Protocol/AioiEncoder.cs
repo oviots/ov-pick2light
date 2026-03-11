@@ -88,24 +88,60 @@ public static class AioiEncoder
             afterConfirm: (ac,   ac,   ac,   ac,         p.BuzAfterConfirm));
     }
 
+    // ─── Per-address mode commands (alternative to M mode array) ──────────
+
+    /// <summary>
+    /// Am1 — Sets the display status (LED/SEG/BUZ during instruction) for a specific address.
+    ///
+    /// Format: Am1[Address(4)][LED2_byte][LED1+LED0_byte][SEG+BUZ_byte]
+    /// Binary byte encoding (same as M mode array m1 section):
+    ///   LED2 byte:      0x30 | state_nibble
+    ///   LED1+LED0 byte: (LED1_nibble &lt;&lt; 4) | LED0_nibble
+    ///   SEG+BUZ byte:   (SEG_nibble  &lt;&lt; 4) | BUZ_nibble
+    ///
+    /// Example from Lightstep PG §4.7.1: Am10001$33$11$23
+    ///   → LED2=Flash, LED1=Off, LED0=Off, SEG=On, BUZ=Flash
+    /// </summary>
+    public static string SetModeAm1(string address,
+                                     LightState led2, LightState led1, LightState led0,
+                                     LightState seg,  LightState buz)
+    {
+        static char Led2B(LightState s)                => (char)(0x30 | (byte)s);
+        static char Pack(LightState hi, LightState lo) => (char)(((byte)hi << 4) | (byte)lo);
+        return $"Am1{address.PadLeft(4, '0')}{Led2B(led2)}{Pack(led1, led0)}{Pack(seg, buz)}";
+    }
+
+    /// <summary>
+    /// Am2 — Sets the display status after CONFIRM press for a specific address.
+    /// Same binary byte format as Am1.
+    /// </summary>
+    public static string SetModeAm2(string address,
+                                     LightState led2, LightState led1, LightState led0,
+                                     LightState seg,  LightState buz)
+    {
+        static char Led2B(LightState s)                => (char)(0x30 | (byte)s);
+        static char Pack(LightState hi, LightState lo) => (char)(((byte)hi << 4) | (byte)lo);
+        return $"Am2{address.PadLeft(4, '0')}{Led2B(led2)}{Pack(led1, led0)}{Pack(seg, buz)}";
+    }
+
     // ─── Block operation instructions ─────────────────────────────────────
 
     /// <summary>
-    /// PP1 — Block operation instruction (recommended; not overwritable).
+    /// P1 — Block operation instruction (recommended; not overwritable).
     ///
-    /// Format: PP1[BlockNo(2)][Item...] where each Item = [Addr(4)][Display(5)]
-    /// The M command must be sent before PP1 to configure LED/SEG/BUZ modes.
+    /// Format: P1[BlockNo(2)][Item...] where each Item = [Addr(4)][Display(5)]
+    /// The M command must be sent before P1 to configure LED/SEG/BUZ modes.
     ///
-    /// Use PP5 when you need to overwrite an in-progress instruction.
+    /// Use P5 when you need to overwrite an in-progress instruction.
     /// </summary>
     public static string BlockInstruct(string blockNo, IEnumerable<PickingInstruction> items)
-        => BuildBlockCommand("PP1", blockNo, items);
+        => BuildBlockCommand("P1", blockNo, items);
 
     /// <summary>
-    /// PP5 — Rewritable block operation instruction (overwrites in-progress instruction).
+    /// P5 — Rewritable block operation instruction (overwrites in-progress instruction).
     /// </summary>
     public static string BlockInstructOverwrite(string blockNo, IEnumerable<PickingInstruction> items)
-        => BuildBlockCommand("PP5", blockNo, items);
+        => BuildBlockCommand("P5", blockNo, items);
 
     private static string BuildBlockCommand(string cmd, string blockNo, IEnumerable<PickingInstruction> items)
     {
@@ -130,7 +166,7 @@ public static class AioiEncoder
     public static string SingleInstruct(string address, string displayData)
     {
         if (displayData.Length > 5) displayData = displayData[^5..];
-        return $"L{address.PadLeft(4, '0')}{displayData.PadLeft(5)}";
+        return $"L{address.PadLeft(4, '0')}{displayData.PadLeft(5, '0')}";
     }
 
     // ─── Termination ───────────────────────────────────────────────────────

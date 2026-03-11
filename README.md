@@ -1,7 +1,7 @@
 # Pick2Light (P2L) — Aioi Light Module Controller
 
 A cross-platform .NET 10 CLI for controlling Aioi Systems L-PICK light modules over TCP.
-Runs as an interactive warehouse dashboard or as one-shot commands from scripts or CI.
+Runs as one-shot commands from scripts, CI, or automation pipelines.
 Publishes to a **single self-contained native binary** (Native AOT) with no runtime dependency.
 
 ---
@@ -14,7 +14,6 @@ Publishes to a **single self-contained native binary** (Native AOT) with no runt
 4. [Configuration](#4-configuration)
 5. [USB-LAN Connection Verification](#5-usb-lan-connection-verification)
 6. [Command Reference](#6-command-reference)
-   - [Interactive dashboard](#interactive-dashboard-default-mode)
    - [light on / off / terminate](#light--individual-module-control)
    - [light set — adjust parameters](#light-set--adjust-module-parameters)
    - [pick — batch session](#pick--batch-picking-session)
@@ -24,7 +23,8 @@ Publishes to a **single self-contained native binary** (Native AOT) with no runt
 7. [Bulk CSV Workflow](#7-bulk-csv-workflow)
 8. [Audit Logs](#8-audit-logs)
 9. [systemd Service](#9-systemd-service-linux-247-operation)
-10. [Troubleshooting](#10-quick-troubleshooting-reference)
+10. [Protocol Notes](#10-protocol-notes)
+11. [Troubleshooting](#11-quick-troubleshooting-reference)
 
 ---
 
@@ -63,7 +63,7 @@ src/
   P2L.Shared/          Enums, Models, AioiConstants — no external dependencies
     Enums/             LightColor, LightState, ModuleStatus
     Models/            LightModuleState, PickingInstruction, ConfirmationEvent,
-                       ModuleParameters, CsvDeviceRecord (not used here — see CLI)
+                       ModuleParameters
   P2L.Hardware/        TCP transport and Aioi protocol codecs
     Protocol/          AioiPacket, AioiEncoder, AioiDecoder
     Transport/         TcpTransport (Channel-based, auto-reconnect)
@@ -78,12 +78,13 @@ src/
     Commands/          RootCommand, LightCommands, ListDevicesCommand,
                        ConfigureDeviceCommand, ExportCommand, ImportCommand
     Infrastructure/    TypeRegistrar, RotatingFileLogger, ParameterParser,
-                       CsvDeviceRecord, DeviceConfigCsvService
+                       DeviceConfigCsvService
     Configuration/     AppSettings, GatewaySettings
     appsettings.json
 tests/
   P2L.IntegrationTests/
-docs/                  Aioi hardware PDFs (Command Reference V4.1, Dev Guide V4.0)
+docs/                  Aioi hardware PDFs (Command Reference V4.1, Dev Guide V4.0,
+                       Lightstep Programming Guide V3.0)
 publish/               Native AOT binary output (gitignored)
 ```
 
@@ -109,17 +110,17 @@ publish/               Native AOT binary output (gitignored)
 # Linux x64 — warehouse industrial PC / Raspberry Pi
 ~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
   -c Release -r linux-x64 --self-contained true \
-  -p:PublishAot=true -o ./publish/linux-x64
+  -o ./publish/linux-x64
 
 # macOS ARM64 — Apple Silicon dev / handheld
 ~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
   -c Release -r osx-arm64 --self-contained true \
-  -p:PublishAot=true -o ./publish/osx-arm64
+  -o ./publish/osx-arm64
 
 # Windows x64
 ~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
   -c Release -r win-x64 --self-contained true \
-  -p:PublishAot=true -o ./publish/win-x64
+  -o ./publish/win-x64
 ```
 
 Output: a single `p2l` (or `p2l.exe`) binary (~9 MB) plus `appsettings.json`.
@@ -130,7 +131,7 @@ Output: a single `p2l` (or `p2l.exe`) binary (~9 MB) plus `appsettings.json`.
 
 ## 4. Configuration
 
-Edit `src/P2L.CLI/appsettings.json` before publishing, or override at runtime:
+Edit `src/P2L.CLI/appsettings.json` before publishing, or override at runtime with environment variables:
 
 ```json
 {
@@ -151,15 +152,12 @@ Edit `src/P2L.CLI/appsettings.json` before publishing, or override at runtime:
 }
 ```
 
-**Runtime overrides** (no rebuild required):
+**Runtime overrides** via environment variables (prefix `P2L_`, double-underscore for nesting):
 
 ```bash
-# Environment variables — prefix P2L_
 export P2L_Gateway__Host=192.168.10.50
-./p2l
-
-# CLI arguments
-./p2l --Gateway:Host=192.168.10.50 --Gateway:Port=5003
+export P2L_Gateway__Port=5003
+./p2l light on 0001 5
 ```
 
 ---
@@ -218,21 +216,7 @@ sudo ufw status
 
 ## 6. Command Reference
 
-### Interactive dashboard (default mode)
-```bash
-./p2l                              # connects, initialises, opens live dashboard
-./p2l --no-init                    # skip Z initialisation (gateway already running)
-./p2l --Gateway:Host=192.168.1.50  # override host
-```
-
-On startup the system:
-1. Loads `appsettings.json` (+ env / CLI overrides)
-2. Starts `TcpTransport` background loops with auto-reconnect (1 s backoff)
-3. Starts `HeartbeatService` (Az ping every 30 s)
-4. Sends **Z** (initialize) → waits for `o` ACK
-5. Opens the Spectre.Console warehouse dashboard (250 ms refresh)
-
-Dashboard keyboard hints are shown in the footer. Press **Ctrl+C** to exit gracefully (sends `D00` to terminate all modules).
+Every command connects to the gateway, sends the `Z` initialization command (once per process), then executes. Press **Ctrl+C** at any time for a clean shutdown.
 
 ---
 
@@ -258,12 +242,14 @@ Dashboard keyboard hints are shown in the footer. Press **Ctrl+C** to exit grace
 
 **Colors:** `Off` `Red` `Green` `Blue` `Yellow` `Cyan` `Magenta` `White`
 
+Protocol: `Z` → `Am1` (display mode) → `Am2` (after-confirm mode) → `L` (operation instruction).
+
 ---
 
 ### `light set` — Adjust module parameters
 
 Reconfigures an active or standby module's LED colour, flash mode, 7-segment display mode,
-buzzer, and after-CONFIRM behaviour **in-place** (sends M + L commands without re-instructing).
+buzzer, and after-CONFIRM behaviour **in-place** without re-instructing the module.
 
 ```bash
 # Read-only: show current parameters
@@ -318,7 +304,7 @@ Format: comma-separated `<address>:<quantity>` pairs.
 ### `devices` — Scan and list
 
 Probes a range of module addresses via `Az` (status inquiry) and lists all that respond.
-Discovered modules are written into the registry so the dashboard reflects them immediately.
+Discovered modules are written into the registry immediately.
 
 ```bash
 ./p2l devices                          # scan 0001–0099
@@ -365,8 +351,7 @@ Export does **not** require a live gateway connection unless `--scan` is used.
 
 ### `import` — Bulk apply from CSV
 
-Reads a CSV file, validates each row, shows a preview table, then applies the changes to
-hardware via M + L commands.
+Reads a CSV file, validates each row, shows a preview table, then applies the changes to hardware.
 
 ```bash
 ./p2l import devices.csv               # preview → confirm → apply
@@ -435,7 +420,7 @@ Validates all rows and shows the preview table without touching hardware.
 ```bash
 ./p2l import warehouse.csv --yes
 ```
-Sends M + L commands sequentially for each valid row.
+Sends mode + instruction commands sequentially for each valid row.
 A progress bar tracks completion; any per-row failures are reported in the summary.
 
 ---
@@ -454,6 +439,8 @@ tail -f logs/p2l_*.log
 - File naming: `p2l_YYYYMMDD_HH.log` (rotates hourly or on size limit)
 - Hardware traffic level: `Debug`
 - Console level: `Information` and above
+
+To see all protocol-level TX/RX in the console, set `P2L.Hardware` log level to `Debug` in `appsettings.json` (already the default).
 
 ---
 
@@ -488,16 +475,50 @@ sudo systemctl status p2l
 
 ---
 
-## 10. Quick Troubleshooting Reference
+## 10. Protocol Notes
+
+### Initialization sequence
+Every command sends `Z` (full initialization) once before any operation instruction. This resets all modules to standby. Subsequent commands within the same process skip the second `Z` (idempotent via `EnsureInitializedAsync`).
+
+### `light on` protocol (single module)
+```
+Z  →  Am1 <addr> [LED2] [LED1+LED0] [SEG+BUZ]   (display status during instruction)
+   →  Am2 <addr> [LED2] [LED1+LED0] [SEG+BUZ]   (display status after CONFIRM)
+   →  L   <addr> <display-5-chars>               (operation instruction)
+```
+`Am1`/`Am2` use **binary nibble-packed bytes** per Aioi spec §4.4:
+- LED2 byte: `0x30 | state` — Off=`0x31`, On=`0x32`, Flash=`0x33`, HighFlash=`0x34`
+- LED1+LED0 byte: `(LED1_nibble << 4) | LED0_nibble`
+- SEG+BUZ byte: `(SEG_nibble << 4) | BUZ_nibble`
+
+### `pick` protocol (batch)
+```
+Z  →  M [mode array]   (set global LED/SEG/BUZ mode for all subsequent instructions)
+   →  PP1 <blockNo> <addr1><disp1> <addr2><disp2> ...   (block operation instruction)
+```
+
+### Nack handling
+The controller responds `o` (ACK) or `n` (NACK) to every command. P2L throws an error on `n`:
+```
+Error: Gateway rejected command 'Am10003...' with 'n' — check command format/address.
+```
+If you see this, enable `Debug` logging to inspect the raw TX bytes and compare against the Aioi Command Reference.
+
+### Forbidden bytes
+Commands must **not** contain `0x02` (STX) or `0x03` (ETX) in data bytes — these are the packet frame delimiters. P2L uses Latin-1 encoding for command bytes to correctly transmit values above `0x7F`.
+
+---
+
+## 11. Quick Troubleshooting Reference
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `Cannot connect to 192.168.1.254:5003` (repeated) | Wrong IP or adapter not on subnet | Re-check Steps 2–4 in §5 |
 | `Timeout waiting for ACK` on `Z` | Gateway powered off or busy | Power-cycle gateway; check physical LED status |
-| `devices` scan returns 0 modules | Modules off, wrong address range, or not on this block | Widen `--from`/`--to`; verify wiring |
+| `Gateway rejected command ... with 'n'` | Invalid command format or address | Enable Debug logging; check address range; verify hardware model matches TW/AW series |
+| `devices` scan returns 0 modules | Modules off, wrong address range, or wiring fault | Widen `--from`/`--to`; verify wiring |
 | `light set` shows no change on hardware | Module already terminated (Standby) | Re-instruct with `light on` first, then use `light set` |
+| Light doesn't turn on, no error shown | Module not at that address | Run `./p2l devices` to discover actual addresses |
 | `import` aborts with "Unknown Color value" | Typo in CSV Color column | Fix value; re-run with `--dry-run` to verify |
 | Build error `clang not found` | Native AOT requires C compiler | Install Xcode CLT (macOS) or `clang` (Linux) |
 | `appsettings.json not found` warning | Binary moved without config file | Keep `appsettings.json` next to the `p2l` binary |
-| `Channel full (512)` log warning | Commands queued faster than hardware processes | Reduce batch rate; check TCP throughput |
-| Shutdown crash `only implements IAsyncDisposable` | Old binary pre-fix | Rebuild and republish |

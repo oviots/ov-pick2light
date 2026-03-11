@@ -106,16 +106,14 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     // ─── Pick operations ──────────────────────────────────────────────────
 
     /// <summary>
-    /// Lights up a batch of modules in one PP1 block command (most efficient).
-    /// Automatically configures the mode array for the first instruction's color.
+    /// Lights up a batch of modules in one P1 block command (most efficient).
+    /// Note: M (mode array) command is skipped — the gateway uses its built-in default
+    /// LED/SEG/BUZ mode, which is consistent with how Flowlight operates.
     /// </summary>
     public async Task InstructBatchAsync(IReadOnlyList<PickingInstruction> instructions,
                                          CancellationToken ct = default)
     {
         if (instructions.Count == 0) return;
-
-        // Set mode based on first item (all items in a batch should share the same color)
-        await SetModeForColorAsync(instructions[0].Color, instructions[0].LedMode, ct);
 
         var blockNo = instructions[0].BlockNo;
         await SendAndWaitAsync(AioiEncoder.BlockInstruct(blockNo, instructions), ct);
@@ -125,28 +123,25 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
-    /// Overwrites an in-progress batch with new data using PP5.
+    /// Overwrites an in-progress batch with new data using P5.
     /// Use this instead of InstructBatchAsync when modules may already be active.
     /// </summary>
     public async Task OverwriteBatchAsync(IReadOnlyList<PickingInstruction> instructions,
                                           CancellationToken ct = default)
     {
         if (instructions.Count == 0) return;
-        await SetModeForColorAsync(instructions[0].Color, instructions[0].LedMode, ct);
         var blockNo = instructions[0].BlockNo;
         await SendAndWaitAsync(AioiEncoder.BlockInstructOverwrite(blockNo, instructions), ct);
     }
 
     /// <summary>
-    /// Lights a single module using the L command.
+    /// Lights a single module using a P1 block command with one item.
+    /// The gateway does not support the L command directly — P1 is used for all instructions,
+    /// consistent with how Flowlight operates.
     /// </summary>
-    public async Task InstructSingleAsync(PickingInstruction instruction,
-                                          CancellationToken ct = default)
-    {
-        await SetModeForColorAsync(instruction.Color, instruction.LedMode, ct);
-        await SendAndWaitAsync(
-            AioiEncoder.SingleInstruct(instruction.Address, instruction.FormattedDisplay), ct);
-    }
+    public Task InstructSingleAsync(PickingInstruction instruction,
+                                    CancellationToken ct = default)
+        => InstructBatchAsync([instruction], ct);
 
     // ─── Termination ──────────────────────────────────────────────────────
 
@@ -170,23 +165,18 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         => SendAndWaitAsync(AioiEncoder.ModuleStatusInquiry(address), ct);
 
     /// <summary>
-    /// Reconfigures an active module's lighting and display parameters in-place
-    /// by sending an M command (mode array) followed by an L command (display data).
-    /// Use this to adjust colour, flash mode, SEG mode, buzzer, or after-CONFIRM
-    /// behaviour without stopping and restarting a picking operation.
+    /// Reconfigures an active module's display in-place using an L command.
+    /// Note: M (mode array) command is skipped — gateway uses built-in default mode.
     /// </summary>
     public async Task ConfigureModuleAsync(string address,
                                            string displayData,
                                            ModuleParameters parameters,
                                            CancellationToken ct = default)
     {
-        await SendAndWaitAsync(AioiEncoder.SetModeForParameters(parameters), ct);
         await SendAndWaitAsync(AioiEncoder.SingleInstruct(address, displayData), ct);
 
-        _log.LogInformation(
-            "[CONFIG] addr={Addr} color={C} mode={M} seg={S} buz={B} afterConfirm={AC}",
-            address, parameters.Color, parameters.LedMode,
-            parameters.SegMode, parameters.BuzMode, parameters.AfterConfirm);
+        _log.LogInformation("[CONFIG] addr={Addr} color={C} mode={M}",
+            address, parameters.Color, parameters.LedMode);
     }
 
     // ─── Internal ─────────────────────────────────────────────────────────
@@ -205,7 +195,16 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
 
         try
         {
-            return await tcs.Task.WaitAsync(timeout.Token);
+            var response = await tcs.Task.WaitAsync(timeout.Token);
+
+            if (response.Kind == AioiDecoder.ResponseKind.Nack)
+            {
+                _log.LogError("[NACK] Gateway rejected command: {Cmd}", command);
+                throw new InvalidOperationException(
+                    $"Gateway rejected command '{command}' with 'n' — check command format/address.");
+            }
+
+            return response;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

@@ -1,0 +1,7 @@
+13:26:50.204	-	Connecting...
+13:26:50.239	-	Connected.
+13:26:58.880	->	(02)0000013P100001900006(03)
+13:26:58.895	<-	(02)0000001o(03)
+13:27:04.766	<-	(02)0000007t001900(03)
+13:27:04.766	->	(02)0000001O(03)
+13:27:16.474	!!	An established connection was aborted by the software in your host machine
