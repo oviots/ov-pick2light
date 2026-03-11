@@ -12,8 +12,10 @@
     <type fullname="P2L.CLI.Commands.LightOffCommand/Settings" preserve="All"/>
     <type fullname="P2L.CLI.Commands.TerminateAllCommand" preserve="All"/>
     <type fullname="P2L.CLI.Commands.TerminateAllCommand/Settings" preserve="All"/>
-    <type fullname="P2L.CLI.Commands.BatchPickCommand"    preserve="All"/>
-    <type fullname="P2L.CLI.Commands.BatchPickCommand/Settings" preserve="All"/>
+    <type fullname="P2L.CLI.Commands.BatchPickCommand"           preserve="All"/>
+    <type fullname="P2L.CLI.Commands.BatchPickCommand/Settings"  preserve="All"/>
+    <type fullname="P2L.CLI.Commands.ListDevicesCommand"         preserve="All"/>
+    <type fullname="P2L.CLI.Commands.ListDevicesCommand/Settings" preserve="All"/>
   </assembly>
   <!-- Preserve Spectre.Console.Cli reflection paths -->
   <assembly fullname="Spectre.Console.Cli">

@@ -81,6 +81,22 @@ public sealed class LightModuleRegistry
         }
     }
 
+    /// <summary>
+    /// Registers a module discovered via an Az scan.
+    /// If the module is already tracked, only its status is refreshed; other fields are preserved.
+    /// </summary>
+    public LightModuleState SetScanned(string address, ModuleStatus status)
+    {
+        var addr = Normalize(address);
+        return _modules.AddOrUpdate(addr,
+            _ => new LightModuleState { Address = addr, Status = status },
+            (_, existing) =>
+            {
+                existing.Status = status;
+                return existing;
+            });
+    }
+
     /// <summary>Removes all tracked modules (e.g. after Z initialization).</summary>
     public void Clear() => _modules.Clear();
 

@@ -55,6 +55,7 @@ services.AddSingleton<AioiGateway>(sp =>
 services.AddSingleton<LightModuleRegistry>();
 services.AddSingleton<PickingEngine>();
 services.AddSingleton<HeartbeatService>();
+services.AddSingleton<DeviceScanService>();
 
 // CLI Commands
 services.AddTransient<RootCommand>();
@@ -62,6 +63,7 @@ services.AddTransient<LightOnCommand>();
 services.AddTransient<LightOffCommand>();
 services.AddTransient<TerminateAllCommand>();
 services.AddTransient<BatchPickCommand>();
+services.AddTransient<ListDevicesCommand>();
 
 // ─── CLI application ──────────────────────────────────────────────────────
 
@@ -86,6 +88,9 @@ app.Configure(cfg =>
 
     cfg.AddCommand<BatchPickCommand>("pick")
        .WithDescription("Start a batch picking session");
+
+    cfg.AddCommand<ListDevicesCommand>("devices")
+       .WithDescription("Scan and list all connected light modules");
 
 #if DEBUG
     cfg.PropagateExceptions();

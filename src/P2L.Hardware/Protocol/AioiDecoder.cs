@@ -18,11 +18,24 @@ public static class AioiDecoder
 {
     public enum ResponseKind { Ack, Nack, DuplicateSeq, Interrupt, ModuleStatus, Unknown }
 
+    /// <summary>
+    /// Parsed payload of an 'a' response (Az module-status inquiry reply).
+    /// Format: a[addr(4)][statusByte(1)], e.g. "a00011" or "a0001?" (not present).
+    /// </summary>
+    public sealed class ModuleStatusInfo
+    {
+        public string       Address   { get; init; } = string.Empty;
+        public ModuleStatus Status    { get; init; }
+        /// <summary>False when the status byte is '?' (module absent or in fault).</summary>
+        public bool         IsPresent => Status != ModuleStatus.Malfunction;
+    }
+
     public sealed class ParsedResponse
     {
-        public ResponseKind Kind        { get; init; }
-        public string       Raw         { get; init; } = string.Empty;
-        public ConfirmationEvent? Event { get; init; }
+        public ResponseKind       Kind       { get; init; }
+        public string             Raw        { get; init; } = string.Empty;
+        public ConfirmationEvent? Event      { get; init; }
+        public ModuleStatusInfo?  ModuleInfo { get; init; }
     }
 
     /// <summary>
@@ -45,8 +58,13 @@ public static class AioiDecoder
                 Raw   = command,
                 Event = ParseInterrupt(command, seqNo),
             },
-            // Az response: a[addr(4)][statusByte(1)]  e.g. "a0000?" (0x3F = malfunction/not present)
-            'a' => new ParsedResponse { Kind = ResponseKind.ModuleStatus, Raw = command },
+            // Az response: a[addr(4)][statusByte(1)]  e.g. "a00011" (standby) / "a0000?" (not present)
+            'a' => new ParsedResponse
+            {
+                Kind       = ResponseKind.ModuleStatus,
+                Raw        = command,
+                ModuleInfo = ParseModuleStatus(command),
+            },
             // @ response: controller spec e.g. "@94----"
             '@' => new ParsedResponse { Kind = ResponseKind.Ack,          Raw = command },
             _ => new ParsedResponse { Kind = ResponseKind.Unknown, Raw = command },
@@ -93,4 +111,22 @@ public static class AioiDecoder
         Status     = CompletionStatus.Abnormal,
         SequenceNo = seqNo,
     };
+
+    // ─── Az response parsing ──────────────────────────────────────────────
+    // Format: a[addr(4)][statusByte(1)]   minimum 6 chars
+    // The status byte is the ASCII character whose value equals the ModuleStatus enum member.
+    private static ModuleStatusInfo ParseModuleStatus(string cmd)
+    {
+        if (cmd.Length < 6)
+            return new ModuleStatusInfo { Address = "0000", Status = ModuleStatus.Malfunction };
+
+        var address = cmd[1..5];
+        var status  = (ModuleStatus)(byte)cmd[5];   // enum values == ASCII codes
+
+        // Treat any unexpected byte as Malfunction (module not present / error)
+        if (!Enum.IsDefined(status))
+            status = ModuleStatus.Malfunction;
+
+        return new ModuleStatusInfo { Address = address, Status = status };
+    }
 }

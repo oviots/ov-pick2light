@@ -13,8 +13,10 @@
       <Type Name="P2L.CLI.Commands.LightOffCommand+Settings"   Dynamic="Required All"/>
       <Type Name="P2L.CLI.Commands.TerminateAllCommand"        Dynamic="Required All"/>
       <Type Name="P2L.CLI.Commands.TerminateAllCommand+Settings" Dynamic="Required All"/>
-      <Type Name="P2L.CLI.Commands.BatchPickCommand"           Dynamic="Required All"/>
-      <Type Name="P2L.CLI.Commands.BatchPickCommand+Settings"  Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.BatchPickCommand"              Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.BatchPickCommand+Settings"   Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.ListDevicesCommand"          Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.ListDevicesCommand+Settings" Dynamic="Required All"/>
     </Assembly>
     <Assembly Name="Spectre.Console.Cli">
       <Type Name="Spectre.Console.Cli.AsyncCommand`1"  Dynamic="Required All"/>
