@@ -1,0 +1,113 @@
+using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using P2L.Core;
+using P2L.Mqtt.Messages;
+using P2L.Shared.Models;
+
+namespace P2L.Mqtt;
+
+/// <summary>
+/// Parses inbound MQTT command payloads and dispatches them to <see cref="PickingEngine"/>.
+/// Uses a two-step AOT-safe JSON strategy: peek at the "type" field via JsonDocument,
+/// then deserialize the full payload into the concrete command type.
+/// </summary>
+internal sealed class MqttCommandDispatcher
+{
+    private readonly PickingEngine _engine;
+    private readonly ILogger       _log;
+
+    public MqttCommandDispatcher(PickingEngine engine, ILogger<MqttCommandDispatcher> log)
+    {
+        _engine = engine;
+        _log    = log;
+    }
+
+    public async Task HandleAsync(byte[] payload, CancellationToken ct)
+    {
+        string? type;
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            type = doc.RootElement.TryGetProperty("type", out var typeProp)
+                 ? typeProp.GetString()
+                 : null;
+        }
+        catch (JsonException ex)
+        {
+            _log.LogWarning("Malformed MQTT command payload: {Err}", ex.Message);
+            return;
+        }
+
+        try
+        {
+            switch (type)
+            {
+                case "light_on":
+                {
+                    var cmd = JsonSerializer.Deserialize(payload,
+                        P2LMqttJsonContext.Default.LightOnCmd);
+                    if (cmd is null) break;
+                    await _engine.QuickLightAsync(cmd.Address, cmd.Quantity,
+                        cmd.Color, cmd.LedMode, ct);
+                    _log.LogInformation("[MQTT] light_on addr={A} qty={Q} color={C} mode={M}",
+                        cmd.Address, cmd.Quantity, cmd.Color, cmd.LedMode);
+                    break;
+                }
+
+                case "light_off":
+                {
+                    var cmd = JsonSerializer.Deserialize(payload,
+                        P2LMqttJsonContext.Default.LightOffCmd);
+                    if (cmd is null) break;
+                    await _engine.ExtinguishAsync(cmd.Address, ct);
+                    _log.LogInformation("[MQTT] light_off addr={A}", cmd.Address);
+                    break;
+                }
+
+                case "batch_start":
+                {
+                    var cmd = JsonSerializer.Deserialize(payload,
+                        P2LMqttJsonContext.Default.BatchStartCmd);
+                    if (cmd is null) break;
+                    var instructions = cmd.Items.Select(i => new PickingInstruction
+                    {
+                        Address  = i.Address,
+                        Quantity = i.Quantity,
+                        Color    = cmd.Color,
+                        LedMode  = cmd.LedMode,
+                        BlockNo  = cmd.BlockNo,
+                        Label    = i.Label,
+                    }).ToList();
+                    await _engine.StartBatchAsync(instructions, ct);
+                    _log.LogInformation("[MQTT] batch_start block={B} count={C}",
+                        cmd.BlockNo, instructions.Count);
+                    break;
+                }
+
+                case "batch_finish":
+                {
+                    var cmd = JsonSerializer.Deserialize(payload,
+                        P2LMqttJsonContext.Default.BatchFinishCmd);
+                    if (cmd is null) break;
+                    await _engine.FinishBatchAsync(cmd.BlockNo, ct);
+                    _log.LogInformation("[MQTT] batch_finish block={B}", cmd.BlockNo);
+                    break;
+                }
+
+                case "terminate_all":
+                    await _engine.FinishBatchAsync("00", ct);
+                    _log.LogInformation("[MQTT] terminate_all");
+                    break;
+
+                default:
+                    _log.LogWarning("[MQTT] Unknown command type: {Type}", type ?? "(null)");
+                    break;
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "[MQTT] Error executing command type={Type}", type);
+        }
+    }
+}

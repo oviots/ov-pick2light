@@ -25,7 +25,13 @@
       "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/ilspycmd --list-assemblies /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>&1 | head -5; DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/ilspycmd --list-all /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>&1 | head -30)",
       "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/dotnet-ildasm /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>&1 | grep -E \"ldstr|\\\\\"[A-Z][0-9]|\\\\\"[mM][0-9]|\\\\\"[ZPL]|\\\\\"[Dd][0-9]\" | head -40)",
       "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/dotnet-ildasm /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>&1 | wc -l)",
-      "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/dotnet-ildasm /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>&1)"
+      "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/dotnet-ildasm /tmp/flowlight/\"Flowlight 1.7E\"/AioiSystems.IO.dll 2>&1)",
+      "Bash(DOTNET_ROOT=~/.dotnet ~/.dotnet/tools/ilspycmd ~/.nuget/packages/mqttnet/5.1.0.1559/lib/net10.0/MQTTnet.dll 2>&1 | grep -E \"class MqttClientTls|class MqttClient[^F]|TlsOptions|CertificateValidation|ClientCertificate|WithTls|UseTls|TrustChain|CertificatesProvider\" | head -30)",
+      "Bash(strings ~/.nuget/packages/mqttnet/5.1.0.1559/lib/net10.0/MQTTnet.dll | grep -E \"^With[A-Z]|^Build$|MqttClient[A-Z]|^Connect|Publish|Subscribe|ApplicationMessage\" | sort -u | head -50)",
+      "Bash(strings ~/.nuget/packages/mqttnet/5.1.0.1559/lib/net10.0/MQTTnet.dll | grep -E \"^MqttFactory|^MqttClient$|CreateMqttClient|MqttClientOptions[^B]|WithClientId|WithTcpServer|WithWebSocketServer\" | sort -u | head -20)",
+      "Bash(strings ~/.nuget/packages/mqttnet/5.1.0.1559/lib/net10.0/MQTTnet.dll | grep -E \"^IMqttClient$|^MqttClientConnected|^MqttClientDisconnected|^MqttClientSubscribe|^MqttApplicationMessageReceived|^MqttClientDisconnectOptions\" | sort -u | head -20)",
+      "Bash(strings ~/.nuget/packages/mqttnet/5.1.0.1559/lib/net10.0/MQTTnet.dll | grep -E \"^MqttFactory$|Factory|^Create\" | sort -u | head -20)",
+      "Bash(strings ~/.nuget/packages/mqttnet/5.1.0.1559/lib/net10.0/MQTTnet.dll | grep -iE \"factory|Factory|Builder$\" | sort -u | head -20)"
     ]
   }
 }

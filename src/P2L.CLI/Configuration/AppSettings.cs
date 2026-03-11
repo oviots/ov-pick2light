@@ -1,3 +1,4 @@
+using P2L.Mqtt.Configuration;
 using P2L.Shared.Constants;
 
 namespace P2L.CLI.Configuration;
@@ -15,6 +16,9 @@ public sealed class AppSettings
 
     /// <summary>Maximum size (bytes) before rotating the TX/RX audit log.</summary>
     public long MaxLogFileSizeBytes { get; init; } = 10 * 1024 * 1024; // 10 MB
+
+    /// <summary>MQTT bridge settings. Set Enabled=true to activate.</summary>
+    public MqttSettings Mqtt { get; init; } = new();
 }
 
 public sealed class GatewaySettings

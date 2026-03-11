@@ -2,6 +2,7 @@ using P2L.CLI.Dashboard;
 using P2L.Core;
 using P2L.Core.Services;
 using P2L.Hardware;
+using P2L.Mqtt;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using System.ComponentModel;
@@ -15,15 +16,18 @@ namespace P2L.CLI.Commands;
 /// </summary>
 public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
 {
-    private readonly AioiGateway        _gateway;
+    private readonly AioiGateway         _gateway;
     private readonly LightModuleRegistry _registry;
     private readonly HeartbeatService    _heartbeat;
+    private readonly MqttBridgeService?  _mqtt;
 
-    public RootCommand(AioiGateway gateway, LightModuleRegistry registry, HeartbeatService heartbeat)
+    public RootCommand(AioiGateway gateway, LightModuleRegistry registry,
+                       HeartbeatService heartbeat, MqttBridgeService? mqtt = null)
     {
         _gateway   = gateway;
         _registry  = registry;
         _heartbeat = heartbeat;
+        _mqtt      = mqtt;
     }
 
     public sealed class Settings : CommandSettings
@@ -43,6 +47,12 @@ public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
 
         await _gateway.StartAsync(cts.Token);
         _heartbeat.Start();
+
+        if (_mqtt is not null)
+        {
+            await _mqtt.StartAsync(cts.Token);
+            AnsiConsole.MarkupLine("[green]MQTT bridge started.[/]");
+        }
 
         if (!settings.NoInit)
         {

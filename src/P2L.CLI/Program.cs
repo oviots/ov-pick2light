@@ -7,6 +7,7 @@ using P2L.CLI.Infrastructure;
 using P2L.Core;
 using P2L.Core.Services;
 using P2L.Hardware;
+using P2L.Mqtt;
 using Spectre.Console.Cli;
 
 // ─── Configuration ────────────────────────────────────────────────────────
@@ -55,6 +56,13 @@ services.AddSingleton<LightModuleRegistry>();
 services.AddSingleton<PickingEngine>();
 services.AddSingleton<HeartbeatService>();
 services.AddSingleton<DeviceScanService>();
+
+// MQTT bridge (optional — only registered when Enabled=true)
+if (appSettings.Mqtt.Enabled)
+{
+    services.AddSingleton(appSettings.Mqtt);
+    services.AddSingleton<MqttBridgeService>();
+}
 
 // CLI Commands
 services.AddTransient<RootCommand>();

@@ -5,29 +5,21 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>p2l</AssemblyName>
-    <!-- Native AOT publish profile -->
-    <PublishAot>true</PublishAot>
-    <IsAotCompatible>true</IsAotCompatible>
-    <InvariantGlobalization>true</InvariantGlobalization>
-    <!-- Single-file output -->
+    <!-- Self-contained single-file (JIT, not AOT — Spectre.Console is not AOT-safe) -->
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\P2L.Shared\P2L.Shared.csproj" />
     <ProjectReference Include="..\P2L.Hardware\P2L.Hardware.csproj" />
     <ProjectReference Include="..\P2L.Core\P2L.Core.csproj" />
+    <ProjectReference Include="..\P2L.Mqtt\P2L.Mqtt.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-  </ItemGroup>
-  <ItemGroup>
-    <!-- IL trimmer: keep command types from being stripped -->
-    <TrimmerRootDescriptor Include="ILLink.Descriptors.xml" />
-    <!-- NativeAOT: keep full dynamic reflection metadata (BaseType, GetGenericArguments, etc.) -->
-    <RdXmlFile Include="rd.xml" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Spectre.Console" Version="0.49.1" />
