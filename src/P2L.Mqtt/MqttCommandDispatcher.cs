@@ -13,13 +13,16 @@ namespace P2L.Mqtt;
 /// </summary>
 internal sealed class MqttCommandDispatcher
 {
-    private readonly PickingEngine _engine;
-    private readonly ILogger       _log;
+    private readonly PickingEngine       _engine;
+    private readonly MqttEventPublisher  _publisher;
+    private readonly ILogger             _log;
 
-    public MqttCommandDispatcher(PickingEngine engine, ILogger<MqttCommandDispatcher> log)
+    public MqttCommandDispatcher(PickingEngine engine, MqttEventPublisher publisher,
+                                  ILogger<MqttCommandDispatcher> log)
     {
-        _engine = engine;
-        _log    = log;
+        _engine    = engine;
+        _publisher = publisher;
+        _log       = log;
     }
 
     public async Task HandleAsync(byte[] payload, CancellationToken ct)
@@ -97,6 +100,11 @@ internal sealed class MqttCommandDispatcher
                 case "terminate_all":
                     await _engine.FinishBatchAsync("00", ct);
                     _log.LogInformation("[MQTT] terminate_all");
+                    break;
+
+                case "get_snapshot":
+                    _publisher.EnqueueSnapshot();
+                    _log.LogInformation("[MQTT] get_snapshot — queued {N} modules", 0);
                     break;
 
                 default:

@@ -12,16 +12,22 @@ using P2L.Shared.Models;
 namespace P2L.Mqtt;
 
 /// <summary>
-/// Subscribes to <see cref="PickingEngine"/> events and publishes them as JSON
-/// to the MQTT event topic. Uses a bounded Channel as a non-blocking queue so
-/// event handlers never block the PickingEngine thread waiting for MQTT I/O.
+/// Publishes light module state changes and picking events as JSON to MQTT topics.
+///
+/// Real-time source: <see cref="LightModuleRegistry.StateChanged"/> fires on every
+/// mutation (instruct, confirm, terminate, configure, scan) and enqueues a
+/// <c>light_changed</c> event immediately.
+///
+/// Uses a bounded Channel as a non-blocking queue so event handlers never block
+/// the caller thread waiting for MQTT I/O.
 /// </summary>
 internal sealed class MqttEventPublisher : IAsyncDisposable
 {
-    private readonly IMqttClient      _client;
-    private readonly MqttSettings     _settings;
-    private readonly PickingEngine    _engine;
-    private readonly ILogger          _log;
+    private readonly IMqttClient          _client;
+    private readonly MqttSettings         _settings;
+    private readonly PickingEngine        _engine;
+    private readonly LightModuleRegistry  _registry;
+    private readonly ILogger              _log;
 
     private readonly Channel<MqttEvent> _queue =
         Channel.CreateBounded<MqttEvent>(new BoundedChannelOptions(1000)
@@ -35,11 +41,13 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
     private          Task?                   _drain;
 
     public MqttEventPublisher(IMqttClient client, MqttSettings settings,
-                               PickingEngine engine, ILogger<MqttEventPublisher> log)
+                               PickingEngine engine, LightModuleRegistry registry,
+                               ILogger<MqttEventPublisher> log)
     {
         _client   = client;
         _settings = settings;
         _engine   = engine;
+        _registry = registry;
         _log      = log;
     }
 
@@ -47,6 +55,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
 
     public void Start()
     {
+        _registry.StateChanged += OnStateChanged;
         _engine.ItemConfirmed  += OnItemConfirmed;
         _engine.BatchCompleted += OnBatchCompleted;
         _drain = Task.Run(() => DrainAsync(_cts.Token));
@@ -54,6 +63,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _registry.StateChanged -= OnStateChanged;
         _engine.ItemConfirmed  -= OnItemConfirmed;
         _engine.BatchCompleted -= OnBatchCompleted;
 
@@ -67,11 +77,13 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
         _cts.Dispose();
     }
 
-    // ─── Event handlers (called on PickingEngine thread) ─────────────────
+    // ─── Event handlers ───────────────────────────────────────────────────
 
-    private void OnItemConfirmed(ConfirmationEvent evt, LightModuleState? state)
-    {
-        _queue.Writer.TryWrite(new ConfirmedEvt
+    private void OnStateChanged(LightModuleState state)
+        => _queue.Writer.TryWrite(StateToEvt(state));
+
+    private void OnItemConfirmed(ConfirmationEvent evt, LightModuleState? _)
+        => _queue.Writer.TryWrite(new ConfirmedEvt
         {
             Type            = "confirmed",
             Address         = evt.Address,
@@ -79,21 +91,34 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
             AdjustedDisplay = evt.AdjustedDisplay,
         });
 
-        if (state is not null)
-            _queue.Writer.TryWrite(new LightChangedEvt
-            {
-                Type         = "light_changed",
-                Address      = state.Address,
-                ModuleStatus = state.Status,
-                Color        = state.Color,
-                LedMode      = state.LedMode,
-                DisplayData  = state.DisplayData,
-                BlockNo      = state.BlockNo,
-            });
-    }
-
     private void OnBatchCompleted()
         => _queue.Writer.TryWrite(new BatchCompletedEvt { Type = "batch_completed" });
+
+    // ─── Snapshot (on-demand full state dump) ────────────────────────────
+
+    public void EnqueueSnapshot()
+    {
+        foreach (var module in _registry.All)
+            _queue.Writer.TryWrite(StateToEvt(module));
+    }
+
+    // ─── Helpers ──────────────────────────────────────────────────────────
+
+    private static LightChangedEvt StateToEvt(LightModuleState s) => new()
+    {
+        Type              = "light_changed",
+        Address           = s.Address,
+        ModuleStatus      = s.Status,
+        Color             = s.Color,
+        LedMode           = s.LedMode,
+        SegMode           = s.SegMode,
+        BuzMode           = s.BuzMode,
+        DisplayData       = s.DisplayData,
+        BlockNo           = s.BlockNo,
+        AdjustedQuantity  = s.AdjustedQuantity,
+        LastInstructionAt = s.LastInstructionAt,
+        LastConfirmedAt   = s.LastConfirmedAt,
+    };
 
     // ─── Drain loop ───────────────────────────────────────────────────────
 

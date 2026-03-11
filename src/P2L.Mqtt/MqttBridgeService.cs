@@ -35,16 +35,17 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     private          TaskCompletionSource    _disconnectedTcs = new();
 
     public MqttBridgeService(MqttSettings settings, AioiGateway gateway,
-                              PickingEngine engine, ILoggerFactory loggerFactory)
+                              PickingEngine engine, LightModuleRegistry registry,
+                              ILoggerFactory loggerFactory)
     {
         _settings   = settings;
         _gateway    = gateway;
         _log        = loggerFactory.CreateLogger<MqttBridgeService>();
         _client     = new MqttClientFactory().CreateMqttClient();
-        _dispatcher = new MqttCommandDispatcher(engine,
-                          loggerFactory.CreateLogger<MqttCommandDispatcher>());
-        _publisher  = new MqttEventPublisher(_client, settings, engine,
+        _publisher  = new MqttEventPublisher(_client, settings, engine, registry,
                           loggerFactory.CreateLogger<MqttEventPublisher>());
+        _dispatcher = new MqttCommandDispatcher(engine, _publisher,
+                          loggerFactory.CreateLogger<MqttCommandDispatcher>());
         _options    = BuildOptions(settings);
 
         _client.ApplicationMessageReceivedAsync += OnMessageReceivedAsync;

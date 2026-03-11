@@ -23,15 +23,20 @@ public sealed record ConfirmedEvt : MqttEvent
 
 // ─── light_changed ─────────────────────────────────────────────────────────
 
-/// <summary>Published when a module's state changes (lit, extinguished, configured).</summary>
+/// <summary>Published when a module's state changes (lit, extinguished, configured, confirmed).</summary>
 public sealed record LightChangedEvt : MqttEvent
 {
-    public required string  Address      { get; init; }
-    public ModuleStatus     ModuleStatus { get; init; }
-    public LightColor       Color        { get; init; }
-    public LightState       LedMode      { get; init; }
-    public string?          DisplayData  { get; init; }
-    public string?          BlockNo      { get; init; }
+    public required string  Address           { get; init; }
+    public ModuleStatus     ModuleStatus      { get; init; }
+    public LightColor       Color             { get; init; }
+    public LightState       LedMode           { get; init; }
+    public LightState       SegMode           { get; init; }
+    public LightState       BuzMode           { get; init; }
+    public string?          DisplayData       { get; init; }
+    public string?          BlockNo           { get; init; }
+    public int?             AdjustedQuantity  { get; init; }
+    public DateTime?        LastInstructionAt { get; init; }
+    public DateTime?        LastConfirmedAt   { get; init; }
 }
 
 // ─── batch_completed ───────────────────────────────────────────────────────

@@ -12,6 +12,9 @@ public sealed class LightModuleRegistry
 {
     private readonly ConcurrentDictionary<string, LightModuleState> _modules = new();
 
+    /// <summary>Fires whenever any module's state is mutated (instructed, confirmed, terminated, etc.).</summary>
+    public event Action<LightModuleState>? StateChanged;
+
     /// <summary>Returns all currently tracked modules (snapshot).</summary>
     public IReadOnlyList<LightModuleState> All =>
         _modules.Values.OrderBy(m => m.Address).ToList();
@@ -26,7 +29,7 @@ public sealed class LightModuleRegistry
     public LightModuleState SetInstructed(PickingInstruction instruction)
     {
         var addr = Normalize(instruction.Address);
-        return _modules.AddOrUpdate(addr,
+        var state = _modules.AddOrUpdate(addr,
             _ => new LightModuleState
             {
                 Address           = addr,
@@ -47,6 +50,8 @@ public sealed class LightModuleRegistry
                 existing.LastInstructionAt = DateTime.UtcNow;
                 return existing;
             });
+        StateChanged?.Invoke(state);
+        return state;
     }
 
     /// <summary>
@@ -64,6 +69,7 @@ public sealed class LightModuleRegistry
         module.AdjustedQuantity = evt.AdjustedDisplay is not null
             ? int.TryParse(evt.AdjustedDisplay.Trim(), out int qty) ? qty : null
             : null;
+        StateChanged?.Invoke(module);
         return module;
     }
 
@@ -78,6 +84,7 @@ public sealed class LightModuleRegistry
             module.Status  = ModuleStatus.Standby;
             module.Color   = LightColor.Off;
             module.LedMode = LightState.Off;
+            StateChanged?.Invoke(module);
         }
     }
 
@@ -88,7 +95,7 @@ public sealed class LightModuleRegistry
     public LightModuleState SetConfigured(string address, ModuleParameters parameters, string displayData)
     {
         var addr = Normalize(address);
-        return _modules.AddOrUpdate(addr,
+        var state = _modules.AddOrUpdate(addr,
             _ => new LightModuleState
             {
                 Address           = addr,
@@ -110,6 +117,8 @@ public sealed class LightModuleRegistry
                 existing.LastInstructionAt = DateTime.UtcNow;
                 return existing;
             });
+        StateChanged?.Invoke(state);
+        return state;
     }
 
     /// <summary>
@@ -119,13 +128,15 @@ public sealed class LightModuleRegistry
     public LightModuleState SetScanned(string address, ModuleStatus status)
     {
         var addr = Normalize(address);
-        return _modules.AddOrUpdate(addr,
+        var state = _modules.AddOrUpdate(addr,
             _ => new LightModuleState { Address = addr, Status = status },
             (_, existing) =>
             {
                 existing.Status = status;
                 return existing;
             });
+        StateChanged?.Invoke(state);
+        return state;
     }
 
     /// <summary>Removes all tracked modules (e.g. after Z initialization).</summary>

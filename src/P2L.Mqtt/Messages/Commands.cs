@@ -61,3 +61,11 @@ public sealed record BatchFinishCmd : MqttCommand
 
 /// <summary>Emergency: terminate all modules immediately.</summary>
 public sealed record TerminateAllCmd : MqttCommand { }
+
+// ─── get_snapshot ───────────────────────────────────────────────────────────
+
+/// <summary>
+/// Request a full state snapshot of all known modules.
+/// P2L responds by publishing one <c>light_changed</c> event per tracked module.
+/// </summary>
+public sealed record GetSnapshotCmd : MqttCommand { }
