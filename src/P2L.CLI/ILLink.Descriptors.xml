@@ -1,0 +1,24 @@
+<linker>
+  <!-- Preserve all command types so Spectre.Console can reflect on their generic base
+       class (AsyncCommand<TSettings>) to discover the Settings type at runtime.
+       Required for NativeAOT / IL trimming compatibility.
+       NOTE: nested types use '/' separator in ILLink XML (not '+') -->
+  <assembly fullname="p2l">
+    <type fullname="P2L.CLI.Commands.RootCommand"        preserve="All"/>
+    <type fullname="P2L.CLI.Commands.RootCommand/Settings" preserve="All"/>
+    <type fullname="P2L.CLI.Commands.LightOnCommand"      preserve="All"/>
+    <type fullname="P2L.CLI.Commands.LightOnCommand/Settings" preserve="All"/>
+    <type fullname="P2L.CLI.Commands.LightOffCommand"     preserve="All"/>
+    <type fullname="P2L.CLI.Commands.LightOffCommand/Settings" preserve="All"/>
+    <type fullname="P2L.CLI.Commands.TerminateAllCommand" preserve="All"/>
+    <type fullname="P2L.CLI.Commands.TerminateAllCommand/Settings" preserve="All"/>
+    <type fullname="P2L.CLI.Commands.BatchPickCommand"    preserve="All"/>
+    <type fullname="P2L.CLI.Commands.BatchPickCommand/Settings" preserve="All"/>
+  </assembly>
+  <!-- Preserve Spectre.Console.Cli reflection paths -->
+  <assembly fullname="Spectre.Console.Cli">
+    <type fullname="Spectre.Console.Cli.AsyncCommand`1" preserve="All"/>
+    <type fullname="Spectre.Console.Cli.Command`1"      preserve="All"/>
+    <type fullname="Spectre.Console.Cli.CommandSettings" preserve="All"/>
+  </assembly>
+</linker>

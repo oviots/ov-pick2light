@@ -1,0 +1,25 @@
+<Directives xmlns="http://schemas.microsoft.com/netfx/2013/01/metadata">
+  <Application>
+    <!-- Preserve full dynamic reflection metadata for all Spectre.Console command
+         and settings types. NativeAOT strips this by default; Spectre.Console
+         needs GetGenericArguments() / BaseType traversal at runtime to discover
+         the TSettings type parameter. Nested types use '+' in rd.xml. -->
+    <Assembly Name="p2l">
+      <Type Name="P2L.CLI.Commands.RootCommand"                Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.RootCommand+Settings"       Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.LightOnCommand"             Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.LightOnCommand+Settings"    Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.LightOffCommand"            Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.LightOffCommand+Settings"   Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.TerminateAllCommand"        Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.TerminateAllCommand+Settings" Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.BatchPickCommand"           Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.BatchPickCommand+Settings"  Dynamic="Required All"/>
+    </Assembly>
+    <Assembly Name="Spectre.Console.Cli">
+      <Type Name="Spectre.Console.Cli.AsyncCommand`1"  Dynamic="Required All"/>
+      <Type Name="Spectre.Console.Cli.Command`1"       Dynamic="Required All"/>
+      <Type Name="Spectre.Console.Cli.CommandSettings" Dynamic="Required All"/>
+    </Assembly>
+  </Application>
+</Directives>
