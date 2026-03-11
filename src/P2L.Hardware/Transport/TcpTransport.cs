@@ -27,6 +27,9 @@ public sealed class TcpTransport : IAsyncDisposable
     private NetworkStream? _stream;
     private int           _seqNo;
 
+    // Protects direct stream writes (used by SendImmediateAsync) from racing with SendLoopAsync
+    private readonly SemaphoreSlim _streamLock = new(1, 1);
+
     // Channel caps at 512 pending commands to prevent runaway memory use
     private readonly Channel<AioiPacket> _sendQueue =
         Channel.CreateBounded<AioiPacket>(new BoundedChannelOptions(512)
@@ -78,13 +81,29 @@ public sealed class TcpTransport : IAsyncDisposable
     }
 
     /// <summary>
-    /// Enqueues a command with a specific (caller-supplied) sequence number.
-    /// Used for ACK ("O") responses that must echo the SeqNo of the "t" interrupt.
+    /// Writes a command directly to the TCP stream, bypassing the send queue.
+    /// Use ONLY for highest-priority responses ("O" ACK) that must be sent immediately.
+    /// Acquires <see cref="_streamLock"/> to avoid racing with the send loop.
     /// </summary>
-    public async ValueTask SendWithSeqAsync(string command, int seq, CancellationToken ct = default)
+    public async ValueTask SendImmediateAsync(string command, int seq, CancellationToken ct = default)
     {
-        var packet = new AioiPacket { SequenceNo = seq, Command = command };
-        await _sendQueue.Writer.WriteAsync(packet, ct);
+        if (_stream is null) return;
+        var bytes = new AioiPacket { SequenceNo = seq, Command = command }.ToBytes();
+        await _streamLock.WaitAsync(ct);
+        try
+        {
+            await _stream.WriteAsync(bytes, ct);
+            _log.LogDebug("[TX-IMM] SeqNo={Seq} Cmd={Cmd}", seq, command);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Immediate send failed");
+            DropConnection();
+        }
+        finally
+        {
+            _streamLock.Release();
+        }
     }
 
     // ─── Send loop ─────────────────────────────────────────────────────────
@@ -94,6 +113,7 @@ public sealed class TcpTransport : IAsyncDisposable
         await foreach (var packet in _sendQueue.Reader.ReadAllAsync(ct))
         {
             await EnsureConnectedAsync(ct);
+            await _streamLock.WaitAsync(ct);
             try
             {
                 var bytes = packet.ToBytes();
@@ -104,6 +124,10 @@ public sealed class TcpTransport : IAsyncDisposable
             {
                 _log.LogWarning(ex, "Send failed; will reconnect");
                 DropConnection();
+            }
+            finally
+            {
+                _streamLock.Release();
             }
         }
     }

@@ -224,10 +224,10 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         switch (response.Kind)
         {
             case AioiDecoder.ResponseKind.Interrupt:
-                // "t" packet: ACK must echo the same SeqNo as the interrupt (always 0).
-                // Using NextSeqNo() here causes the gateway to never see a matching ACK
-                // and retransmit "t" every 5 s, locking the channel for all other commands.
-                _ = _transport.SendWithSeqAsync(AioiEncoder.Ack(), packet.SequenceNo);
+                // "t" packet: ACK must echo the same SeqNo as the interrupt (always 0)
+                // and must be sent immediately — bypass the send queue so it never waits
+                // behind a queued heartbeat or P1 command.
+                _ = _transport.SendImmediateAsync(AioiEncoder.Ack(), packet.SequenceNo);
 
                 if (response.Event is not null)
                 {
