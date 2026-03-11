@@ -24,14 +24,17 @@ public sealed class RunPickCommand : AsyncCommand<RunPickCommand.Settings>
 {
     private readonly AioiGateway        _gateway;
     private readonly HeartbeatService   _heartbeat;
+    private readonly WatchdogService    _watchdog;
     private readonly CsvPickTaskRunner  _runner;
     private readonly MqttBridgeService? _mqtt;
 
     public RunPickCommand(AioiGateway gateway, HeartbeatService heartbeat,
-                          CsvPickTaskRunner runner, MqttBridgeService? mqtt = null)
+                          WatchdogService watchdog, CsvPickTaskRunner runner,
+                          MqttBridgeService? mqtt = null)
     {
         _gateway   = gateway;
         _heartbeat = heartbeat;
+        _watchdog  = watchdog;
         _runner    = runner;
         _mqtt      = mqtt;
     }
@@ -69,6 +72,7 @@ public sealed class RunPickCommand : AsyncCommand<RunPickCommand.Settings>
         // ── Start infrastructure ──────────────────────────────────────────
         await _gateway.StartAsync(cts.Token);
         _heartbeat.Start();
+        _watchdog.Start();
         await _gateway.EnsureInitializedAsync(cts.Token);
 
         if (_mqtt is not null)

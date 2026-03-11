@@ -24,7 +24,7 @@ Publishes to a **single self-contained binary** with no runtime dependency.
 7. [Bulk CSV Workflow](#7-bulk-csv-workflow)
 8. [Audit Logs](#8-audit-logs)
 9. [MQTT Bridge](#9-mqtt-bridge)
-10. [systemd Service](#10-systemd-service-linux-247-operation)
+10. [Self-Healing & 24/7 Operation](#10-self-healing--247-operation)
 11. [Protocol Notes](#11-protocol-notes)
 12. [Troubleshooting](#12-quick-troubleshooting-reference)
 
@@ -72,6 +72,7 @@ src/
       DeviceScanService.cs   Concurrent Az range scan
       PreemptionGate.cs      Two-priority gate: MQTT commands preempt CSV runner
       CsvPickTaskRunner.cs   Sequential CSV pick runner with auto-delete and MQTT events
+      WatchdogService.cs     Monitors gateway connectivity; triggers restart after timeout
   P2L.Mqtt/            Optional MQTT bridge (MQTTnet v5, TLS)
     Configuration/     MqttSettings, MqttTlsSettings
     Messages/          Commands (light_on, batch_start, csv_run, csv_control, …)
@@ -87,8 +88,8 @@ src/
                        ListDevicesCommand, ConfigureDeviceCommand,
                        ExportCommand, ImportCommand
     Infrastructure/    TypeRegistrar, RotatingFileLogger, ParameterParser,
-                       DeviceConfigCsvService
-    Configuration/     AppSettings, GatewaySettings
+                       DeviceConfigCsvService, SelfHealHandler
+    Configuration/     AppSettings, GatewaySettings, SelfHealSettings
     appsettings.json
 publish/               Published binary output (gitignored)
 ```
@@ -145,6 +146,13 @@ Edit `appsettings.json` before publishing, or override at runtime with environme
   },
   "LogDirectory":        "logs",
   "MaxLogFileSizeBytes": 10485760,
+  "SelfHeal": {
+    "Enabled":               true,
+    "MaxRestarts":           5,
+    "RestartWindowMinutes":  10,
+    "BackOffSeconds":        3,
+    "WatchdogTimeoutMinutes": 5
+  },
   "Logging": {
     "LogLevel": {
       "Default":           "Information",
@@ -951,7 +959,37 @@ Published on connect and on gateway connection changes. `online: false` is also 
 
 ---
 
-## 10. systemd Service (Linux 24/7 Operation)
+## 10. Self-Healing & 24/7 Operation
+
+### In-process self-heal (all platforms)
+
+P2L includes a built-in self-healing subsystem that handles two failure modes:
+
+| Failure mode | Detection | Recovery |
+|---|---|---|
+| Unhandled exception / crash | `AppDomain.UnhandledException` | Log → back-off → `Process.Start` self |
+| Gateway silent / persistent disconnect | `WatchdogService` (5-min timer) | Log → back-off → restart |
+
+**Crash-loop guard:** crash timestamps are persisted to `crash_history.jsonl` next to the binary.
+If the process crashes more than `MaxRestarts` times within `RestartWindowMinutes`, the self-restart
+is disabled and the process exits cleanly (exit 1) to prevent runaway loops.
+
+**Configuration** (in `appsettings.json`):
+
+```json
+"SelfHeal": {
+  "Enabled": true,
+  "MaxRestarts": 5,
+  "RestartWindowMinutes": 10,
+  "BackOffSeconds": 3,
+  "WatchdogTimeoutMinutes": 5
+}
+```
+
+Set `WatchdogTimeoutMinutes: 0` to disable the gateway watchdog (keep crash-handler only).
+Set `Enabled: false` to turn off the entire subsystem (useful during development).
+
+### systemd Service (Linux 24/7 Operation)
 
 Create `/etc/systemd/system/p2l.service`:
 
@@ -965,7 +1003,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/p2l
 ExecStart=/opt/p2l/p2l
-Restart=always
+Restart=on-failure
 RestartSec=5
 Environment=P2L_Gateway__Host=192.168.1.254
 # Optional MQTT bridge
@@ -977,6 +1015,9 @@ Environment=P2L_Mqtt__Password=secret
 [Install]
 WantedBy=multi-user.target
 ```
+
+> **Note:** `Restart=on-failure` (exit codes ≠ 0) complements the in-process self-heal.
+> If the crash-loop guard fires (exit 1), systemd also catches it and retries after `RestartSec`.
 
 ```bash
 sudo systemctl daemon-reload
@@ -1051,3 +1092,6 @@ P2L uses `NoChange` (0xFF) instead of `Off` (0x11) for after-confirm LED states.
 | `mqtt_offline_buffer.jsonl` grows indefinitely | Broker permanently unreachable | Fix broker connectivity; file is auto-deleted after successful replay |
 | Buffer replay log shows partial sync on every connect | Broker rejects some message type | Check `[MQTT] Buffer replay rejected` warnings in log for the specific reason code |
 | Want to discard buffered events and start fresh | Stale buffer from a different session | Delete `mqtt_offline_buffer.jsonl` manually before starting P2L |
+| Process restarts unexpectedly | In-process self-heal triggered by unhandled exception | Check `crash_history.jsonl` for the exception; fix root cause |
+| Process restarts every ~5 min | Watchdog fires — gateway stays disconnected | Fix network path to gateway; or set `WatchdogTimeoutMinutes: 0` to disable watchdog |
+| Process no longer auto-restarts after repeated crashes | Crash-loop guard reached `MaxRestarts` | Fix root cause; delete `crash_history.jsonl` to reset the counter |

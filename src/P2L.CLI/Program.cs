@@ -20,6 +20,11 @@ var config = new ConfigurationBuilder()
 
 var appSettings = config.Get<AppSettings>() ?? new AppSettings();
 
+// ─── Self-heal crash handlers (installed as early as possible) ────────────
+
+if (appSettings.SelfHeal.Enabled)
+    SelfHealHandler.Install(appSettings.SelfHeal, args);
+
 // ─── Service registration ─────────────────────────────────────────────────
 
 var services = new ServiceCollection();
@@ -55,6 +60,16 @@ services.AddSingleton<AioiGateway>(sp =>
 services.AddSingleton<LightModuleRegistry>();
 services.AddSingleton<PickingEngine>();
 services.AddSingleton<HeartbeatService>();
+services.AddSingleton<WatchdogService>(sp =>
+{
+    var svc = new WatchdogService(
+        sp.GetRequiredService<AioiGateway>(),
+        sp.GetRequiredService<ILogger<WatchdogService>>(),
+        appSettings.SelfHeal.WatchdogTimeoutMinutes);
+    if (appSettings.SelfHeal.Enabled && appSettings.SelfHeal.WatchdogTimeoutMinutes > 0)
+        svc.RestartRequested += reason => SelfHealHandler.TriggerWatchdog(reason);
+    return svc;
+});
 services.AddSingleton<DeviceScanService>();
 services.AddSingleton<PreemptionGate>();
 services.AddSingleton<CsvPickTaskRunner>();

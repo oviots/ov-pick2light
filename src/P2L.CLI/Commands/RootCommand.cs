@@ -19,14 +19,17 @@ public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
     private readonly AioiGateway         _gateway;
     private readonly LightModuleRegistry _registry;
     private readonly HeartbeatService    _heartbeat;
+    private readonly WatchdogService     _watchdog;
     private readonly MqttBridgeService?  _mqtt;
 
     public RootCommand(AioiGateway gateway, LightModuleRegistry registry,
-                       HeartbeatService heartbeat, MqttBridgeService? mqtt = null)
+                       HeartbeatService heartbeat, WatchdogService watchdog,
+                       MqttBridgeService? mqtt = null)
     {
         _gateway   = gateway;
         _registry  = registry;
         _heartbeat = heartbeat;
+        _watchdog  = watchdog;
         _mqtt      = mqtt;
     }
 
@@ -47,6 +50,7 @@ public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
 
         await _gateway.StartAsync(cts.Token);
         _heartbeat.Start();
+        _watchdog.Start();
 
         if (_mqtt is not null)
         {
