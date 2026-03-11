@@ -137,11 +137,11 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
 
             try   { await PublishAsync(evt, ct); }
             catch (OperationCanceledException) { break; }
-            catch (Exception ex) { _log.LogWarning("[MQTT] Publish failed: {Err}", ex.Message); }
+            catch (Exception ex) { _log.LogError("[MQTT] Publish exception: {Err}", ex.Message); }
         }
     }
 
-    private Task PublishAsync(MqttEvent evt, CancellationToken ct)
+    private async Task PublishAsync(MqttEvent evt, CancellationToken ct)
     {
         string  topic;
         byte[]? payload;
@@ -169,7 +169,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
                 payload = JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.BridgeStatusEvt);
                 break;
             default:
-                return Task.CompletedTask;
+                return;
         }
 
         var msg = new MqttApplicationMessageBuilder()
@@ -179,7 +179,13 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
             .WithRetainFlag(retain)
             .Build();
 
-        return _client.PublishAsync(msg, ct);
+        _log.LogDebug("[MQTT] Publishing {Type} → {Topic}", evt.Type, topic);
+        var result = await _client.PublishAsync(msg, ct);
+        if (result.ReasonCode != MqttClientPublishReasonCode.Success)
+            _log.LogWarning("[MQTT] Publish rejected: type={Type} topic={Topic} reason={Reason}",
+                evt.Type, topic, result.ReasonCode);
+        else
+            _log.LogDebug("[MQTT] Published  {Type} → {Topic}", evt.Type, topic);
     }
 
     // ─── Public enqueue for bridge-status events ─────────────────────────
