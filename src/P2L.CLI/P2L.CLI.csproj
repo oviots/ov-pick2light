@@ -5,10 +5,12 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>p2l</AssemblyName>
-    <!-- Self-contained single-file (JIT, not AOT — Spectre.Console is not AOT-safe) -->
-    <PublishSingleFile>true</PublishSingleFile>
+    <!-- Native AOT single-file binary -->
+    <PublishAot>true</PublishAot>
     <SelfContained>true</SelfContained>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Suppress third-party trim/AOT warnings from Spectre.Console -->
+    <NoWarn>$(NoWarn);IL2104;IL3000;IL3053</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\P2L.Shared\P2L.Shared.csproj" />

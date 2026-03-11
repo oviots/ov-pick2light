@@ -104,8 +104,12 @@ internal static class SelfHealHandler
     {
         try
         {
-            var json = JsonSerializer.Serialize(new { at = DateTime.UtcNow, msg = message });
-            File.AppendAllText(CrashHistoryFile, json + "\n");
+            // Build JSONL manually — avoids anonymous-type reflection (AOT-safe)
+            var at      = DateTime.UtcNow.ToString("O");
+            var escaped = message.Replace("\\", "\\\\").Replace("\"", "\\\"")
+                                 .Replace("\r", "\\r").Replace("\n", "\\n")
+                                 .Replace("\t", "\\t");
+            File.AppendAllText(CrashHistoryFile, $"{{\"at\":\"{at}\",\"msg\":\"{escaped}\"}}\n");
         }
         catch { /* best-effort */ }
     }
