@@ -187,10 +187,12 @@ public sealed class BatchPickCommand : AsyncCommand<BatchPickCommand.Settings>
     public sealed class Settings : CommandSettings
     {
         [CommandArgument(0, "<instructions>")]
-        [Description("Comma-separated addr:qty pairs, e.g. 0001:5,0002:3,0003:10")]
+        [Description("Comma-separated addr:qty[:color] entries. Color is optional per entry. " +
+                     "Example: 0001:5:Red,0002:3,0003:10:Blue  (0002 uses the global --color)")]
         public string Instructions { get; init; } = "";
 
         [CommandOption("-c|--color")]
+        [Description("Default color applied to entries that do not specify their own color")]
         [DefaultValue(LightColor.Green)]
         public LightColor Color { get; init; } = LightColor.Green;
 
@@ -235,20 +237,26 @@ public sealed class BatchPickCommand : AsyncCommand<BatchPickCommand.Settings>
     }
 
     private static IReadOnlyList<PickingInstruction> ParseInstructions(
-        string raw, LightColor color, string blockNo)
+        string raw, LightColor defaultColor, string blockNo)
     {
         var result = new List<PickingInstruction>();
         foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries))
         {
             var tokens = part.Trim().Split(':');
-            if (tokens.Length != 2) continue;
+            if (tokens.Length < 2) continue;
             if (!int.TryParse(tokens[1], out int qty)) continue;
+
+            // Optional 3rd token overrides the global default color for this entry
+            var color = defaultColor;
+            if (tokens.Length >= 3 && Enum.TryParse<LightColor>(tokens[2].Trim(), ignoreCase: true, out var entryColor))
+                color = entryColor;
+
             result.Add(new PickingInstruction
             {
-                Address = tokens[0].Trim().PadLeft(4, '0'),
+                Address  = tokens[0].Trim().PadLeft(4, '0'),
                 Quantity = qty,
-                Color   = color,
-                BlockNo = blockNo,
+                Color    = color,
+                BlockNo  = blockNo,
             });
         }
         return result;
