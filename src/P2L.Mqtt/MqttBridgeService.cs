@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -187,6 +188,13 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                 {
                     tls.WithAllowUntrustedCertificates();
                     tls.WithIgnoreCertificateChainErrors();
+                }
+                else if (s.Tls.CaCertPath is null)
+                {
+                    // MQTTnet v5 does not fall back to the OS trust store by default on macOS.
+                    // Explicitly delegate to .NET's built-in SSL validation (OS keychain).
+                    tls.WithCertificateValidationHandler(ctx =>
+                        ctx.SslPolicyErrors == SslPolicyErrors.None);
                 }
 
                 if (s.Tls.CaCertPath is not null)
