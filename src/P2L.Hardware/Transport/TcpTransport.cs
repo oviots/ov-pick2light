@@ -77,6 +77,16 @@ public sealed class TcpTransport : IAsyncDisposable
         return seq;
     }
 
+    /// <summary>
+    /// Enqueues a command with a specific (caller-supplied) sequence number.
+    /// Used for ACK ("O") responses that must echo the SeqNo of the "t" interrupt.
+    /// </summary>
+    public async ValueTask SendWithSeqAsync(string command, int seq, CancellationToken ct = default)
+    {
+        var packet = new AioiPacket { SequenceNo = seq, Command = command };
+        await _sendQueue.Writer.WriteAsync(packet, ct);
+    }
+
     // ─── Send loop ─────────────────────────────────────────────────────────
 
     private async Task SendLoopAsync(CancellationToken ct)
