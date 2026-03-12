@@ -134,6 +134,9 @@ publish/               Published binary output (gitignored)
 
 > `appsettings.json` must stay beside the binary — it is read from `AppContext.BaseDirectory` at startup.
 
+> **Binary size:** the Native AOT single-file binary is approximately **~15 MB**. The
+> `InvariantGlobalization=true` flag has been removed to maintain Spectre.Console compatibility.
+
 ### Native AOT and Spectre.Console reflection
 
 P2L is published with `PublishAot=true`. Spectre.Console.Cli uses runtime reflection
@@ -168,6 +171,7 @@ Edit `appsettings.json` before publishing, or override at runtime with environme
   },
   "LogDirectory":        "logs",
   "MaxLogFileSizeBytes": 10485760,
+  "EnableStatePersistence": false,
   "SelfHeal": {
     "Enabled":               true,
     "MaxRestarts":           5,
@@ -188,6 +192,24 @@ Edit `appsettings.json` before publishing, or override at runtime with environme
   }
 }
 ```
+
+### State Persistence (`EnableStatePersistence`)
+
+| Key | Default | Description |
+|---|---|---|
+| `EnableStatePersistence` | `false` | Persist Operating module state to `p2l_state.json` |
+
+When set to `true`, the registry of currently-lit modules is saved to `p2l_state.json` in the
+working directory after every state change and reloaded on startup. This is useful when P2L is
+invoked repeatedly as one-shot commands (e.g. from a script or WMS integration): without
+persistence, each invocation starts with an empty registry and a `pick` / `light on` command
+would use P1 (block-instruct), which extinguishes any modules lit by a previous invocation.
+With persistence enabled, the loaded state prevents the P1 command from accidentally clearing
+already-active modules (the P1 → P5 NACK fallback also helps here).
+
+> Set `EnableStatePersistence: false` (the default) when running the interactive dashboard —
+> the dashboard maintains state in memory for its entire lifetime and does not need file-backed
+> persistence.
 
 **Runtime overrides** via environment variables (prefix `P2L_`, double-underscore for nesting):
 
@@ -362,7 +384,9 @@ sudo ufw status
 
 ## 6. Command Reference
 
-Every command connects to the gateway, sends the `Z` initialization command (once per process), then executes. Press **Ctrl+C** at any time for a clean shutdown.
+One-shot commands (`light on`, `light off`, `light terminate`, `pick`, `run`) connect to the gateway and execute directly — they do **not** send the `Z` initialization command. Only the interactive dashboard (`./p2l`) sends `Z` on startup. This design means running one-shot commands while the dashboard is open will not wipe active lights.
+
+Press **Ctrl+C** at any time for a clean shutdown.
 
 ---
 
@@ -381,9 +405,6 @@ Every command connects to the gateway, sends the `Z` initialization command (onc
 
 # Terminate all modules (D00)
 ./p2l light terminate
-
-# Terminate a specific block
-./p2l light terminate --block 01
 ```
 
 **Colors:** `Off` `Red` `Green` `Blue` `Yellow` `Cyan` `Magenta` `White`
@@ -436,7 +457,7 @@ confirmed (button press) before the batch is considered complete.
 ```bash
 # All modules use the same color
 ./p2l pick "0001:5,0002:3,0003:10"
-./p2l pick "0001:5,0002:3" --color Yellow --block 01
+./p2l pick "0001:5,0002:3" --color Yellow
 
 # Per-entry color override (append :color as a third token)
 ./p2l pick "0001:5:Red,0002:3,0003:10:Blue" --color Green
@@ -447,6 +468,10 @@ confirmed (button press) before the batch is considered complete.
 
 **Format:** `<address>:<quantity>[:<color>]` — comma-separated. Color is case-insensitive and
 optional per entry; omitted entries use the global `--color` (default `Green`).
+
+> **Note:** If modules are already under instruction and the P1 block-instruct command is NACKed
+> by the gateway (per Aioi spec §3.4), `light on` automatically retries with the P5 rewritable
+> overwrite command. This fallback is transparent to the user.
 
 ---
 
@@ -466,7 +491,6 @@ pauses between tasks to let any in-flight MQTT command complete before starting 
 ```bash
 ./p2l run tasks.csv                  # default color = Green
 ./p2l run tasks.csv --color Red      # global default color
-./p2l run tasks.csv --color Green --block 01
 ```
 
 **CSV format** (`tasks.csv`):
@@ -484,7 +508,6 @@ address,quantity,color,label
 | Option | Default | Description |
 |---|---|---|
 | `--color` | `Green` | Default color for rows that omit the color column |
-| `--block` | `00` | Block number passed to the gateway |
 
 **Resumability:** completed rows are deleted immediately on confirmation. If the process is
 stopped and restarted, it continues from the first remaining row.
@@ -1272,21 +1295,32 @@ ExecStart=/opt/p2l/p2l run /opt/p2l/tasks.csv --color Green
 ## 11. Protocol Notes
 
 ### Initialization sequence
-Every command sends `Z` once before any operation. This resets all modules to standby.
-Subsequent commands within the same process skip the second `Z` (idempotent via `EnsureInitializedAsync`).
+The `Z` command resets all modules to standby. It is sent **only** by the interactive dashboard
+(`./p2l`) on startup. One-shot commands (`light on`, `light off`, `light terminate`, `pick`,
+`run`) do not send `Z`, so they can be used while the dashboard is running without wiping active
+lights.
 
 ### `light on` protocol (single module)
 ```
-Z  →  P1 <blockNo> <addr><display>   (block operation instruction, steady)
+P1 <blockNo> <addr><display>   (block operation instruction, steady)
    or
-   →  FP1 <blockNo> <addr><display>  (block operation instruction, flash)
+FP1 <blockNo> <addr><display>  (block operation instruction, flash)
+```
+
+If the gateway NACKs P1 because the module is already under instruction (Aioi spec §3.4), the
+command automatically retries with P5 (rewritable overwrite):
+
+```
+P5 <blockNo> <addr><display>   (overwrite instruction, steady)
+   or
+FP5 <blockNo> <addr><display>  (overwrite instruction, flash)
 ```
 
 ### `pick` protocol (batch)
 ```
-Z  →  P1  <blockNo> <addr1><disp1> <addr2><disp2> ...   (steady)
+P1  <blockNo> <addr1><disp1> <addr2><disp2> ...   (steady)
    or
-   →  FP1 <blockNo> <addr1><disp1> <addr2><disp2> ...   (flash)
+FP1 <blockNo> <addr1><disp1> <addr2><disp2> ...   (flash)
 ```
 
 Overwrite uses `P5` / `FP5`.

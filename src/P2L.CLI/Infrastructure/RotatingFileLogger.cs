@@ -81,8 +81,11 @@ public sealed class RotatingFileLoggerProvider : ILoggerProvider
 
         _writer?.Dispose();
         _currentPath = path;
-        _writer      = new StreamWriter(path, append: true) { AutoFlush = false };
-        _currentSize = new FileInfo(path).Exists ? new FileInfo(path).Length : 0;
+        // FileShare.ReadWrite: multiple processes (dashboard + one-shot commands)
+        // can safely append to the same log file concurrently.
+        var stream   = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+        _writer      = new StreamWriter(stream) { AutoFlush = false };
+        _currentSize = File.Exists(path) ? new FileInfo(path).Length : 0;
     }
 
     public void Dispose()

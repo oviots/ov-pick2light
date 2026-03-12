@@ -108,19 +108,16 @@ public sealed class ExportCommand : AsyncCommand<ExportCommand.Settings>
 
             await _gateway.StartAsync(cts.Token);
 
-            int total = s.To - s.From + 1;
-            await AnsiConsole.Progress()
-                .AutoRefresh(true)
-                .HideCompleted(false)
-                .AutoClear(false)
-                .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(),
-                         new PercentageColumn(), new RemainingTimeColumn(), new SpinnerColumn())
-                .StartAsync(async ctx2 =>
-                {
-                    var task     = ctx2.AddTask("Scanning", maxValue: total);
-                    var progress = new Progress<int>(_ => task.Increment(1));
-                    await _scanner.ScanAsync(s.From, s.To, s.Concurrency, progress, cts.Token);
-                });
+            int total   = s.To - s.From + 1;
+            int scanned = 0;
+            var progress = new Progress<int>(_ =>
+            {
+                var n = Interlocked.Increment(ref scanned);
+                if (n % 10 == 0 || n == total)
+                    Console.Write($"\r  Scanning {n} / {total}...   ");
+            });
+            await _scanner.ScanAsync(s.From, s.To, s.Concurrency, progress, cts.Token);
+            Console.WriteLine();
 
             AnsiConsole.WriteLine();
         }

@@ -151,17 +151,14 @@ public sealed class ImportCommand : AsyncCommand<ImportCommand.Settings>
         AnsiConsole.WriteLine();
         CsvApplyResult result = null!;
 
-        await AnsiConsole.Progress()
-            .AutoRefresh(true)
-            .HideCompleted(false)
-            .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(),
-                     new PercentageColumn(), new RemainingTimeColumn(), new SpinnerColumn())
-            .StartAsync(async ctx2 =>
-            {
-                var task     = ctx2.AddTask("Applying configurations", maxValue: valid.Count);
-                var progress = new Progress<int>(_ => task.Increment(1));
-                result = await _csv.ApplyAsync(valid, progress, cts.Token);
-            });
+        int applied = 0;
+        var applyProgress = new Progress<int>(_ =>
+        {
+            var n = Interlocked.Increment(ref applied);
+            Console.Write($"\r  Applying {n} / {valid.Count}...   ");
+        });
+        result = await _csv.ApplyAsync(valid, applyProgress, cts.Token);
+        Console.WriteLine();
 
         // ── Summary ───────────────────────────────────────────────────────
         AnsiConsole.WriteLine();

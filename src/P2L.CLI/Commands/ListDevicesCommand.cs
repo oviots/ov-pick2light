@@ -78,27 +78,20 @@ public sealed class ListDevicesCommand : AsyncCommand<ListDevicesCommand.Setting
             $"([grey]{total} probes, concurrency={s.Concurrency}[/])");
         AnsiConsole.WriteLine();
 
-        await AnsiConsole.Progress()
-            .AutoRefresh(true)
-            .HideCompleted(false)
-            .Columns(
-                new TaskDescriptionColumn(),
-                new ProgressBarColumn(),
-                new PercentageColumn(),
-                new RemainingTimeColumn(),
-                new SpinnerColumn())
-            .StartAsync(async progressCtx =>
-            {
-                var task = progressCtx.AddTask("Probing modules", maxValue: total);
-                var progress = new Progress<int>(_ => task.Increment(1));
-
-                results = await _scanner.ScanAsync(
-                    startAddr:      s.From,
-                    endAddr:        s.To,
-                    maxConcurrency: s.Concurrency,
-                    progress:       progress,
-                    ct:             cts.Token);
-            });
+        int probed = 0;
+        var progress = new Progress<int>(_ =>
+        {
+            var n = Interlocked.Increment(ref probed);
+            if (n % 10 == 0 || n == total)
+                Console.Write($"\r  Probing {n} / {total}...   ");
+        });
+        results = await _scanner.ScanAsync(
+            startAddr:      s.From,
+            endAddr:        s.To,
+            maxConcurrency: s.Concurrency,
+            progress:       progress,
+            ct:             cts.Token);
+        Console.WriteLine();
 
         AnsiConsole.WriteLine();
         RenderTable(results ?? []);
