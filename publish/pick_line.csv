@@ -1,0 +1,7 @@
+# address,quantity[,color][,label]
+# Color is optional — blank entries use the --color default.
+# Lines starting with # and the header row are ignored.
+address,quantity,color,label
+0001,5,Red,PartA
+0016,3,,Part-B
+0007,10,Blue,Part-C

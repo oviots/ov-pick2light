@@ -5,14 +5,11 @@ using P2L.Shared.Models;
 namespace P2L.Core.Services;
 
 /// <summary>
-/// Processes a CSV pick-task file sequentially:
-///   1. Read next pending row.
-///   2. Wait if MQTT commands are in-flight (PreemptionGate).
-///   3. Light the module via PickingEngine.
-///   4. Wait for operator confirmation on that specific address.
-///   5. Delete the confirmed row from the CSV (auto-delete).
-///   6. Fire TaskEvent for MQTT logging.
-///   Repeat until no rows remain.
+/// Processes a CSV pick-task file in batch mode:
+///   1. Read ALL pending rows.
+///   2. Light every module at once via PickingEngine.StartBatchAsync.
+///   3. Operators confirm in any order; each confirmation fires TaskEvent.
+///   4. When all confirmed, delete rows from CSV and fire csv_completed.
 ///
 /// CSV format (header row optional, # lines are comments):
 ///   address,quantity[,color][,label]
@@ -72,73 +69,98 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
     private async Task RunAsync(string csvPath, LightColor defaultColor,
                                 CancellationToken ct)
     {
-        _log.LogInformation("[CSV] Runner started: {File}", Path.GetFileName(csvPath));
+        _log.LogInformation("[CSV] Batch runner started: {File}", Path.GetFileName(csvPath));
 
-        while (!ct.IsCancellationRequested)
+        // Respect external pause before starting
+        while (Volatile.Read(ref _paused) == 1 && !ct.IsCancellationRequested)
+            await Task.Delay(100, ct);
+
+        // Yield to any in-flight MQTT command (strict priority)
+        await _gate.WaitIfPreemptedAsync(ct);
+
+        // Read all pending rows
+        var rows = ReadAllRows(csvPath, defaultColor);
+        if (rows.Count == 0)
         {
-            // Respect external pause (e.g. operator needs a break)
-            while (Volatile.Read(ref _paused) == 1 && !ct.IsCancellationRequested)
-                await Task.Delay(100, ct);
+            _log.LogInformation("[CSV] No tasks found.");
+            TaskEvent?.Invoke(new CsvTaskEvent("csv_completed", null));
+            _log.LogInformation("[CSV] Runner stopped.");
+            return;
+        }
 
-            // Yield to any in-flight MQTT command (strict priority)
-            await _gate.WaitIfPreemptedAsync(ct);
+        _log.LogInformation("[CSV] Lighting {Count} modules at once.", rows.Count);
 
-            var row = ReadNextRow(csvPath, defaultColor);
-            if (row is null)
+        var instructions = rows
+            .Select(r => new PickingInstruction
             {
-                _log.LogInformation("[CSV] All tasks completed.");
-                TaskEvent?.Invoke(new CsvTaskEvent("csv_completed", null));
-                break;
-            }
+                Address  = r.Address,
+                Quantity = r.Quantity,
+                Color    = r.Color,
+                LedMode  = LightState.On,
+            })
+            .ToList();
 
-            _log.LogInformation("[CSV] Task start: addr={A} qty={Q} color={C} label={L}",
+        try
+        {
+            await _engine.StartBatchAsync(instructions, ct);
+        }
+        catch (OperationCanceledException) { _log.LogInformation("[CSV] Runner stopped."); return; }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "[CSV] Failed to start batch.");
+            TaskEvent?.Invoke(new CsvTaskEvent("task_error", null));
+            _log.LogInformation("[CSV] Runner stopped.");
+            return;
+        }
+
+        foreach (var row in rows)
+        {
+            _log.LogInformation("[CSV] Task lit: addr={A} qty={Q} color={C} label={L}",
                 row.Address, row.Quantity, row.Color, row.Label);
+            TaskEvent?.Invoke(new CsvTaskEvent("task_started", row));
+        }
 
-            try
-            {
-                // Use PP1 batch command (InstructBatchAsync) for each item so that
-                // the gateway processes it as a block instruction, enabling proper
-                // batch tracking and the D-command termination sequence.
-                var instruction = new PickingInstruction
-                {
-                    Address  = row.Address,
-                    Quantity = row.Quantity,
-                    Color    = row.Color,
-                    LedMode  = LightState.On,
-                };
-                await _engine.StartBatchAsync([instruction], ct);
-                TaskEvent?.Invoke(new CsvTaskEvent("task_started", row));
+        // Track confirmations — keyed by padded address
+        var addrToRow = rows.ToDictionary(r => r.Address);
+        var confirmed = new List<CsvPickRow>();
+        var batchDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-                // Wait for the operator to confirm THIS module
-                var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                void OnConfirmed(ConfirmationEvent evt, LightModuleState? _)
-                {
-                    if (evt.Address.PadLeft(4, '0') == row.Address)
-                        tcs.TrySetResult();
-                }
+        void OnConfirmed(ConfirmationEvent evt, LightModuleState? _)
+        {
+            var addr = evt.Address.PadLeft(4, '0');
+            if (!addrToRow.TryGetValue(addr, out var row)) return;
 
-                _engine.ItemConfirmed += OnConfirmed;
-                try   { await tcs.Task.WaitAsync(ct); }
-                finally { _engine.ItemConfirmed -= OnConfirmed; }
+            confirmed.Add(row);
+            _log.LogInformation("[CSV] Confirmed: addr={A}", addr);
+            TaskEvent?.Invoke(new CsvTaskEvent("task_confirmed", row));
+        }
 
-                // Send D command (TerminateBlock) to turn off lights and reset batch state
-                await _engine.FinishBatchAsync(ct: ct);
+        void OnBatchCompleted() => batchDone.TrySetResult();
 
-                // Auto-delete confirmed row from CSV
+        _engine.ItemConfirmed  += OnConfirmed;
+        _engine.BatchCompleted += OnBatchCompleted;
+
+        try
+        {
+            await batchDone.Task.WaitAsync(ct);
+            await _engine.FinishBatchAsync(ct: ct);
+
+            // Delete confirmed rows in reverse line order so earlier line numbers stay valid
+            foreach (var row in confirmed.OrderByDescending(r => r.SourceLine))
                 DeleteRow(csvPath, row.SourceLine);
 
-                _log.LogInformation("[CSV] Task confirmed: addr={A}", row.Address);
-                TaskEvent?.Invoke(new CsvTaskEvent("task_confirmed", row));
-            }
-            catch (OperationCanceledException) { break; }
-            catch (Exception ex)
-            {
-                _log.LogError(ex, "[CSV] Error on addr={A}", row.Address);
-                TaskEvent?.Invoke(new CsvTaskEvent("task_error", row));
-                // Ensure batch state is clean before next iteration
-                if (_engine.IsBatchActive)
-                    try { await _engine.FinishBatchAsync(ct: ct); } catch { }
-            }
+            _log.LogInformation("[CSV] All tasks completed.");
+            TaskEvent?.Invoke(new CsvTaskEvent("csv_completed", null));
+        }
+        catch (OperationCanceledException)
+        {
+            if (_engine.IsBatchActive)
+                try { await _engine.FinishBatchAsync(ct: CancellationToken.None); } catch { }
+        }
+        finally
+        {
+            _engine.ItemConfirmed  -= OnConfirmed;
+            _engine.BatchCompleted -= OnBatchCompleted;
         }
 
         _log.LogInformation("[CSV] Runner stopped.");
@@ -146,9 +168,10 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
 
     // ─── CSV helpers ──────────────────────────────────────────────────────
 
-    private static CsvPickRow? ReadNextRow(string csvPath, LightColor defaultColor)
+    private static List<CsvPickRow> ReadAllRows(string csvPath, LightColor defaultColor)
     {
-        if (!File.Exists(csvPath)) return null;
+        var result = new List<CsvPickRow>();
+        if (!File.Exists(csvPath)) return result;
 
         var lines = File.ReadAllLines(csvPath);
         for (int i = 0; i < lines.Length; i++)
@@ -163,7 +186,7 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
             var address = tokens[0].Trim().PadLeft(4, '0');
 
             // Skip header row
-            if (address.Equals("addr", StringComparison.OrdinalIgnoreCase) ||
+            if (address.Equals("addr",    StringComparison.OrdinalIgnoreCase) ||
                 address.Equals("address", StringComparison.OrdinalIgnoreCase)) continue;
 
             if (!int.TryParse(tokens[1].Trim(), out int qty) || qty <= 0) continue;
@@ -175,17 +198,17 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
 
             var label = tokens.Length >= 4 ? tokens[3].Trim() : null;
 
-            return new CsvPickRow
+            result.Add(new CsvPickRow
             {
                 SourceLine = i + 1,
                 Address    = address,
                 Quantity   = qty,
                 Color      = color,
                 Label      = string.IsNullOrEmpty(label) ? null : label,
-            };
+            });
         }
 
-        return null;
+        return result;
     }
 
     private static void DeleteRow(string csvPath, int sourceLine)
@@ -202,7 +225,6 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Log but don't crash — row will be re-processed on next run if file write fails
             Console.Error.WriteLine($"[CSV] Warning: could not delete row {sourceLine}: {ex.Message}");
         }
     }

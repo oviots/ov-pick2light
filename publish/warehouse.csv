@@ -1,0 +1,28 @@
+﻿# P2L Device Configuration Export
+# Gateway:  192.168.1.254:5003
+# Exported: 2026-03-12 06:38:09 UTC
+#
+# HOW TO USE:
+#   1. Edit parameters in this file (see valid values below)
+#   2. Save the file
+#   3. Run:  p2l import <this-file>
+#
+# VALID VALUES:
+#   Color:          Off Red Green Blue Yellow Cyan Magenta White
+#   LedMode:        Off On Flash HighFlash
+#   SegMode:        Off On Flash
+#   BuzMode:        Off On Flash
+#   AfterConfirm:   Off On Flash NoChange
+#   BuzAfterConfirm:Off On Flash
+#   Display:        integer  (leave blank to keep current displayed value)
+#   Status:         informational only — ignored on import
+#
+Address,Display,Color,LedMode,SegMode,BuzMode,AfterConfirm,BuzAfterConfirm,Status,Label
+0001,,Off,Off,On,Off,Off,Off,Standby,
+0002,,Off,Off,On,Off,Off,Off,Standby,
+0003,,Off,Off,On,Off,Off,Off,Standby,
+0007,,Off,Off,On,Off,Off,Off,Standby,
+0009,,Off,Off,On,Off,Off,Off,Standby,
+0011,,Off,Off,On,Off,Off,Off,Standby,
+0016,,Off,Off,On,Off,Off,Off,Standby,
+0019,,Off,Off,On,Off,Off,Off,Standby,

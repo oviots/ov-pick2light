@@ -1,7 +1,7 @@
 # Pick2Light (P2L) — Aioi Light Module Controller
 
 A cross-platform .NET 10 CLI for controlling Aioi Systems L-PICK light modules over TCP.
-Runs as one-shot commands, a live dashboard, or a sequential guided-picking runner.
+Runs as one-shot commands or a live dashboard.
 Publishes to a **single self-contained binary** with no runtime dependency.
 
 ---
@@ -17,7 +17,7 @@ Publishes to a **single self-contained binary** with no runtime dependency.
    - [light on / off / terminate](#light--individual-module-control)
    - [light set — adjust parameters](#light-set--adjust-module-parameters)
    - [pick — batch session](#pick--batch-picking-session)
-   - [run — sequential CSV pick](#run--sequential-csv-pick)
+   - [run — CSV batch pick](#run--csv-batch-pick)
    - [devices — scan & list](#devices--scan-and-list)
    - [export — CSV export](#export--export-to-csv)
    - [import — CSV bulk apply](#import--bulk-apply-from-csv)
@@ -72,8 +72,8 @@ src/
     Services/
       HeartbeatService.cs    Keep-alive loop (Az every 30 s)
       DeviceScanService.cs   Concurrent Az range scan
-      PreemptionGate.cs      Two-priority gate: MQTT commands preempt CSV runner
-      CsvPickTaskRunner.cs   Sequential CSV pick runner with auto-delete and MQTT events
+      PreemptionGate.cs      Priority gate for MQTT command dispatching
+      CsvPickTaskRunner.cs   CSV batch runner — parses file, lights all modules via StartBatchAsync
       WatchdogService.cs     Monitors gateway connectivity; triggers restart after timeout
   P2L.Mqtt/            Optional MQTT bridge (MQTTnet v5, TLS)
     Configuration/     MqttSettings, MqttTlsSettings
@@ -81,7 +81,7 @@ src/
                        Events   (confirmed, light_changed, task_event,
                                  batch_completed, bridge_status)
                        P2LMqttJsonContext (source-gen JSON context for AOT)
-    MqttCommandDispatcher.cs  Deserializes commands → PickingEngine / CsvPickTaskRunner
+    MqttCommandDispatcher.cs  Deserializes commands → PickingEngine / CsvPickTaskRunner (csv_run)
     MqttEventPublisher.cs     Subscribes to engine + runner events → broker;
                               offline JSONL buffer when disconnected, auto-replay on reconnect
     MqttBridgeService.cs      Lifecycle owner: TLS connect, reconnect loop, LWT
@@ -475,23 +475,23 @@ optional per entry; omitted entries use the global `--color` (default `Green`).
 
 ---
 
-### `run` — Sequential CSV pick
+### `run` — CSV batch pick
 
-Processes a CSV file of pick tasks **one row at a time**:
-
-1. Light the module specified in the current row.
-2. Wait for the operator to press **CONFIRM** on that module.
-3. **Auto-delete** the confirmed row from the CSV file.
-4. Publish `task_started` / `task_confirmed` events to MQTT.
-5. Advance to the next row.
-
-Real-time MQTT commands arriving on `p2l/commands` are given **strict priority** — the runner
-pauses between tasks to let any in-flight MQTT command complete before starting the next.
+Reads all rows from a CSV file and lights every module simultaneously — identical to `pick` but
+sourced from a file instead of a command-line string. The command exits immediately after sending
+the batch; operators confirm modules in any order at their own pace.
 
 ```bash
 ./p2l run tasks.csv                  # default color = Green
 ./p2l run tasks.csv --color Red      # global default color
 ```
+
+**Behaviour:**
+1. Parse all rows from the CSV.
+2. Light all modules at once via `StartBatchAsync`.
+3. Print a summary of lit modules and exit.
+
+There is no waiting for confirmations, no auto-deletion of rows, and no guided sequential loop.
 
 **CSV format** (`tasks.csv`):
 
@@ -509,22 +509,13 @@ address,quantity,color,label
 |---|---|---|
 | `--color` | `Green` | Default color for rows that omit the color column |
 
-**Resumability:** completed rows are deleted immediately on confirmation. If the process is
-stopped and restarted, it continues from the first remaining row.
-
-**MQTT control while running** (publish to `p2l/commands`):
-
-```json
-{ "type": "csv_control", "action": "pause"  }
-{ "type": "csv_control", "action": "resume" }
-{ "type": "csv_control", "action": "cancel" }
-```
-
 ---
 
 ### `devices` — Scan and list
 
 Probes a range of module addresses via `Az` (status inquiry) and lists all that respond.
+Progress is printed inline (`Scanning N / total...`) to stdout — compatible with redirected
+output and concurrent log writers.
 
 ```bash
 ./p2l devices                          # scan 0001–0099
@@ -543,6 +534,7 @@ Probes a range of module addresses via `Az` (status inquiry) and lists all that 
 ### `export` — Export to CSV
 
 Writes all currently tracked modules to a UTF-8 CSV file.
+When `--scan` is used, progress is printed inline (`Scanning N / total...`).
 
 ```bash
 ./p2l export                              # default filename: devices_YYYYMMDD_HHmmss.csv
@@ -556,6 +548,7 @@ Writes all currently tracked modules to a UTF-8 CSV file.
 ### `import` — Bulk apply from CSV
 
 Reads a device-configuration CSV, validates rows, shows a preview, then applies to hardware.
+Apply progress is printed inline (`Applying N / total...`).
 
 ```bash
 ./p2l import devices.csv               # preview → confirm → apply
@@ -617,6 +610,9 @@ tail -f logs/p2l_*.log
 - File naming: `p2l_YYYYMMDD_HH.log` (rotates hourly or on size limit, default 10 MB)
 - Hardware traffic level: `Debug`
 - Console level: `Information` and above
+- **Concurrent writes:** the log file uses an exclusive-write lock so the interactive dashboard
+  and one-shot commands (`light on`, `pick`, `run`, etc.) can safely write to the same log file
+  simultaneously without corruption.
 
 ---
 
@@ -635,7 +631,7 @@ External System
     │  subscribe p2l/commands
     ▼
 [ MqttBridgeService ]
-    ├── MqttCommandDispatcher → PreemptionGate → PickingEngine / CsvPickTaskRunner
+    ├── MqttCommandDispatcher → PickingEngine / CsvPickTaskRunner (csv_run)
     │                                                  ↓ hardware
     └── MqttEventPublisher   ← StateChanged / ItemConfirmed / TaskEvent
                                    │
@@ -646,8 +642,7 @@ External System
 
 - **Reconnect:** exponential back-off starting at 0.5 s, capped at 2 min
 - **LWT:** broker publishes `bridge_status { online: false }` automatically on ungraceful disconnect
-- **Priority:** every MQTT command calls `PreemptionGate.Preempt()` before executing and
-  `Release()` after — the CSV runner checks the gate between tasks and waits
+- **Priority:** MQTT commands are dispatched via `PreemptionGate` to ensure ordered execution
 - **Offline buffering:** when the broker is unreachable, events are written to a local JSONL file
   instead of being dropped; on reconnect they are replayed in order before live events resume
 
@@ -881,7 +876,7 @@ Triggers one `light_changed` event per tracked module on `p2l/devices/{address}`
 { "type": "get_snapshot" }
 ```
 
-#### `csv_run` — Start a sequential CSV pick task
+#### `csv_run` — Start a CSV batch pick task
 ```json
 {
   "type":    "csv_run",
@@ -891,16 +886,9 @@ Triggers one `light_changed` event per tracked module on `p2l/devices/{address}`
 }
 ```
 
-The `file` path is resolved on the machine running P2L. The runner processes one row at a time,
-waits for confirmation, deletes the row, then advances. Real-time MQTT commands keep strict
-priority.
-
-#### `csv_control` — Pause / resume / cancel the CSV runner
-```json
-{ "type": "csv_control", "action": "pause"  }
-{ "type": "csv_control", "action": "resume" }
-{ "type": "csv_control", "action": "cancel" }
-```
+The `file` path is resolved on the machine running P2L. All rows are parsed and all modules are
+lit simultaneously via `StartBatchAsync`; the command returns immediately. Operators confirm in
+any order.
 
 ---
 
@@ -928,7 +916,7 @@ P2L publishes events to `p2l/events`. All events include `type` and `timestamp` 
 }
 ```
 
-#### `task_started` — CSV runner lit a module
+#### `task_started` — CSV batch started for a module
 ```json
 {
   "type":      "task_started",
@@ -940,7 +928,7 @@ P2L publishes events to `p2l/events`. All events include `type` and `timestamp` 
 }
 ```
 
-#### `task_confirmed` — Operator confirmed a CSV task row (row deleted from CSV)
+#### `task_confirmed` — Operator confirmed a module from a CSV batch
 ```json
 {
   "type":      "task_confirmed",
@@ -964,7 +952,7 @@ P2L publishes events to `p2l/events`. All events include `type` and `timestamp` 
 }
 ```
 
-#### `csv_completed` — All rows in the CSV file have been confirmed
+#### `csv_completed` — All modules from the CSV batch have been confirmed
 ```json
 {
   "type":      "csv_completed",
@@ -1284,7 +1272,7 @@ sudo systemctl start  p2l
 sudo systemctl status p2l
 ```
 
-For a CSV-based guided pick session that restarts automatically:
+To light a CSV batch on startup (exits after sending the batch — use `Type=oneshot` if desired):
 
 ```ini
 ExecStart=/opt/p2l/p2l run /opt/p2l/tasks.csv --color Green
@@ -1354,8 +1342,7 @@ P2L uses `NoChange` (0xFF) instead of `Off` (0x11) for after-confirm LED states.
 | `[MQTT] Connection failed` (repeated) | Broker unreachable or TLS mismatch | Check host/port; try `AllowUntrustedCerts: true` in dev |
 | MQTT commands received but no hardware action | Gateway disconnected | Check `bridge_status.gatewayConnected` on `p2l/status` |
 | `bridge_status { online: false }` on broker | LWT triggered — P2L crashed | Restart P2L; bridge auto-reconnects |
-| `run` CSV runner stops mid-file | Process killed or error on a row | Restart `./p2l run` — confirmed rows were deleted, picks up from next row |
-| CSV runner ignores MQTT commands | Commands arrive while row is in-flight | Expected — runner finishes current row confirm then yields; MQTT preempts between rows |
+| `run` exits immediately with no modules lit | No valid rows in CSV or gateway unreachable | Check CSV format and gateway connectivity |
 | No data on `p2l/events` | No subscriber active when event published | Subscribe before running; or use persistent session (`CleanStart: false`) |
 | No data on `p2l/devices/+` | No pick commands sent yet | Send `get_snapshot` MQTT command to dump all known module states |
 | `mqtt_offline_buffer.jsonl` grows indefinitely | Broker permanently unreachable | Fix broker connectivity; file is auto-deleted after successful replay |

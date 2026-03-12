@@ -1,8 +1,7 @@
 using P2L.Core;
-using P2L.Core.Services;
 using P2L.Hardware;
-using P2L.Mqtt;
 using P2L.Shared.Enums;
+using P2L.Shared.Models;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using System.ComponentModel;
@@ -11,9 +10,9 @@ using System.Runtime.InteropServices;
 namespace P2L.CLI.Commands;
 
 /// <summary>
-/// Runs a CSV pick-task file sequentially.
-/// Each row is lit, waits for operator confirmation, then deleted from the CSV.
-/// Real-time MQTT commands take strict priority over task advancement.
+/// Reads a CSV pick-task file and lights all modules at once.
+/// Operators confirm in any order. This command exits immediately after
+/// sending the batch — identical to `pick` but sourced from a CSV file.
 ///
 /// CSV format (header optional, # = comment):
 ///   address,quantity[,color][,label]
@@ -22,24 +21,13 @@ namespace P2L.CLI.Commands;
 /// </summary>
 public sealed class RunPickCommand : AsyncCommand<RunPickCommand.Settings>
 {
-    private readonly AioiGateway          _gateway;
-    private readonly HeartbeatService     _heartbeat;
-    private readonly WatchdogService      _watchdog;
-    private readonly CsvPickTaskRunner    _runner;
-    private readonly MqttBridgeService?   _mqtt;
-    private readonly OfflineBufferService? _offlineBuffer;
+    private readonly PickingEngine _engine;
+    private readonly AioiGateway   _gateway;
 
-    public RunPickCommand(AioiGateway gateway, HeartbeatService heartbeat,
-                          WatchdogService watchdog, CsvPickTaskRunner runner,
-                          MqttBridgeService? mqtt = null,
-                          OfflineBufferService? offlineBuffer = null)
+    public RunPickCommand(PickingEngine engine, AioiGateway gateway)
     {
-        _gateway       = gateway;
-        _heartbeat     = heartbeat;
-        _watchdog      = watchdog;
-        _runner        = runner;
-        _mqtt          = mqtt;
-        _offlineBuffer = offlineBuffer;
+        _engine  = engine;
+        _gateway = gateway;
     }
 
     public sealed class Settings : CommandSettings
@@ -67,51 +55,69 @@ public sealed class RunPickCommand : AsyncCommand<RunPickCommand.Settings>
         using var sigInt  = PosixSignalRegistration.Create(PosixSignal.SIGINT,  sig => { sig.Cancel = true; cts.Cancel(); });
         using var sigTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, sig => { sig.Cancel = true; cts.Cancel(); });
 
-        // ── Start infrastructure ──────────────────────────────────────────
-        await _gateway.StartAsync(cts.Token);
-        _heartbeat.Start();
-        _watchdog.Start();
-        await _gateway.EnsureInitializedAsync(cts.Token);
-
-        if (_mqtt is not null)
-            await _mqtt.StartAsync(cts.Token);
-        else
-            _offlineBuffer?.Start();
-
-        // ── Start runner ──────────────────────────────────────────────────
-        AnsiConsole.MarkupLine($"[bold yellow]CSV Pick Run:[/] [grey]{s.File}[/]  " +
-                               $"default color=[bold]{s.Color}[/]");
-
-        _runner.Start(s.File, s.Color);
-
-        // ── Wait for completion or cancellation ───────────────────────────
-        var done = new TaskCompletionSource();
-        _runner.TaskEvent += e =>
+        var instructions = ParseCsv(s.File, s.Color);
+        if (instructions.Count == 0)
         {
-            if (e.EventType == "csv_completed")
-                done.TrySetResult();
-            else if (e.EventType == "task_started")
-                AnsiConsole.MarkupLine($"  [cyan]→[/] addr=[bold]{e.Row!.Address}[/] " +
-                                       $"qty=[bold]{e.Row.Quantity}[/] " +
-                                       $"color=[bold]{e.Row.Color}[/]" +
-                                       (e.Row.Label is not null ? $" [grey]{e.Row.Label}[/]" : ""));
-            else if (e.EventType == "task_confirmed")
-                AnsiConsole.MarkupLine($"  [green]✓[/] addr=[bold]{e.Row!.Address}[/] confirmed");
-            else if (e.EventType == "task_error")
-                AnsiConsole.MarkupLine($"  [red]✗[/] addr=[bold]{e.Row!.Address}[/] error");
-        };
+            AnsiConsole.MarkupLine("[red]No valid instructions found in CSV.[/]");
+            return 1;
+        }
+
+        if (!_gateway.IsConnected)
+            await _gateway.StartAsync(cts.Token);
 
         try
         {
-            await done.Task.WaitAsync(cts.Token);
-            AnsiConsole.MarkupLine("[green]All pick tasks completed.[/]");
+            await _engine.StartBatchAsync(instructions, cts.Token);
+            AnsiConsole.MarkupLine($"[green]Batch started:[/] {instructions.Count} module(s) lit");
+            foreach (var inst in instructions)
+                AnsiConsole.MarkupLine($"  [cyan]●[/] addr=[bold]{inst.Address}[/] " +
+                                       $"qty=[bold]{inst.Quantity}[/] color=[bold]{inst.Color}[/]");
             return 0;
         }
-        catch (OperationCanceledException)
+        catch (TimeoutException ex)
         {
-            await _runner.CancelAsync();
-            AnsiConsole.MarkupLine("[grey]Cancelled.[/]");
-            return 130;
+            AnsiConsole.MarkupLine($"[red]Timeout:[/] {Markup.Escape(ex.Message)}");
+            return 1;
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine($"[red]Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+    }
+
+    private static IReadOnlyList<PickingInstruction> ParseCsv(string path, LightColor defaultColor)
+    {
+        var result = new List<PickingInstruction>();
+        var lines  = System.IO.File.ReadAllLines(path);
+
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith('#')) continue;
+
+            var tokens = trimmed.Split(',');
+            if (tokens.Length < 2) continue;
+
+            var address = tokens[0].Trim().PadLeft(4, '0');
+            if (address.Equals("addr",    StringComparison.OrdinalIgnoreCase) ||
+                address.Equals("address", StringComparison.OrdinalIgnoreCase)) continue;
+
+            if (!int.TryParse(tokens[1].Trim(), out int qty) || qty <= 0) continue;
+
+            var color = defaultColor;
+            if (tokens.Length >= 3 && !string.IsNullOrWhiteSpace(tokens[2]) &&
+                Enum.TryParse<LightColor>(tokens[2].Trim(), ignoreCase: true, out var c))
+                color = c;
+
+            result.Add(new PickingInstruction
+            {
+                Address  = address,
+                Quantity = qty,
+                Color    = color,
+            });
+        }
+
+        return result;
     }
 }
