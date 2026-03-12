@@ -23,6 +23,8 @@
       <Type Name="P2L.CLI.Commands.ExportCommand+Settings"         Dynamic="Required All"/>
       <Type Name="P2L.CLI.Commands.ImportCommand"                  Dynamic="Required All"/>
       <Type Name="P2L.CLI.Commands.ImportCommand+Settings"         Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.RunPickCommand"                 Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.RunPickCommand+Settings"        Dynamic="Required All"/>
     </Assembly>
     <Assembly Name="Spectre.Console.Cli">
       <Type Name="Spectre.Console.Cli.AsyncCommand`1"  Dynamic="Required All"/>

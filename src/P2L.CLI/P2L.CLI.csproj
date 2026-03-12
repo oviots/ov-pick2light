@@ -19,6 +19,9 @@
     <ProjectReference Include="..\P2L.Mqtt\P2L.Mqtt.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <RdXmlFile Include="rd.xml" />
+  </ItemGroup>
+  <ItemGroup>
     <Content Include="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
