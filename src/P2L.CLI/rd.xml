@@ -27,7 +27,10 @@
       <Type Name="P2L.CLI.Commands.RunPickCommand+Settings"        Dynamic="Required All"/>
     </Assembly>
     <Assembly Name="P2L.Mqtt">
-      <Type Name="P2L.Mqtt.OfflineBufferService" Dynamic="Required All" />
+      <Type Name="P2L.Mqtt.OfflineBufferService"              Dynamic="Required All" />
+      <Type Name="P2L.Mqtt.MqttBridgeService"                 Dynamic="Required All" />
+      <Type Name="P2L.Mqtt.Configuration.MqttSettings"        Dynamic="Required All" />
+      <Type Name="P2L.Mqtt.Configuration.MqttTlsSettings"     Dynamic="Required All" />
     </Assembly>
     <!-- Preserve all Spectre.Console rendering types and their interface vtables.
          Generic dispatch (e.g. IOverflowable, IRenderable, IBordereable) is trimmed

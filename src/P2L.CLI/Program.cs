@@ -8,6 +8,8 @@ using P2L.Core;
 using P2L.Core.Services;
 using P2L.Hardware;
 using P2L.Mqtt;
+using P2L.Mqtt.Configuration;
+using P2L.Shared.Constants;
 using Spectre.Console.Cli;
 
 // ─── Configuration ────────────────────────────────────────────────────────
@@ -18,7 +20,56 @@ var config = new ConfigurationBuilder()
     .AddEnvironmentVariables("P2L_")
     .Build();
 
-var appSettings = config.Get<AppSettings>() ?? new AppSettings();
+// config.Get<T>() uses reflection which is trimmed under Native AOT.
+// Read all values explicitly via the string-key indexer (no reflection).
+static bool   Cfg_Bool  (IConfiguration c, string k, bool   def) => bool .TryParse(c[k], out var v) ? v : def;
+static int    Cfg_Int   (IConfiguration c, string k, int    def) => int  .TryParse(c[k], out var v) ? v : def;
+static long   Cfg_Long  (IConfiguration c, string k, long   def) => long .TryParse(c[k], out var v) ? v : def;
+static string Cfg_String(IConfiguration c, string k, string def) => c[k] ?? def;
+
+var appSettings = new AppSettings
+{
+    Gateway = new GatewaySettings
+    {
+        Host    = Cfg_String(config, "Gateway:Host",    AioiConstants.DefaultGatewayIp),
+        Port    = Cfg_Int   (config, "Gateway:Port",    AioiConstants.DefaultTcpPort),
+        BlockNo = Cfg_String(config, "Gateway:BlockNo", "00"),
+    },
+    LogDirectory        = Cfg_String(config, "LogDirectory",        "logs"),
+    MaxLogFileSizeBytes = Cfg_Long  (config, "MaxLogFileSizeBytes", 10 * 1024 * 1024),
+    EnableStatePersistence = Cfg_Bool(config, "EnableStatePersistence", false),
+    Mqtt = new MqttSettings
+    {
+        Enabled           = Cfg_Bool  (config, "Mqtt:Enabled",           false),
+        Host              = Cfg_String(config, "Mqtt:Host",              "localhost"),
+        Port              = Cfg_Int   (config, "Mqtt:Port",              8883),
+        ClientId          = Cfg_String(config, "Mqtt:ClientId",          "p2l-bridge"),
+        Username          = config["Mqtt:Username"],
+        Password          = config["Mqtt:Password"],
+        CommandTopic      = Cfg_String(config, "Mqtt:CommandTopic",      "p2l/commands"),
+        EventTopic        = Cfg_String(config, "Mqtt:EventTopic",        "p2l/events"),
+        DevicesTopic      = Cfg_String(config, "Mqtt:DevicesTopic",      "p2l/devices"),
+        StatusTopic       = Cfg_String(config, "Mqtt:StatusTopic",       "p2l/status"),
+        OfflineBufferPath = Cfg_String(config, "Mqtt:OfflineBufferPath", "mqtt_offline_buffer.jsonl"),
+        Tls = new MqttTlsSettings
+        {
+            Enabled             = Cfg_Bool  (config, "Mqtt:Tls:Enabled",             true),
+            CaCertPath          = config["Mqtt:Tls:CaCertPath"],
+            ClientCertPath      = config["Mqtt:Tls:ClientCertPath"],
+            ClientKeyPath       = config["Mqtt:Tls:ClientKeyPath"],
+            CertPassword        = config["Mqtt:Tls:CertPassword"],
+            AllowUntrustedCerts = Cfg_Bool  (config, "Mqtt:Tls:AllowUntrustedCerts", false),
+        },
+    },
+    SelfHeal = new SelfHealSettings
+    {
+        Enabled               = Cfg_Bool(config, "SelfHeal:Enabled",               true),
+        MaxRestarts           = Cfg_Int (config, "SelfHeal:MaxRestarts",            5),
+        RestartWindowMinutes  = Cfg_Int (config, "SelfHeal:RestartWindowMinutes",   10),
+        BackOffSeconds        = Cfg_Int (config, "SelfHeal:BackOffSeconds",         3),
+        WatchdogTimeoutMinutes= Cfg_Int (config, "SelfHeal:WatchdogTimeoutMinutes", 5),
+    },
+};
 
 // ─── Self-heal crash handlers (installed as early as possible) ────────────
 

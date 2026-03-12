@@ -44,6 +44,7 @@ public sealed record BatchItemDto
 {
     public required string  Address  { get; init; }
     public required int     Quantity { get; init; }
+    public LightColor?      Color    { get; init; }   // null → use batch-level color
     public string?          Label    { get; init; }
 }
 

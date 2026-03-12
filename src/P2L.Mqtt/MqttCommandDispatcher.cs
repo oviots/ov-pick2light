@@ -83,7 +83,7 @@ internal sealed class MqttCommandDispatcher
                     {
                         Address  = i.Address,
                         Quantity = i.Quantity,
-                        Color    = cmd.Color,
+                        Color    = i.Color ?? cmd.Color,   // per-item color, falls back to batch default
                         LedMode  = cmd.LedMode,
                         Label    = i.Label,
                     }).ToList();

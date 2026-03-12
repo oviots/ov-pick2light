@@ -156,6 +156,14 @@ add its type and nested `Settings` type to `rd.xml`.**
 If the binary starts producing no output and `crash_history.jsonl` shows
 `Could not get settings type for command of type '...'`, a command type is missing from `rd.xml`.
 
+### Native AOT and `appsettings.json` binding
+
+`config.Get<T>()` (reflection-based) is **trimmed away** under Native AOT and silently returns
+`null`, leaving all settings at their hard-coded defaults. P2L avoids this by reading every
+configuration key via the string-key indexer (`config["Mqtt:Enabled"]`, etc.) which requires
+no reflection and is always AOT-safe. If you add a new settings field, add a corresponding
+explicit key read in `Program.cs` rather than relying on `config.Get<T>()`.
+
 ---
 
 ## 4. Configuration
@@ -822,12 +830,11 @@ All commands are JSON with a `type` discriminator field. Publish to `p2l/command
 ```json
 {
   "type":          "light_on",
-  "correlationId": "order-42",
-  "address":       "0003",
+  "address":       "0001",
   "quantity":      5,
   "color":         "Green",
   "ledMode":       "On",
-  "blockNo":       "00"
+  "correlationId": "optional-trace-id"
 }
 ```
 
@@ -835,37 +842,45 @@ All commands are JSON with a `type` discriminator field. Publish to `p2l/command
 |---|---|---|---|
 | `address` | yes | — | 4-digit module address |
 | `quantity` | yes | — | Number to display |
-| `color` | no | `Green` | `Off Red Green Blue Yellow Cyan Magenta White` |
-| `ledMode` | no | `On` | `On` or `Flash` |
-| `blockNo` | no | `"00"` | Block number |
+| `color` | no | `Green` | See color values below |
+| `ledMode` | no | `On` | See ledMode values below |
+| `label` | no | null | Optional display label |
 | `correlationId` | no | null | Echoed back in `confirmed` event |
 
 #### `light_off` — Extinguish a single module
 ```json
-{ "type": "light_off", "address": "0003" }
+{ "type": "light_off", "address": "0001" }
 ```
 
 #### `batch_start` — Light multiple modules simultaneously
+Equivalent to `./p2l pick` or `./p2l run`. `color` and `ledMode` set the batch-level defaults;
+each item can override `color` individually — omit the field to use the batch default.
 ```json
 {
   "type":    "batch_start",
-  "blockNo": "01",
-  "color":   "Yellow",
-  "ledMode": "Flash",
+  "color":   "Green",
+  "ledMode": "On",
   "items": [
-    { "address": "0001", "quantity": 5,  "label": "Shelf A1" },
-    { "address": "0002", "quantity": 10, "label": "Shelf A2" },
-    { "address": "0003", "quantity": 3  }
+    { "address": "0001", "quantity": 5,  "color": "Red",  "label": "Part-A" },
+    { "address": "0002", "quantity": 3 },
+    { "address": "0003", "quantity": 10, "color": "Blue", "label": "Part-C" }
   ]
 }
 ```
 
-#### `batch_finish` — Terminate a block
+| Item field | Required | Default | Description |
+|---|---|---|---|
+| `address` | yes | — | 4-digit module address |
+| `quantity` | yes | — | Number to display |
+| `color` | no | batch `color` | Per-item color override |
+| `label` | no | null | Optional display label |
+
+#### `batch_finish` — Terminate batch / turn off all lights
 ```json
-{ "type": "batch_finish", "blockNo": "01" }
+{ "type": "batch_finish" }
 ```
 
-#### `terminate_all` — Emergency stop
+#### `terminate_all` — Emergency stop — turn off all modules immediately
 ```json
 { "type": "terminate_all" }
 ```
@@ -879,16 +894,19 @@ Triggers one `light_changed` event per tracked module on `p2l/devices/{address}`
 #### `csv_run` — Start a CSV batch pick task
 ```json
 {
-  "type":    "csv_run",
-  "file":    "tasks.csv",
-  "color":   "Green",
-  "blockNo": "00"
+  "type":  "csv_run",
+  "file":  "/path/to/picks.csv",
+  "color": "Green"
 }
 ```
 
 The `file` path is resolved on the machine running P2L. All rows are parsed and all modules are
 lit simultaneously via `StartBatchAsync`; the command returns immediately. Operators confirm in
 any order.
+
+**Color values:** `Off` `Red` `Green` `Blue` `Yellow` `Cyan` `Magenta` `White`
+
+**LedMode values:** `Off` `On` `Flash` `HighFlash`
 
 ---
 
@@ -970,6 +988,8 @@ P2L publishes events to `p2l/events`. All events include `type` and `timestamp` 
   "moduleStatus":     "Active",
   "color":            "Green",
   "ledMode":          "On",
+  "segMode":          "On",
+  "buzMode":          "Off",
   "displayData":      "00005",
   "blockNo":          "00",
   "adjustedQuantity": 5,
@@ -1339,6 +1359,7 @@ P2L uses `NoChange` (0xFF) instead of `Off` (0x11) for after-confirm LED states.
 | Light doesn't turn on, no error | Module not at that address | Run `./p2l devices` to discover actual addresses |
 | `import` aborts with "Unknown Color value" | Typo in CSV Color column | Fix value; re-run with `--dry-run` |
 | `appsettings.json not found` | Binary moved without config file | Keep `appsettings.json` next to `p2l` |
+| `OfflineBufferService` in logs despite `Mqtt.Enabled: true` | Native AOT trimmed `config.Get<T>()` — all settings silently fell back to defaults | Upgrade to latest binary (fix is in `Program.cs` — explicit key reads) |
 | `[MQTT] Connection failed` (repeated) | Broker unreachable or TLS mismatch | Check host/port; try `AllowUntrustedCerts: true` in dev |
 | MQTT commands received but no hardware action | Gateway disconnected | Check `bridge_status.gatewayConnected` on `p2l/status` |
 | `bridge_status { online: false }` on broker | LWT triggered — P2L crashed | Restart P2L; bridge auto-reconnects |
