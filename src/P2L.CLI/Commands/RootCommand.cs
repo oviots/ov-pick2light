@@ -16,21 +16,24 @@ namespace P2L.CLI.Commands;
 /// </summary>
 public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
 {
-    private readonly AioiGateway         _gateway;
-    private readonly LightModuleRegistry _registry;
-    private readonly HeartbeatService    _heartbeat;
-    private readonly WatchdogService     _watchdog;
-    private readonly MqttBridgeService?  _mqtt;
+    private readonly AioiGateway          _gateway;
+    private readonly LightModuleRegistry  _registry;
+    private readonly HeartbeatService     _heartbeat;
+    private readonly WatchdogService      _watchdog;
+    private readonly MqttBridgeService?   _mqtt;
+    private readonly OfflineBufferService? _offlineBuffer;
 
     public RootCommand(AioiGateway gateway, LightModuleRegistry registry,
                        HeartbeatService heartbeat, WatchdogService watchdog,
-                       MqttBridgeService? mqtt = null)
+                       MqttBridgeService? mqtt = null,
+                       OfflineBufferService? offlineBuffer = null)
     {
-        _gateway   = gateway;
-        _registry  = registry;
-        _heartbeat = heartbeat;
-        _watchdog  = watchdog;
-        _mqtt      = mqtt;
+        _gateway       = gateway;
+        _registry      = registry;
+        _heartbeat     = heartbeat;
+        _watchdog      = watchdog;
+        _mqtt          = mqtt;
+        _offlineBuffer = offlineBuffer;
     }
 
     public sealed class Settings : CommandSettings
@@ -57,6 +60,11 @@ public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
             await _mqtt.StartAsync(cts.Token);
             AnsiConsole.MarkupLine("[green]MQTT bridge started.[/]");
         }
+        else if (_offlineBuffer is not null)
+        {
+            _offlineBuffer.Start();
+            AnsiConsole.MarkupLine("[grey]MQTT offline buffer active (broker not configured).[/]");
+        }
 
         if (!settings.NoInit)
         {
@@ -75,7 +83,16 @@ public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
         }
 
         var dashboard = new WarehouseDashboard(_gateway, _registry);
-        await dashboard.RunAsync(cts.Token);
+        try { await dashboard.RunAsync(cts.Token); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            AnsiConsole.Clear();
+            AnsiConsole.WriteException(ex, ExceptionFormats.ShortenPaths | ExceptionFormats.ShowLinks);
+            AnsiConsole.MarkupLine("[grey]Shutting down after error...[/]");
+            await _gateway.TerminateBlockAsync(ct: CancellationToken.None);
+            return 1;
+        }
 
         AnsiConsole.MarkupLine("[grey]Shutting down...[/]");
         await _gateway.TerminateBlockAsync(ct: CancellationToken.None);

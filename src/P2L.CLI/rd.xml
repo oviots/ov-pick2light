@@ -26,10 +26,13 @@
       <Type Name="P2L.CLI.Commands.RunPickCommand"                 Dynamic="Required All"/>
       <Type Name="P2L.CLI.Commands.RunPickCommand+Settings"        Dynamic="Required All"/>
     </Assembly>
-    <Assembly Name="Spectre.Console.Cli">
-      <Type Name="Spectre.Console.Cli.AsyncCommand`1"  Dynamic="Required All"/>
-      <Type Name="Spectre.Console.Cli.Command`1"       Dynamic="Required All"/>
-      <Type Name="Spectre.Console.Cli.CommandSettings" Dynamic="Required All"/>
+    <Assembly Name="P2L.Mqtt">
+      <Type Name="P2L.Mqtt.OfflineBufferService" Dynamic="Required All" />
     </Assembly>
+    <!-- Preserve all Spectre.Console rendering types and their interface vtables.
+         Generic dispatch (e.g. IOverflowable, IRenderable, IBordereable) is trimmed
+         by the AOT linker unless the entire assembly is kept. -->
+    <Assembly Name="Spectre.Console" Dynamic="Required All"/>
+    <Assembly Name="Spectre.Console.Cli" Dynamic="Required All"/>
   </Application>
 </Directives>

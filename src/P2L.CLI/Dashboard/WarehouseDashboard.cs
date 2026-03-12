@@ -21,7 +21,8 @@ public sealed class WarehouseDashboard
     private readonly AioiGateway        _gateway;
     private readonly LightModuleRegistry _registry;
 
-    private readonly Queue<string> _eventLog = new(capacity: 20);
+    private readonly Queue<string> _eventLog     = new(capacity: 20);
+    private readonly object        _eventLogLock = new();
     private bool _running;
 
     public WarehouseDashboard(AioiGateway gateway, LightModuleRegistry registry)
@@ -40,17 +41,22 @@ public sealed class WarehouseDashboard
         _running = true;
         AnsiConsole.Clear();
 
-        await AnsiConsole.Live(BuildLayout())
-            .AutoClear(false)
-            .Overflow(VerticalOverflow.Ellipsis)
-            .StartAsync(async ctx =>
-            {
-                while (!ct.IsCancellationRequested && _running)
+        try
+        {
+            await AnsiConsole.Live(BuildLayout())
+                .AutoClear(false)
+                .Overflow(VerticalOverflow.Ellipsis)
+                .StartAsync(async ctx =>
                 {
-                    ctx.UpdateTarget(BuildLayout());
-                    await Task.Delay(250, ct);
-                }
-            });
+                    while (!ct.IsCancellationRequested && _running)
+                    {
+                        ctx.UpdateTarget(BuildLayout());
+                        try { await Task.Delay(250, ct); }
+                        catch (OperationCanceledException) { break; }
+                    }
+                });
+        }
+        catch (OperationCanceledException) { /* Ctrl+C — exit cleanly */ }
     }
 
     public void Stop() => _running = false;
@@ -102,7 +108,10 @@ public sealed class WarehouseDashboard
         var modules = _registry.All;
         if (modules.Count == 0)
         {
-            table.AddRow(new Markup("[grey italic]No active modules[/]"));
+            // Must supply exactly 6 cells (one per column) — Spectre throws on mismatch
+            table.AddRow(
+                new Markup("[grey italic]No active modules[/]"),
+                Text.Empty, Text.Empty, Text.Empty, Text.Empty, Text.Empty);
             return table;
         }
 
@@ -124,9 +133,13 @@ public sealed class WarehouseDashboard
 
     private IRenderable BuildEventLog()
     {
+        string[] snapshot;
+        lock (_eventLogLock)
+            snapshot = _eventLog.ToArray();
+
         var panel = new Panel(
             new Markup(string.Join("\n",
-                _eventLog.Reverse().Take(10).Select(e => e))))
+                snapshot.Reverse().Take(10))))
         {
             Header      = new PanelHeader("[bold]Recent Events[/]"),
             Border      = BoxBorder.Rounded,
@@ -174,14 +187,20 @@ public sealed class WarehouseDashboard
             _                         => "[red]✗[/]",
         };
         var adj = evt.AdjustedDisplay is not null ? $" (qty={evt.AdjustedDisplay.Trim()})" : "";
-        _eventLog.Enqueue($"{DateTime.Now:HH:mm:ss} {icon} CONFIRM addr=[bold]{evt.Address}[/]{adj}");
-        if (_eventLog.Count > 20) _eventLog.Dequeue();
+        lock (_eventLogLock)
+        {
+            _eventLog.Enqueue($"{DateTime.Now:HH:mm:ss} {icon} CONFIRM addr=[bold]{evt.Address}[/]{adj}");
+            if (_eventLog.Count > 20) _eventLog.Dequeue();
+        }
     }
 
     private void OnConnectionChanged(bool connected)
     {
         var msg = connected ? "[green]Gateway connected[/]" : "[red]Gateway disconnected[/]";
-        _eventLog.Enqueue($"{DateTime.Now:HH:mm:ss} {msg}");
-        if (_eventLog.Count > 20) _eventLog.Dequeue();
+        lock (_eventLogLock)
+        {
+            _eventLog.Enqueue($"{DateTime.Now:HH:mm:ss} {msg}");
+            if (_eventLog.Count > 20) _eventLog.Dequeue();
+        }
     }
 }

@@ -42,6 +42,9 @@ public sealed class TcpTransport : IAsyncDisposable
     private Task? _sendLoop;
     private Task? _recvLoop;
 
+    private int               _reconnectAttempts;
+    private readonly SemaphoreSlim _reconnectLock = new(1, 1);
+
     /// <summary>Fires when a complete packet arrives from the controller.</summary>
     public event Action<AioiPacket>? PacketReceived;
 
@@ -181,25 +184,50 @@ public sealed class TcpTransport : IAsyncDisposable
 
     private async Task EnsureConnectedAsync(CancellationToken ct)
     {
-        while (!IsConnected && !ct.IsCancellationRequested)
+        if (IsConnected) return;
+
+        // Serialize reconnect attempts: whichever loop reaches here first does the work;
+        // the other waits and exits immediately once connected.
+        await _reconnectLock.WaitAsync(ct);
+        try
         {
-            try
+            while (!IsConnected && !ct.IsCancellationRequested)
             {
-                _client?.Dispose();
-                _client = new TcpClient();
-                _client.NoDelay = true;  // Disable Nagle for low-latency command delivery
-                await _client.ConnectAsync(_host, _port, ct);
-                _stream = _client.GetStream();
-                _log.LogInformation("Connected to gateway {Host}:{Port}", _host, _port);
-                ConnectionStateChanged?.Invoke(true);
-                return;
+                try
+                {
+                    _client?.Dispose();
+                    _client = new TcpClient();
+                    _client.NoDelay = true;  // Disable Nagle for low-latency command delivery
+                    await _client.ConnectAsync(_host, _port, ct);
+                    _stream = _client.GetStream();
+                    _log.LogInformation("Connected to gateway {Host}:{Port}", _host, _port);
+                    _reconnectAttempts = 0;
+                    ConnectionStateChanged?.Invoke(true);
+                    return;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception)
+                {
+                    int attempt = _reconnectAttempts++;
+                    int delayMs = (int)Math.Min(
+                        AioiConstants.ReconnectDelayMs * Math.Pow(2, attempt), 30_000);
+
+                    if (attempt == 0)
+                        _log.LogWarning(
+                            "Cannot connect to {Host}:{Port} — retrying with exponential backoff (max 30 s)",
+                            _host, _port);
+                    else
+                        _log.LogDebug(
+                            "Cannot connect to {Host}:{Port} — attempt {Attempt}, next retry in {Ms} ms",
+                            _host, _port, attempt + 1, delayMs);
+
+                    await Task.Delay(delayMs, ct);
+                }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _log.LogWarning("Cannot connect to {Host}:{Port} — retrying in {Ms} ms",
-                    _host, _port, AioiConstants.ReconnectDelayMs);
-                await Task.Delay(AioiConstants.ReconnectDelayMs, ct);
-            }
+        }
+        finally
+        {
+            _reconnectLock.Release();
         }
     }
 
@@ -209,6 +237,7 @@ public sealed class TcpTransport : IAsyncDisposable
         _client?.Dispose();
         _stream = null;
         _client = null;
+        _reconnectAttempts = 0;
         ConnectionStateChanged?.Invoke(false);
     }
 
@@ -237,5 +266,6 @@ public sealed class TcpTransport : IAsyncDisposable
         if (_recvLoop is not null) await _recvLoop.ConfigureAwait(false);
         DropConnection();
         _cts.Dispose();
+        _reconnectLock.Dispose();
     }
 }

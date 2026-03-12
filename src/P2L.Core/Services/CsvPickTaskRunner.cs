@@ -96,8 +96,18 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
 
             try
             {
-                await _engine.QuickLightAsync(row.Address, row.Quantity, row.Color,
-                                              LightState.On, ct);
+                // Use PP1 batch command (InstructBatchAsync) for each item so that
+                // the gateway processes it as a block instruction, enabling proper
+                // batch tracking and the D-command termination sequence.
+                var instruction = new PickingInstruction
+                {
+                    Address  = row.Address,
+                    Quantity = row.Quantity,
+                    Color    = row.Color,
+                    LedMode  = LightState.On,
+                    BlockNo  = blockNo,
+                };
+                await _engine.StartBatchAsync([instruction], ct);
                 TaskEvent?.Invoke(new CsvTaskEvent("task_started", row));
 
                 // Wait for the operator to confirm THIS module
@@ -112,6 +122,9 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
                 try   { await tcs.Task.WaitAsync(ct); }
                 finally { _engine.ItemConfirmed -= OnConfirmed; }
 
+                // Send D command (TerminateBlock) to turn off lights and reset batch state
+                await _engine.FinishBatchAsync(blockNo, ct);
+
                 // Auto-delete confirmed row from CSV
                 DeleteRow(csvPath, row.SourceLine);
 
@@ -123,6 +136,9 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
             {
                 _log.LogError(ex, "[CSV] Error on addr={A}", row.Address);
                 TaskEvent?.Invoke(new CsvTaskEvent("task_error", row));
+                // Ensure batch state is clean before next iteration
+                if (_engine.IsBatchActive)
+                    try { await _engine.FinishBatchAsync(blockNo, ct); } catch { }
             }
         }
 

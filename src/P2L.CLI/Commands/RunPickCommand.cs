@@ -22,21 +22,24 @@ namespace P2L.CLI.Commands;
 /// </summary>
 public sealed class RunPickCommand : AsyncCommand<RunPickCommand.Settings>
 {
-    private readonly AioiGateway        _gateway;
-    private readonly HeartbeatService   _heartbeat;
-    private readonly WatchdogService    _watchdog;
-    private readonly CsvPickTaskRunner  _runner;
-    private readonly MqttBridgeService? _mqtt;
+    private readonly AioiGateway          _gateway;
+    private readonly HeartbeatService     _heartbeat;
+    private readonly WatchdogService      _watchdog;
+    private readonly CsvPickTaskRunner    _runner;
+    private readonly MqttBridgeService?   _mqtt;
+    private readonly OfflineBufferService? _offlineBuffer;
 
     public RunPickCommand(AioiGateway gateway, HeartbeatService heartbeat,
                           WatchdogService watchdog, CsvPickTaskRunner runner,
-                          MqttBridgeService? mqtt = null)
+                          MqttBridgeService? mqtt = null,
+                          OfflineBufferService? offlineBuffer = null)
     {
-        _gateway   = gateway;
-        _heartbeat = heartbeat;
-        _watchdog  = watchdog;
-        _runner    = runner;
-        _mqtt      = mqtt;
+        _gateway       = gateway;
+        _heartbeat     = heartbeat;
+        _watchdog      = watchdog;
+        _runner        = runner;
+        _mqtt          = mqtt;
+        _offlineBuffer = offlineBuffer;
     }
 
     public sealed class Settings : CommandSettings
@@ -77,6 +80,8 @@ public sealed class RunPickCommand : AsyncCommand<RunPickCommand.Settings>
 
         if (_mqtt is not null)
             await _mqtt.StartAsync(cts.Token);
+        else
+            _offlineBuffer?.Start();
 
         // ── Start runner ──────────────────────────────────────────────────
         AnsiConsole.MarkupLine($"[bold yellow]CSV Pick Run:[/] [grey]{s.File}[/]  " +

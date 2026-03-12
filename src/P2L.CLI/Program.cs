@@ -80,6 +80,14 @@ if (appSettings.Mqtt.Enabled)
     services.AddSingleton(appSettings.Mqtt);
     services.AddSingleton<MqttBridgeService>();
 }
+// Offline buffer-only mode: MQTT disabled but OfflineBufferPath is configured.
+// Events are written to the JSONL file so nothing is lost before a broker is set up.
+// MqttEventPublisher will replay this file automatically on the first successful connect.
+else if (!string.IsNullOrWhiteSpace(appSettings.Mqtt.OfflineBufferPath))
+{
+    services.AddSingleton(appSettings.Mqtt);
+    services.AddSingleton<OfflineBufferService>();
+}
 
 // CLI Commands
 services.AddTransient<RootCommand>();

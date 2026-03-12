@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
+using P2L.Mqtt;
 using Spectre.Console.Cli;
 
 namespace P2L.CLI.Infrastructure;
@@ -15,6 +16,11 @@ public sealed class TypeRegistrar : ITypeRegistrar, IAsyncDisposable
     public ITypeResolver Build()
     {
         _provider = _services.BuildServiceProvider();
+        // Auto-start OfflineBufferService so every command (including one-shot commands
+        // like `light on` and `pick`) writes events to the buffer file without needing
+        // explicit wiring in each command class. Start() is idempotent — RootCommand and
+        // RunPickCommand calling it again is a safe no-op.
+        _provider.GetService<OfflineBufferService>()?.Start();
         return new TypeResolver(_provider);
     }
 
