@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -75,6 +76,18 @@ var appSettings = new AppSettings
 
 if (appSettings.SelfHeal.Enabled)
     SelfHealHandler.Install(appSettings.SelfHeal, args);
+
+// ─── Graceful-shutdown token ──────────────────────────────────────────────
+// Created early so it can be registered in DI for long-running commands.
+
+var cts = new CancellationTokenSource();
+
+// Ctrl-C (interactive) → cancel
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+
+// SIGTERM from systemd / container runtimes → cancel
+if (!OperatingSystem.IsWindows())
+    PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => cts.Cancel());
 
 // ─── Service registration ─────────────────────────────────────────────────
 
@@ -154,6 +167,8 @@ services.AddSingleton<DeviceConfigCsvService>();
 services.AddTransient<ExportCommand>();
 services.AddTransient<ImportCommand>();
 services.AddTransient<RunPickCommand>();
+// Shutdown CTS — long-running commands can inject this to honour graceful stop
+services.AddSingleton(cts);
 
 // ─── CLI application ──────────────────────────────────────────────────────
 
@@ -199,10 +214,23 @@ app.Configure(cfg =>
 #endif
 });
 
+// ─── Windows Service Control Manager mode ────────────────────────────────
+#if WINDOWS_SERVICE
+if (OperatingSystem.IsWindows() && !Environment.UserInteractive)
+{
+    // Launched by SCM: hand lifecycle to ServiceBase so Start/Stop hooks work.
+    using var winsvc = new P2LWindowsService(() => app.RunAsync(args), cts);
+    System.ServiceProcess.ServiceBase.Run(winsvc);
+    await registrar.DisposeAsync();
+    return 0;
+}
+#endif
+
 var exitCode = await app.RunAsync(args);
 
 // Explicitly await async disposal so IAsyncDisposable singletons
 // (HeartbeatService, AioiGateway, etc.) are fully torn down before exit.
 await registrar.DisposeAsync();
+cts.Dispose();
 
 return exitCode;

@@ -8,6 +8,8 @@
     <!-- Native AOT single-file binary -->
     <PublishAot>true</PublishAot>
     <SelfContained>true</SelfContained>
+    <StripSymbols>true</StripSymbols>
+    <InvariantGlobalization>true</InvariantGlobalization>
     <!-- Suppress third-party trim/AOT warnings from Spectre.Console -->
     <NoWarn>$(NoWarn);IL2104;IL3000;IL3002;IL3053</NoWarn>
   </PropertyGroup>
@@ -35,4 +37,8 @@
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
   </ItemGroup>
+  <!-- Compile Windows Service host only when targeting Windows -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'win-x64' OR '$(RuntimeIdentifier)' == 'win-arm64'">
+    <DefineConstants>$(DefineConstants);WINDOWS_SERVICE</DefineConstants>
+  </PropertyGroup>
 </Project>

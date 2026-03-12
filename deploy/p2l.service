@@ -9,22 +9,31 @@ Type=simple
 User=p2l
 Group=p2l
 WorkingDirectory=/opt/p2l
-ExecStart=/opt/p2l/p2l --no-init
+
+# Replace <csv-file> with your picking task list, e.g. /opt/p2l/tasks.csv
+ExecStart=/opt/p2l/p2l run /opt/p2l/tasks.csv
+
+# systemd sends SIGTERM on stop → P2L's PosixSignalRegistration drains TCP queue.
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+
 Restart=always
 RestartSec=5s
+
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=p2l
 
-# Limit blast radius if something goes wrong
+# Hardening: limit blast radius
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/p2l/logs
+ReadWritePaths=/opt/p2l/logs /opt/p2l
 
-# Environment overrides (optional)
+# Optional environment overrides — uncomment and adjust as needed:
 # Environment=P2L_GATEWAY__HOST=192.168.1.254
 # Environment=P2L_GATEWAY__PORT=5003
+# Environment=P2L_MQTT__ENABLED=false
 
 [Install]
 WantedBy=multi-user.target

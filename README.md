@@ -10,7 +10,7 @@ Publishes to a **single self-contained binary** with no runtime dependency.
 
 1. [Prerequisites](#1-prerequisites)
 2. [Repository Layout](#2-repository-layout)
-3. [Build](#3-build) — includes Native AOT / `rd.xml` note
+3. [Build & Publish](#3-build--publish) — includes Native AOT / publish profiles / `rd.xml` note
 4. [Configuration](#4-configuration)
 5. [USB-LAN Connection Verification](#5-usb-lan-connection-verification)
 6. [Command Reference](#6-command-reference)
@@ -27,6 +27,10 @@ Publishes to a **single self-contained binary** with no runtime dependency.
    - [Offline Buffering](#offline-buffering)
    - [Client Examples (Python / Java)](#client-examples--offline-buffer-python--java)
 10. [Self-Healing & 24/7 Operation](#10-self-healing--247-operation)
+    - [In-process self-heal](#in-process-self-heal-all-platforms)
+    - [Graceful shutdown (SIGTERM / SIGINT)](#graceful-shutdown-sigterm--sigint)
+    - [systemd Service (Linux)](#systemd-service-linux-247-operation)
+    - [Windows Service](#windows-service)
 11. [Protocol Notes](#11-protocol-notes)
 12. [Troubleshooting](#12-quick-troubleshooting-reference)
 
@@ -90,17 +94,26 @@ src/
                        ListDevicesCommand, ConfigureDeviceCommand,
                        ExportCommand, ImportCommand
     Infrastructure/    TypeRegistrar, RotatingFileLogger, ParameterParser,
-                       DeviceConfigCsvService, SelfHealHandler
+                       DeviceConfigCsvService, SelfHealHandler,
+                       WindowsServiceHost (compiled only for win-x64/arm64)
     Configuration/     AppSettings, GatewaySettings, SelfHealSettings
+    Properties/
+      PublishProfiles/ linux-x64.pubxml  linux-arm64.pubxml
+                       win-x64.pubxml    osx-arm64.pubxml
     appsettings.json
-publish/               Published binary output (gitignored)
+deploy/
+  p2l.service          systemd unit template
+  publish.sh           cross-platform Native AOT build script (all RIDs)
+  install-linux.sh     systemd installer — creates system user, copies binary, enables service
+  install-windows.ps1  Windows Service installer — sc.exe registration with failure recovery
+artifacts/             Published binary output (gitignored, one sub-dir per RID)
 ```
 
 **Dependency order:** `Shared → Hardware → Core → Mqtt → CLI`
 
 ---
 
-## 3. Build
+## 3. Build & Publish
 
 ### Debug (all projects)
 ```bash
@@ -112,30 +125,43 @@ publish/               Published binary output (gitignored)
 ~/.dotnet/dotnet build P2L.sln -c Release
 ```
 
-### Self-contained single-file binary (production)
+### Native AOT single-file binary (production)
+
+Use the included publish script, which sets all required AOT flags correctly:
 
 ```bash
-# macOS Apple Silicon
-~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
-  -c Release -r osx-arm64 -o ./publish
+# Single platform (default: linux-x64)
+./deploy/publish.sh
 
-# macOS x64
-~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
-  -c Release -r osx-x64 -o ./publish/osx-x64
+# Specific platform
+./deploy/publish.sh linux-x64
+./deploy/publish.sh linux-arm64    # Raspberry Pi 4/5, industrial ARM SBCs
+./deploy/publish.sh win-x64
+./deploy/publish.sh osx-arm64      # Apple Silicon (must compile on macOS)
 
-# Linux x64 — warehouse industrial PC / Raspberry Pi
-~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
-  -c Release -r linux-x64 -o ./publish/linux-x64
-
-# Windows x64
-~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
-  -c Release -r win-x64 -o ./publish/win-x64
+# All four platforms in sequence
+./deploy/publish.sh all
 ```
+
+Output lands in `artifacts/<rid>/p2l` (Linux/macOS) or `artifacts/win-x64/p2l.exe`.
+
+Alternatively, use MSBuild publish profiles directly:
+
+```bash
+~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj /p:PublishProfile=linux-x64
+~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj /p:PublishProfile=win-x64
+```
+
+Profiles live in `src/P2L.CLI/Properties/PublishProfiles/`. Each profile sets:
+- `PublishAot=true` — single native binary, no .NET runtime needed
+- `SelfContained=true`
+- `InvariantGlobalization=true` — removes ICU data tables (~5 MB saving)
+- `StripSymbols=true` — strips debug info from the final binary
 
 > `appsettings.json` must stay beside the binary — it is read from `AppContext.BaseDirectory` at startup.
 
-> **Binary size:** the Native AOT single-file binary is approximately **~15 MB**. The
-> `InvariantGlobalization=true` flag has been removed to maintain Spectre.Console compatibility.
+> **Binary size:** the Native AOT single-file binary is approximately **~12–15 MB** with
+> `InvariantGlobalization=true` and `StripSymbols=true`.
 
 ### Native AOT and Spectre.Console reflection
 
@@ -1255,47 +1281,132 @@ is disabled and the process exits cleanly (exit 1) to prevent runaway loops.
 Set `WatchdogTimeoutMinutes: 0` to disable the gateway watchdog (keep crash-handler only).
 Set `Enabled: false` to turn off the entire subsystem (useful during development).
 
+### Graceful shutdown (SIGTERM / SIGINT)
+
+P2L registers OS-level shutdown signals so hardware state is cleanly flushed before exit:
+
+| Signal | Source | Action |
+|---|---|---|
+| `Ctrl+C` / `SIGINT` | Interactive terminal | Cancel `CancellationTokenSource`, drain TCP queue, dispose |
+| `SIGTERM` | systemd `systemctl stop`, Docker, `kill` | Same as above (Linux/macOS only) |
+| SCM Stop request | Windows Service Control Manager | `P2LWindowsService.OnStop()` cancels shared CTS, waits up to 15 s |
+
+The shared `CancellationTokenSource` is registered in DI so long-running commands (e.g. `run`)
+can inject it and check `cts.Token` to exit their loop on demand.
+
+---
+
 ### systemd Service (Linux 24/7 Operation)
 
-Create `/etc/systemd/system/p2l.service`:
-
-```ini
-[Unit]
-Description=Pick2Light Gateway Controller
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/p2l
-ExecStart=/opt/p2l/p2l
-Restart=on-failure
-RestartSec=5
-Environment=P2L_Gateway__Host=192.168.1.254
-# Optional MQTT bridge
-Environment=P2L_Mqtt__Enabled=true
-Environment=P2L_Mqtt__Host=mqtt.example.com
-Environment=P2L_Mqtt__Username=p2l
-Environment=P2L_Mqtt__Password=secret
-
-[Install]
-WantedBy=multi-user.target
-```
-
-> **Note:** `Restart=on-failure` (exit codes ≠ 0) complements the in-process self-heal.
-> If the crash-loop guard fires (exit 1), systemd also catches it and retries after `RestartSec`.
+Use the automated installer — it creates a `p2l` system user, copies the binary, writes the
+unit file to `/etc/systemd/system/p2l.service`, and enables it on boot:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable p2l
-sudo systemctl start  p2l
-sudo systemctl status p2l
+# Build first
+./deploy/publish.sh linux-x64         # or linux-arm64
+
+# Install (requires sudo)
+sudo ./deploy/install-linux.sh
+# With custom paths:
+sudo ./deploy/install-linux.sh ./artifacts/linux-arm64/p2l /opt/p2l/tasks.csv
 ```
 
-To light a CSV batch on startup (exits after sending the batch — use `Type=oneshot` if desired):
+The installer writes a hardened systemd unit to `/etc/systemd/system/p2l.service`:
 
 ```ini
-ExecStart=/opt/p2l/p2l run /opt/p2l/tasks.csv --color Green
+[Service]
+Type=simple
+User=p2l
+Group=p2l
+WorkingDirectory=/opt/p2l
+ExecStart=/opt/p2l/p2l run /opt/p2l/tasks.csv
+KillSignal=SIGTERM          # triggers P2L's PosixSignalRegistration handler
+TimeoutStopSec=20s
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/p2l/logs /opt/p2l
+```
+
+> `Restart=always` (not `on-failure`) means systemd restarts P2L even after a clean exit, which
+> complements the in-process crash-loop guard: if the guard fires (exit 1), systemd retries after
+> `RestartSec=5s`.
+
+Manual management:
+
+```bash
+sudo systemctl status p2l
+sudo systemctl stop   p2l
+sudo systemctl start  p2l
+journalctl -u p2l -f       # live log stream
+```
+
+Environment overrides without editing the unit file:
+
+```bash
+sudo systemctl edit p2l
+# Add under [Service]:
+# Environment=P2L_GATEWAY__HOST=192.168.10.50
+# Environment=P2L_MQTT__ENABLED=true
+```
+
+---
+
+### Windows Service
+
+The `win-x64` binary detects when launched by the Windows Service Control Manager
+(`!Environment.UserInteractive`) and delegates to a `ServiceBase` wrapper, so SCM start/stop
+hooks work correctly without the full `Microsoft.Extensions.Hosting` stack.
+
+#### Install
+
+```powershell
+# Build first (must be run from Windows or a Windows CI runner)
+./deploy/publish.sh win-x64
+
+# Install (requires Administrator)
+./deploy/install-windows.ps1
+
+# Custom paths, start immediately
+./deploy/install-windows.ps1 `
+    -BinaryPath   .\artifacts\win-x64\p2l.exe `
+    -CsvTaskFile  "D:\Warehouse\tasks.csv" `
+    -StartNow
+```
+
+The installer:
+1. Copies the binary to `C:\Program Files\P2L\`
+2. Locks down the directory ACL (SYSTEM + Administrators = Full; service account = read-execute; logs = modify)
+3. Registers the service via `sc.exe` with `start= auto`
+4. Sets failure recovery: restart after 5 s, 3 attempts per 24-hour window
+
+#### Manage
+
+```powershell
+Start-Service   P2L
+Stop-Service    P2L
+Get-Service     P2L
+# Logs:
+Get-EventLog -LogName Application -Source P2L -Newest 50
+dir "C:\Program Files\P2L\logs"
+```
+
+#### Environment overrides
+
+Set machine-level environment variables before starting the service:
+
+```powershell
+[Environment]::SetEnvironmentVariable("P2L_GATEWAY__HOST", "192.168.1.254", "Machine")
+[Environment]::SetEnvironmentVariable("P2L_MQTT__ENABLED", "true",           "Machine")
+```
+
+#### Uninstall
+
+```powershell
+Stop-Service P2L -Force
+sc.exe delete P2L
+Remove-Item "C:\Program Files\P2L" -Recurse -Force
 ```
 
 ---
@@ -1372,4 +1483,8 @@ P2L uses `NoChange` (0xFF) instead of `Off` (0x11) for after-confirm LED states.
 | `./p2l --help` shows nothing, exits code 1 | AOT command type missing from `rd.xml` | Add the type to `rd.xml`; see §3 Native AOT note; delete `crash_history.jsonl` to reset counter |
 | Process restarts unexpectedly | In-process self-heal triggered by unhandled exception | Check `crash_history.jsonl` for the exception; fix root cause |
 | Process restarts every ~5 min | Watchdog fires — gateway stays disconnected | Fix network path to gateway; or set `WatchdogTimeoutMinutes: 0` to disable watchdog |
+| Windows Service stops immediately with "failed to start" | Binary not a valid Service executable | Ensure you built with `./deploy/publish.sh win-x64` (sets `WINDOWS_SERVICE` define); re-register |
+| Windows Service stop hangs for 30 s | `OnStop` waiting for CLI to drain | Normal — P2L flushes hardware TX queue; increase `TimeoutStopSec` if needed or check gateway connectivity |
+| systemd service restarts in a loop every 5 s | Crash-loop guard fired (exit 1) | Check `crash_history.jsonl` in `/opt/p2l/`; fix root cause; delete file to reset counter |
+| `journalctl -u p2l` shows nothing | `SyslogIdentifier` mismatch | Ensure unit file has `SyslogIdentifier=p2l`; re-run `install-linux.sh` |
 | Process no longer auto-restarts after repeated crashes | Crash-loop guard reached `MaxRestarts` | Fix root cause; delete `crash_history.jsonl` to reset the counter |
