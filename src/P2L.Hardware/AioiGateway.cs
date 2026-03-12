@@ -201,8 +201,7 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
             if (response.Kind == AioiDecoder.ResponseKind.Nack)
             {
                 _log.LogError("[NACK] Gateway rejected command: {Cmd}", command);
-                throw new InvalidOperationException(
-                    $"Gateway rejected command '{command}' with 'n' — check command format/address.");
+                throw new AioiNackException(command);
             }
 
             return response;

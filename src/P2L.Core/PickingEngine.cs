@@ -96,10 +96,10 @@ public sealed class PickingEngine : IDisposable
     /// block replace does not extinguish lights that are already on.
     /// Does not affect active batch tracking.
     /// </summary>
-    public Task QuickLightAsync(string address, int quantity,
-                                LightColor color   = LightColor.Green,
-                                LightState ledMode = LightState.On,
-                                CancellationToken ct = default)
+    public async Task QuickLightAsync(string address, int quantity,
+                                      LightColor color   = LightColor.Green,
+                                      LightState ledMode = LightState.On,
+                                      CancellationToken ct = default)
     {
         var inst = new PickingInstruction
         {
@@ -124,7 +124,20 @@ public sealed class PickingEngine : IDisposable
         if (!batch.Any(i => i.Address == inst.Address))
             batch.Add(inst);
 
-        return _gateway.InstructBatchAsync(batch, ct);
+        // Per Aioi spec §3.4: P1 can only instruct standby modules. If one or
+        // more modules are already under instruction, P1 is NACKed and we must
+        // retry with P5 (rewritable overwrite). Trying P1 first is correct for
+        // the common case (fresh start / after Z), avoiding an unnecessary P5
+        // round-trip when all modules are in standby.
+        try
+        {
+            await _gateway.InstructBatchAsync(batch, ct);
+        }
+        catch (AioiNackException)
+        {
+            _log.LogInformation("[QuickLight] P1 NACKed — retrying with P5 (overwrite)");
+            await _gateway.OverwriteBatchAsync(batch, ct);
+        }
     }
 
     /// <summary>

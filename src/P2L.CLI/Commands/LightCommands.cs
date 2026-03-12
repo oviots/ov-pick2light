@@ -47,7 +47,6 @@ public sealed class LightOnCommand : AsyncCommand<LightOnCommand.Settings>
 
         if (!_gateway.IsConnected)
             await _gateway.StartAsync(cts.Token);
-        await _gateway.EnsureInitializedAsync(cts.Token);
 
         try
         {
@@ -96,7 +95,6 @@ public sealed class LightOffCommand : AsyncCommand<LightOffCommand.Settings>
 
         if (!_gateway.IsConnected)
             await _gateway.StartAsync(cts.Token);
-        await _gateway.EnsureInitializedAsync(cts.Token);
 
         try
         {
@@ -146,7 +144,6 @@ public sealed class TerminateAllCommand : AsyncCommand<TerminateAllCommand.Setti
 
         if (!_gateway.IsConnected)
             await _gateway.StartAsync(cts.Token);
-        await _gateway.EnsureInitializedAsync(cts.Token);
 
         try
         {
@@ -209,7 +206,6 @@ public sealed class BatchPickCommand : AsyncCommand<BatchPickCommand.Settings>
 
         if (!_gateway.IsConnected)
             await _gateway.StartAsync(cts.Token);
-        await _gateway.EnsureInitializedAsync(cts.Token);
 
         try
         {
