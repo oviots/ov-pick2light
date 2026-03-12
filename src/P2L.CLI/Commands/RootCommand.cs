@@ -70,11 +70,11 @@ public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
 
         if (!settings.NoInit)
         {
-            AnsiConsole.Status()
-                .Start("Initializing gateway...", _ => { });
             try
             {
-                await _gateway.InitializeAsync(cts.Token);
+                await AnsiConsole.Status()
+                    .StartAsync("Initializing gateway...", async _ =>
+                        await _gateway.InitializeAsync(cts.Token));
                 AnsiConsole.MarkupLine("[green]Gateway initialized.[/]");
             }
             catch (Exception ex)
