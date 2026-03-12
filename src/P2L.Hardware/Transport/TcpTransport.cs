@@ -173,7 +173,8 @@ public sealed class TcpTransport : IAsyncDisposable
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                _log.LogWarning(ex, "Receive error; will reconnect");
+                // Log message only — full stack trace is noise for routine TCP drops
+                _log.LogWarning("Receive error; will reconnect: {Err}", ex.Message);
                 DropConnection();
                 pending.Clear();
             }

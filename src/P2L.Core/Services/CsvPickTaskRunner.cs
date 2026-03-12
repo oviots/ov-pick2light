@@ -45,13 +45,13 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
     // ─── Lifecycle ────────────────────────────────────────────────────────
 
     /// <summary>Start processing the CSV file. Throws if already running.</summary>
-    public void Start(string csvPath, LightColor defaultColor, string blockNo = "00")
+    public void Start(string csvPath, LightColor defaultColor)
     {
         if (IsRunning)
             throw new InvalidOperationException("CSV runner is already active. Cancel it first.");
 
         _cts  = new CancellationTokenSource();
-        _loop = Task.Run(() => RunAsync(csvPath, defaultColor, blockNo, _cts.Token));
+        _loop = Task.Run(() => RunAsync(csvPath, defaultColor, _cts.Token));
     }
 
     public void Pause()  => Interlocked.Exchange(ref _paused, 1);
@@ -70,7 +70,7 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
     // ─── Main loop ────────────────────────────────────────────────────────
 
     private async Task RunAsync(string csvPath, LightColor defaultColor,
-                                string blockNo, CancellationToken ct)
+                                CancellationToken ct)
     {
         _log.LogInformation("[CSV] Runner started: {File}", Path.GetFileName(csvPath));
 
@@ -105,7 +105,6 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
                     Quantity = row.Quantity,
                     Color    = row.Color,
                     LedMode  = LightState.On,
-                    BlockNo  = blockNo,
                 };
                 await _engine.StartBatchAsync([instruction], ct);
                 TaskEvent?.Invoke(new CsvTaskEvent("task_started", row));
@@ -123,7 +122,7 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
                 finally { _engine.ItemConfirmed -= OnConfirmed; }
 
                 // Send D command (TerminateBlock) to turn off lights and reset batch state
-                await _engine.FinishBatchAsync(blockNo, ct);
+                await _engine.FinishBatchAsync(ct: ct);
 
                 // Auto-delete confirmed row from CSV
                 DeleteRow(csvPath, row.SourceLine);
@@ -138,7 +137,7 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
                 TaskEvent?.Invoke(new CsvTaskEvent("task_error", row));
                 // Ensure batch state is clean before next iteration
                 if (_engine.IsBatchActive)
-                    try { await _engine.FinishBatchAsync(blockNo, ct); } catch { }
+                    try { await _engine.FinishBatchAsync(ct: ct); } catch { }
             }
         }
 

@@ -19,7 +19,6 @@ public sealed record LightOnCmd : MqttCommand
     public required int     Quantity { get; init; }
     public LightColor       Color    { get; init; } = LightColor.Green;
     public LightState       LedMode  { get; init; } = LightState.On;
-    public string           BlockNo  { get; init; } = "00";
     public string?          Label    { get; init; }
 }
 
@@ -36,7 +35,6 @@ public sealed record LightOffCmd : MqttCommand
 /// <summary>Start a picking batch across multiple modules.</summary>
 public sealed record BatchStartCmd : MqttCommand
 {
-    public string                     BlockNo { get; init; } = "00";
     public LightColor                 Color   { get; init; } = LightColor.Green;
     public LightState                 LedMode { get; init; } = LightState.On;
     public required List<BatchItemDto> Items  { get; init; }
@@ -75,9 +73,8 @@ public sealed record GetSnapshotCmd : MqttCommand { }
 /// <summary>Start processing a CSV pick-task file sequentially.</summary>
 public sealed record CsvRunCmd : MqttCommand
 {
-    public required string File    { get; init; }
-    public LightColor      Color   { get; init; } = LightColor.Green;
-    public string          BlockNo { get; init; } = "00";
+    public required string File  { get; init; }
+    public LightColor      Color { get; init; } = LightColor.Green;
 }
 
 // ─── csv_control ───────────────────────────────────────────────────────────

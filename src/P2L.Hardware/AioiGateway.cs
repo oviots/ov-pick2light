@@ -137,10 +137,12 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Lights a single module using M (mode/color) + P1 (block instruct with one item).
+    /// WARNING: P1 replaces the entire block — all other modules in the same block turn off.
     /// </summary>
     public Task InstructSingleAsync(PickingInstruction instruction,
                                     CancellationToken ct = default)
         => InstructBatchAsync([instruction], ct);
+
 
     // ─── Termination ──────────────────────────────────────────────────────
 

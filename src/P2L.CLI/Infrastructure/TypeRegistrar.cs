@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
+using P2L.Core;
 using P2L.Mqtt;
 using Spectre.Console.Cli;
 
@@ -16,6 +17,10 @@ public sealed class TypeRegistrar : ITypeRegistrar, IAsyncDisposable
     public ITypeResolver Build()
     {
         _provider = _services.BuildServiceProvider();
+        // Restore previously Operating modules before any command runs.
+        // This ensures QuickLightAsync / InstructBatchAsync include all still-lit
+        // modules in the P1 batch, preventing them from being extinguished.
+        _provider.GetService<RegistryPersistenceService>()?.Load();
         // Auto-start OfflineBufferService so every command (including one-shot commands
         // like `light on` and `pick`) writes events to the buffer file without needing
         // explicit wiring in each command class. Start() is idempotent — RootCommand and

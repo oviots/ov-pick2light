@@ -53,11 +53,6 @@ public sealed class RunPickCommand : AsyncCommand<RunPickCommand.Settings>
         [DefaultValue(LightColor.Green)]
         public LightColor Color { get; init; } = LightColor.Green;
 
-        [CommandOption("-b|--block")]
-        [Description("Block number used for batch grouping (default: 00)")]
-        [DefaultValue("00")]
-        public string BlockNo { get; init; } = "00";
-
         public override ValidationResult Validate()
         {
             if (!System.IO.File.Exists(File))
@@ -87,7 +82,7 @@ public sealed class RunPickCommand : AsyncCommand<RunPickCommand.Settings>
         AnsiConsole.MarkupLine($"[bold yellow]CSV Pick Run:[/] [grey]{s.File}[/]  " +
                                $"default color=[bold]{s.Color}[/]");
 
-        _runner.Start(s.File, s.Color, s.BlockNo);
+        _runner.Start(s.File, s.Color);
 
         // ── Wait for completion or cancellation ───────────────────────────
         var done = new TaskCompletionSource();

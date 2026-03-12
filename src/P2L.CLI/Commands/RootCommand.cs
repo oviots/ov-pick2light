@@ -45,8 +45,10 @@ public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
 
     public override async Task<int> ExecuteAsync(CommandContext ctx, Settings settings)
     {
-        using var cts     = new CancellationTokenSource();
-        using var sigInt  = PosixSignalRegistration.Create(PosixSignal.SIGINT,  sig => { sig.Cancel = true; cts.Cancel(); });
+        using var cts = new CancellationTokenSource();
+        // Console.CancelKeyPress works reliably alongside AnsiConsole.Live;
+        // PosixSignalRegistration(SIGINT) conflicts with Spectre's terminal control.
+        Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
         using var sigTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, sig => { sig.Cancel = true; cts.Cancel(); });
 
         AnsiConsole.MarkupLine("[bold yellow]Pick2Light[/] starting...");

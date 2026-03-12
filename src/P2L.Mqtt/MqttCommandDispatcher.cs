@@ -85,22 +85,17 @@ internal sealed class MqttCommandDispatcher
                         Quantity = i.Quantity,
                         Color    = cmd.Color,
                         LedMode  = cmd.LedMode,
-                        BlockNo  = cmd.BlockNo,
                         Label    = i.Label,
                     }).ToList();
                     await _engine.StartBatchAsync(instructions, ct);
-                    _log.LogInformation("[MQTT] batch_start block={B} count={C}",
-                        cmd.BlockNo, instructions.Count);
+                    _log.LogInformation("[MQTT] batch_start count={C}", instructions.Count);
                     break;
                 }
 
                 case "batch_finish":
                 {
-                    var cmd = JsonSerializer.Deserialize(payload,
-                        P2LMqttJsonContext.Default.BatchFinishCmd);
-                    if (cmd is null) break;
-                    await _engine.FinishBatchAsync(cmd.BlockNo, ct);
-                    _log.LogInformation("[MQTT] batch_finish block={B}", cmd.BlockNo);
+                    await _engine.FinishBatchAsync(ct: ct);
+                    _log.LogInformation("[MQTT] batch_finish");
                     break;
                 }
 
@@ -124,7 +119,7 @@ internal sealed class MqttCommandDispatcher
                         _log.LogWarning("[MQTT] csv_run ignored — runner already active");
                         break;
                     }
-                    _csvRunner.Start(cmd.File, cmd.Color, cmd.BlockNo);
+                    _csvRunner.Start(cmd.File, cmd.Color);
                     _log.LogInformation("[MQTT] csv_run file={F} color={C}", cmd.File, cmd.Color);
                     break;
                 }

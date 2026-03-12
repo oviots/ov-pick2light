@@ -91,7 +91,10 @@ public sealed class PickingEngine : IDisposable
     }
 
     /// <summary>
-    /// Lights a single module. Does not affect active batch tracking.
+    /// Lights a single module without turning off other active modules.
+    /// Re-sends P1 with all currently active modules plus this one so the
+    /// block replace does not extinguish lights that are already on.
+    /// Does not affect active batch tracking.
     /// </summary>
     public Task QuickLightAsync(string address, int quantity,
                                 LightColor color   = LightColor.Green,
@@ -100,13 +103,28 @@ public sealed class PickingEngine : IDisposable
     {
         var inst = new PickingInstruction
         {
-            Address  = address,
+            Address  = address.PadLeft(4, '0'),
             Quantity = quantity,
             Color    = color,
             LedMode  = ledMode,
         };
         _registry.SetInstructed(inst);
-        return _gateway.InstructSingleAsync(inst, ct);
+
+        var batch = _registry.All
+            .Where(m => m.Status == ModuleStatus.Operating)
+            .Select(m => new PickingInstruction
+            {
+                Address  = m.Address,
+                Quantity = int.TryParse(m.DisplayData.Trim(), out int q) ? q : 0,
+                Color    = m.Color,
+                LedMode  = m.LedMode,
+            })
+            .ToList();
+
+        if (!batch.Any(i => i.Address == inst.Address))
+            batch.Add(inst);
+
+        return _gateway.InstructBatchAsync(batch, ct);
     }
 
     /// <summary>
