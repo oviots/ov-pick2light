@@ -17,6 +17,9 @@ public sealed record ConfirmedEvt : MqttEvent
 {
     public required string   Address          { get; init; }
     public CompletionStatus  Status           { get; init; }
+    /// <summary>Parsed integer quantity after Fn/+- key adjustment. Null when no adjustment was made.</summary>
+    public int?              AdjustedQuantity { get; init; }
+    /// <summary>Raw 5-char display string from the t-interrupt packet (e.g. "00002" or "    2").</summary>
     public string?           AdjustedDisplay  { get; init; }
     public string?           CorrelationId    { get; init; }
 }

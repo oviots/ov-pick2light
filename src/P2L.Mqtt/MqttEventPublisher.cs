@@ -89,13 +89,14 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
     private void OnStateChanged(LightModuleState state)
         => _queue.Writer.TryWrite(StateToEvt(state));
 
-    private void OnItemConfirmed(ConfirmationEvent evt, LightModuleState? _)
+    private void OnItemConfirmed(ConfirmationEvent evt, LightModuleState? state)
         => _queue.Writer.TryWrite(new ConfirmedEvt
         {
-            Type            = "confirmed",
-            Address         = evt.Address,
-            Status          = evt.Status,
-            AdjustedDisplay = evt.AdjustedDisplay,
+            Type             = "confirmed",
+            Address          = evt.Address,
+            Status           = evt.Status,
+            AdjustedQuantity = state?.AdjustedQuantity,
+            AdjustedDisplay  = evt.AdjustedDisplay,
         });
 
     private void OnBatchCompleted()
@@ -226,6 +227,9 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
             catch (Exception ex)
             {
                 _log.LogError("[MQTT] Publish exception: {Err}", ex.Message);
+                // Rescue the event — broker disconnected mid-send, so buffer it for replay
+                // on the next reconnect instead of silently dropping it.
+                AppendToBuffer(liveMsg.Value.Topic, liveMsg.Value.Retain, liveMsg.Value.Payload);
             }
         }
 

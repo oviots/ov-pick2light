@@ -71,15 +71,30 @@ public sealed class TcpTransport : IAsyncDisposable
     }
 
     /// <summary>
-    /// Enqueues a command string. A packet frame (STX/SeqNo/DataLen/ETX) is
-    /// built automatically with an auto-incremented sequence number.
-    /// Returns the sequence number assigned to this command.
+    /// Atomically allocates the next sequence number without enqueuing anything.
+    /// Use this when a completion handler must be registered <em>before</em> the
+    /// command hits the wire (avoids the ACK-before-register race in request/response flows).
+    /// </summary>
+    public int AllocateSeqNo() => NextSeqNo();
+
+    /// <summary>
+    /// Enqueues a command using a pre-allocated sequence number.
+    /// Pair with <see cref="AllocateSeqNo"/> when ordering matters.
+    /// </summary>
+    public async ValueTask EnqueueAsync(string command, int seq, CancellationToken ct = default)
+    {
+        var packet = new AioiPacket { SequenceNo = seq, Command = command };
+        await _sendQueue.Writer.WriteAsync(packet, ct);
+    }
+
+    /// <summary>
+    /// Convenience: allocates a sequence number, enqueues the command, and returns the seq.
+    /// Use for fire-and-forget sends where no completion handler is needed.
     /// </summary>
     public async ValueTask<int> SendAsync(string command, CancellationToken ct = default)
     {
-        int seq = NextSeqNo();
-        var packet = new AioiPacket { SequenceNo = seq, Command = command };
-        await _sendQueue.Writer.WriteAsync(packet, ct);
+        int seq = AllocateSeqNo();
+        await EnqueueAsync(command, seq, ct);
         return seq;
     }
 

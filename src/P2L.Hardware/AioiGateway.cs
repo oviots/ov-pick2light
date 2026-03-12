@@ -188,8 +188,12 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         var tcs = new TaskCompletionSource<AioiDecoder.ParsedResponse>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        int seq = await _transport.SendAsync(command, ct);
+        // Allocate seq and register the completion handler BEFORE enqueuing the command.
+        // If registration happens after SendAsync returns, a fast gateway ACK can arrive
+        // in the receive loop before _pending[seq] is set → "Unmatched response" → 5 s timeout.
+        int seq = _transport.AllocateSeqNo();
         _pending[seq] = tcs;
+        await _transport.EnqueueAsync(command, seq, ct);
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(AioiConstants.EthernetResponseTimeoutMs);

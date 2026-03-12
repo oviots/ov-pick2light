@@ -73,8 +73,13 @@ public static class AioiDecoder
 
     // ─── t-interrupt parsing ───────────────────────────────────────────────
     // Format variants:
-    //   t[addr(4)][status(2)]                    — normal completion
-    //   t[addr(4)][status(2)][display(5)]        — +/- key adjusted quantity
+    //   t[addr(4)][status(2)]                       — normal completion
+    //   t[addr(4)][status(2)]<[display(5)]>         — Fn/+- key adjusted quantity
+    //
+    // Examples:
+    //   t000200              — address 0002, status 00, no adjustment
+    //   t000200<00006>       — address 0002, status 00, operator adjusted display to 6
+    //   t100100<    12>      — address 1001, status 00, operator adjusted display to 12
     //
     // Status codes: "00"=normal, "01"=abnormal, "10"=shortage
     private static ConfirmationEvent ParseInterrupt(string cmd, int seqNo)
@@ -83,10 +88,15 @@ public static class AioiDecoder
         if (cmd.Length < 7)
             return UnknownEvent(cmd, seqNo);
 
-        var address    = cmd[1..5];
-        var statusStr  = cmd[5..7];
-        var status     = ParseCompletionStatus(statusStr);
-        string? adjusted = cmd.Length >= 12 ? cmd[7..12] : null;
+        var address   = cmd[1..5];
+        var statusStr = cmd[5..7];
+        var status    = ParseCompletionStatus(statusStr);
+
+        // Extended format: t[addr4][status2]<[display5]>  — total 14 chars
+        // The '<' delimiter is at position 7 and '>' at position 13.
+        string? adjusted = cmd.Length >= 14 && cmd[7] == '<' && cmd[13] == '>'
+            ? cmd[8..13]   // 5-char display field (may have leading spaces, e.g. "    12")
+            : null;
 
         return new ConfirmationEvent
         {

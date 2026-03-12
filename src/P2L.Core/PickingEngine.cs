@@ -183,6 +183,9 @@ public sealed class PickingEngine : IDisposable
 
         if (IsBatchActive && removed && _pendingAddresses.Count == 0)
         {
+            // Auto-reset so the next batch_start is accepted without requiring
+            // an explicit FinishBatchAsync call from the WMS after batch_completed.
+            IsBatchActive = false;
             _log.LogInformation("All modules confirmed — batch complete");
             BatchCompleted?.Invoke();
         }
