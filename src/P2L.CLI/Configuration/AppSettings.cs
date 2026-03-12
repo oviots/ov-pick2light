@@ -22,6 +22,12 @@ public sealed class AppSettings
 
     /// <summary>Self-healing / auto-restart settings.</summary>
     public SelfHealSettings SelfHeal { get; init; } = new();
+
+    /// <summary>
+    /// Persist Operating module state to p2l_state.json so that lights
+    /// remain known across one-shot CLI invocations. Default: false.
+    /// </summary>
+    public bool EnableStatePersistence { get; init; } = false;
 }
 
 public sealed class GatewaySettings

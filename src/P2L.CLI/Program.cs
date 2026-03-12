@@ -73,7 +73,8 @@ services.AddSingleton<WatchdogService>(sp =>
 services.AddSingleton<DeviceScanService>();
 services.AddSingleton<PreemptionGate>();
 services.AddSingleton<CsvPickTaskRunner>();
-services.AddSingleton<RegistryPersistenceService>();
+if (appSettings.EnableStatePersistence)
+    services.AddSingleton<RegistryPersistenceService>();
 
 // MQTT bridge (optional — only registered when Enabled=true)
 if (appSettings.Mqtt.Enabled)
