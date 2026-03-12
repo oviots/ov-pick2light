@@ -33,7 +33,8 @@
       "Bash(strings ~/.nuget/packages/mqttnet/5.1.0.1559/lib/net10.0/MQTTnet.dll | grep -E \"^MqttFactory$|Factory|^Create\" | sort -u | head -20)",
       "Bash(strings ~/.nuget/packages/mqttnet/5.1.0.1559/lib/net10.0/MQTTnet.dll | grep -iE \"factory|Factory|Builder$\" | sort -u | head -20)",
       "Bash(grep -r \"Spectre\" /Volumes/GTeck/Projects/1shot/light/src/P2L.CLI/*.csproj)",
-      "Bash(cd /Volumes/GTeck/Projects/1shot/light/publish && ./p2l --help 2>&1; echo \"EXIT: $?\")"
+      "Bash(cd /Volumes/GTeck/Projects/1shot/light/publish && ./p2l --help 2>&1; echo \"EXIT: $?\")",
+      "Bash(ls -lh /Volumes/GTeck/Projects/1shot/light/publish/p2l && /Volumes/GTeck/Projects/1shot/light/publish/p2l --help)"
     ]
   }
 }

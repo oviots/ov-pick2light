@@ -10,7 +10,7 @@ Publishes to a **single self-contained binary** with no runtime dependency.
 
 1. [Prerequisites](#1-prerequisites)
 2. [Repository Layout](#2-repository-layout)
-3. [Build](#3-build)
+3. [Build](#3-build) — includes Native AOT / `rd.xml` note
 4. [Configuration](#4-configuration)
 5. [USB-LAN Connection Verification](#5-usb-lan-connection-verification)
 6. [Command Reference](#6-command-reference)
@@ -24,6 +24,8 @@ Publishes to a **single self-contained binary** with no runtime dependency.
 7. [Bulk CSV Workflow](#7-bulk-csv-workflow)
 8. [Audit Logs](#8-audit-logs)
 9. [MQTT Bridge](#9-mqtt-bridge)
+   - [Offline Buffering](#offline-buffering)
+   - [Client Examples (Python / Java)](#client-examples--offline-buffer-python--java)
 10. [Self-Healing & 24/7 Operation](#10-self-healing--247-operation)
 11. [Protocol Notes](#11-protocol-notes)
 12. [Troubleshooting](#12-quick-troubleshooting-reference)
@@ -113,23 +115,43 @@ publish/               Published binary output (gitignored)
 ### Self-contained single-file binary (production)
 
 ```bash
-# Linux x64 — warehouse industrial PC / Raspberry Pi
+# macOS Apple Silicon
 ~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
-  -c Release -r linux-x64 --self-contained true \
-  -o ./publish/linux-x64
+  -c Release -r osx-arm64 -o ./publish
 
 # macOS x64
 ~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
-  -c Release -r osx-x64 --self-contained true \
-  -o ./publish/osx-x64
+  -c Release -r osx-x64 -o ./publish/osx-x64
+
+# Linux x64 — warehouse industrial PC / Raspberry Pi
+~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
+  -c Release -r linux-x64 -o ./publish/linux-x64
 
 # Windows x64
 ~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj \
-  -c Release -r win-x64 --self-contained true \
-  -o ./publish/win-x64
+  -c Release -r win-x64 -o ./publish/win-x64
 ```
 
 > `appsettings.json` must stay beside the binary — it is read from `AppContext.BaseDirectory` at startup.
+
+### Native AOT and Spectre.Console reflection
+
+P2L is published with `PublishAot=true`. Spectre.Console.Cli uses runtime reflection
+(`GetInterfaces` / `GetGenericArguments`) to discover the `Settings` type of each command;
+without explicit preservation the AOT linker trims that metadata and the binary exits silently
+with no output (even for `--help`).
+
+`src/P2L.CLI/rd.xml` lists every command and settings class with `Dynamic="Required All"` and
+is wired into the project via `<RdXmlFile Include="rd.xml" />`. **If you add a new command,
+add its type and nested `Settings` type to `rd.xml`.**
+
+```xml
+<Type Name="P2L.CLI.Commands.MyNewCommand"          Dynamic="Required All" />
+<Type Name="P2L.CLI.Commands.MyNewCommand+Settings" Dynamic="Required All" />
+```
+
+If the binary starts producing no output and `crash_history.jsonl` shows
+`Could not get settings type for command of type '...'`, a command type is missing from `rd.xml`.
 
 ---
 
@@ -959,6 +981,219 @@ Published on connect and on gateway connection changes. `online: false` is also 
 
 ---
 
+### Client Examples — Offline Buffer (Python / Java)
+
+Both examples write to the same `mqtt_offline_buffer.jsonl` format P2L uses, so a buffer
+written by P2L can be replayed by these clients and vice versa.
+
+#### Python (`paho-mqtt`)
+
+```python
+# pip install paho-mqtt
+import json, base64, os, time, threading
+import paho.mqtt.client as mqtt
+
+BROKER_HOST  = "broker.example.com"
+BROKER_PORT  = 8883
+BUFFER_FILE  = "mqtt_offline_buffer.jsonl"
+EVENT_TOPIC  = "p2l/events"
+STATUS_TOPIC = "p2l/status"
+
+# ── Buffer helpers ────────────────────────────────────────────────────────────
+
+def append_to_buffer(topic: str, payload: bytes, retain: bool = False):
+    entry = {"Topic": topic, "Retain": retain,
+             "Payload": base64.b64encode(payload).decode()}
+    with open(BUFFER_FILE, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+def replay_buffer(client):
+    if not os.path.exists(BUFFER_FILE):
+        return
+    lines = [l.strip() for l in open(BUFFER_FILE) if l.strip()]
+    print(f"[replay] {len(lines)} buffered event(s)...")
+    for line in lines:
+        try:
+            e = json.loads(line)
+            info = client.publish(e["Topic"], base64.b64decode(e["Payload"]),
+                                  qos=1, retain=e.get("Retain", False))
+            info.wait_for_publish(timeout=5)
+        except Exception as ex:
+            print(f"[replay] skipped: {ex}")
+    os.remove(BUFFER_FILE)
+
+# ── Publish with fallback ─────────────────────────────────────────────────────
+
+_connected = threading.Event()
+
+def enqueue(topic: str, payload: bytes, retain: bool = False):
+    if _connected.is_set():
+        client.publish(topic, payload, qos=1, retain=retain)
+    else:
+        append_to_buffer(topic, payload, retain)
+
+# ── Callbacks ─────────────────────────────────────────────────────────────────
+
+def on_connect(client, userdata, flags, rc, props):
+    if rc == 0:
+        _connected.set()
+        replay_buffer(client)               # flush file before live events
+        client.subscribe("p2l/commands", qos=1)
+
+def on_disconnect(client, userdata, flags, rc, props):
+    _connected.clear()
+
+def on_message(client, userdata, msg):
+    print(f"[command] {json.loads(msg.payload)}")
+
+# ── Setup ─────────────────────────────────────────────────────────────────────
+
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
+                     client_id="p2l-py-client", clean_session=False)
+client.on_connect    = on_connect
+client.on_disconnect = on_disconnect
+client.on_message    = on_message
+client.will_set(STATUS_TOPIC,
+    json.dumps({"type": "bridge_status", "Online": False, "GatewayConnected": False}),
+    qos=1, retain=True)
+client.tls_set()        # OS trust store; pass ca_certs= for a custom CA
+client.connect_async(BROKER_HOST, BROKER_PORT)
+client.loop_start()
+
+# Simulate picking confirmations (works offline — written to file if disconnected)
+for i in range(1, 6):
+    payload = json.dumps({"type": "confirmed", "address": f"{i:04d}",
+                          "status": "Completed"}).encode()
+    enqueue(EVENT_TOPIC, payload)
+    time.sleep(0.5)
+
+input("Press Enter to stop\n")
+client.loop_stop()
+client.disconnect()
+```
+
+#### Java (Eclipse Paho MQTTv5)
+
+```java
+// Maven: org.eclipse.paho:org.eclipse.paho.mqttv5.client:1.2.5
+//        org.json:json:20231013
+import org.eclipse.paho.mqttv5.client.*;
+import org.eclipse.paho.mqttv5.client.persist.MqttDefaultFilePersistence;
+import org.eclipse.paho.mqttv5.common.*;
+import org.json.JSONObject;
+import java.io.*;
+import java.nio.file.*;
+import java.util.Base64;
+
+public class P2LOfflineBuffer {
+
+    static final String BROKER      = "ssl://broker.example.com:8883";
+    static final String CLIENT_ID   = "p2l-java-client";
+    static final String EVENT_TOPIC = "p2l/events";
+    static final Path   BUFFER_FILE = Path.of("mqtt_offline_buffer.jsonl");
+
+    MqttAsyncClient client;
+    volatile boolean connected = false;
+
+    void start() throws Exception {
+        var persistence = new MqttDefaultFilePersistence("./mqtt-persist");
+        client = new MqttAsyncClient(BROKER, CLIENT_ID, persistence);
+
+        // In-memory disconnected buffer — complements the file layer for brief outages
+        var bufOpts = new DisconnectedBufferOptions();
+        bufOpts.setBufferEnabled(true);
+        bufOpts.setBufferSize(500);
+        bufOpts.setPersistBuffer(true);
+        client.setBufferOpts(bufOpts);
+
+        client.setCallback(new MqttCallback() {
+            public void connectComplete(boolean reconnect, String uri) {
+                connected = true;
+                try { replayFileBuffer(); } catch (Exception e) { e.printStackTrace(); }
+            }
+            public void disconnected(MqttDisconnectResponse r) { connected = false; }
+            public void messageArrived(String topic, MqttMessage msg) {
+                System.out.println("[command] " + new String(msg.getPayload()));
+            }
+            public void deliveryComplete(IMqttToken t) {}
+            public void mqttErrorOccurred(MqttException e) { e.printStackTrace(); }
+            public void authPacketArrived(int r, MqttProperties p) {}
+        });
+
+        var opts = new MqttConnectionOptions();
+        opts.setCleanStart(false);
+        opts.setAutomaticReconnect(true);
+        var lwtPayload = "{\"type\":\"bridge_status\",\"Online\":false,\"GatewayConnected\":false}"
+                         .getBytes();
+        opts.setWill("p2l/status", new MqttMessage(lwtPayload, 1, true, null));
+        // opts.setSocketFactory(sslContext.getSocketFactory()); // custom CA if needed
+        client.connect(opts).waitForCompletion();
+    }
+
+    void enqueue(String topic, byte[] payload, boolean retain) {
+        if (connected) {
+            try { client.publish(topic, new MqttMessage(payload, 1, retain, null)); return; }
+            catch (MqttException ignored) {}
+        }
+        appendToFileBuffer(topic, payload, retain);
+    }
+
+    void appendToFileBuffer(String topic, byte[] payload, boolean retain) {
+        try {
+            var entry = new JSONObject()
+                .put("Topic", topic).put("Retain", retain)
+                .put("Payload", Base64.getEncoder().encodeToString(payload));
+            Files.writeString(BUFFER_FILE, entry + "\n",
+                StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException e) { e.printStackTrace(); }
+    }
+
+    void replayFileBuffer() throws Exception {
+        if (!Files.exists(BUFFER_FILE)) return;
+        var lines = Files.readAllLines(BUFFER_FILE);
+        System.out.println("[replay] " + lines.size() + " buffered event(s)...");
+        for (String line : lines) {
+            if (line.isBlank()) continue;
+            var e       = new JSONObject(line);
+            var payload = Base64.getDecoder().decode(e.getString("Payload"));
+            client.publish(e.getString("Topic"),
+                new MqttMessage(payload, 1, e.getBoolean("Retain"), null))
+                .waitForCompletion(5_000);
+        }
+        Files.deleteIfExists(BUFFER_FILE);
+        System.out.println("[replay] done");
+    }
+
+    public static void main(String[] args) throws Exception {
+        var bridge = new P2LOfflineBuffer();
+        bridge.start();
+        for (int i = 1; i <= 5; i++) {
+            bridge.enqueue(EVENT_TOPIC,
+                ("{\"type\":\"confirmed\",\"address\":\"" + String.format("%04d", i)
+                 + "\",\"status\":\"Completed\"}").getBytes(), false);
+            Thread.sleep(500);
+        }
+        Thread.sleep(2_000);
+        bridge.client.disconnect().waitForCompletion();
+    }
+}
+```
+
+**How the two layers interact:**
+```
+P2L event fires
+      │
+      ▼
+  Connected? ──yes──► publish QoS 1 ──► broker
+      │
+     no
+      ├──► DisconnectedBufferOptions (RAM — survives brief reconnects)
+      └──► mqtt_offline_buffer.jsonl (disk — survives process restarts)
+                 └─── on connectComplete() → replayFileBuffer() → delete
+```
+
+---
+
 ## 10. Self-Healing & 24/7 Operation
 
 ### In-process self-heal (all platforms)
@@ -1092,6 +1327,7 @@ P2L uses `NoChange` (0xFF) instead of `Off` (0x11) for after-confirm LED states.
 | `mqtt_offline_buffer.jsonl` grows indefinitely | Broker permanently unreachable | Fix broker connectivity; file is auto-deleted after successful replay |
 | Buffer replay log shows partial sync on every connect | Broker rejects some message type | Check `[MQTT] Buffer replay rejected` warnings in log for the specific reason code |
 | Want to discard buffered events and start fresh | Stale buffer from a different session | Delete `mqtt_offline_buffer.jsonl` manually before starting P2L |
+| `./p2l --help` shows nothing, exits code 1 | AOT command type missing from `rd.xml` | Add the type to `rd.xml`; see §3 Native AOT note; delete `crash_history.jsonl` to reset counter |
 | Process restarts unexpectedly | In-process self-heal triggered by unhandled exception | Check `crash_history.jsonl` for the exception; fix root cause |
 | Process restarts every ~5 min | Watchdog fires — gateway stays disconnected | Fix network path to gateway; or set `WatchdogTimeoutMinutes: 0` to disable watchdog |
 | Process no longer auto-restarts after repeated crashes | Crash-loop guard reached `MaxRestarts` | Fix root cause; delete `crash_history.jsonl` to reset the counter |
