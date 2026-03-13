@@ -78,12 +78,12 @@ class LightModuleRegistry:
             self._modules[addr] = module
         self._notify()
 
-    def add_device(self, address: str, label: str = "") -> LightModuleState:
+    def add_device(self, address: str, label: str = "", order_no: int = 0) -> LightModuleState:
         """Register a new device in standby state."""
         addr = self._normalize(address)
         with self._lock:
             if addr not in self._modules:
-                self._modules[addr] = LightModuleState(address=addr, label=label)
+                self._modules[addr] = LightModuleState(address=addr, label=label, order_no=order_no)
         self._notify()
         return self._modules[addr]
 
@@ -103,7 +103,7 @@ class LightModuleRegistry:
     @property
     def all(self) -> list[LightModuleState]:
         with self._lock:
-            return sorted(self._modules.values(), key=lambda m: m.address)
+            return sorted(self._modules.values(), key=lambda m: (m.order_no, m.address))
 
     def get(self, address: str) -> Optional[LightModuleState]:
         return self._modules.get(self._normalize(address))

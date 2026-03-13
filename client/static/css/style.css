@@ -273,6 +273,32 @@ html, body {
   letter-spacing: .05em;
 }
 
+.device-order-text {
+  font-size: .7rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: .05rem .35rem;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+.device-order-text:hover { color: var(--text); border-color: var(--accent); }
+
+.device-order-input {
+  font-size: .7rem;
+  width: 3.2rem;
+  background: var(--bg3);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  padding: .05rem .35rem;
+  outline: none;
+  flex-shrink: 0;
+}
+
 .device-label-row {
   display: flex;
   align-items: center;

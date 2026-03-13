@@ -104,9 +104,11 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
         from .protocol.models import LightModuleState
         addr = payload.get("address", "0000")
         module = registry.get(addr) or LightModuleState(address=addr)
-        stored_label = insert_if_new(registry._normalize(addr))
-        if not module.label and stored_label:
-            module.label = stored_label
+        stored = insert_if_new(registry._normalize(addr))
+        if not module.label and stored["label"]:
+            module.label = stored["label"]
+        if not module.order_no:
+            module.order_no = stored["order_no"]
         module.status = mqtt_to_module_status(payload.get("moduleStatus", "Standby"))
         module.color = mqtt_to_color(payload.get("color", "Off"))
         module.led_mode = mqtt_to_state(payload.get("ledMode", "Off"))
@@ -183,7 +185,7 @@ async def lifespan(app: FastAPI):
     from .db import init_db, load_devices
     init_db()
     for dev in load_devices():
-        registry.add_device(dev["address"], dev["label"])
+        registry.add_device(dev["address"], dev["label"], dev.get("order_no", 0))
     _setup_registry_callbacks()
     logger.info("P2L Web Dashboard → http://127.0.0.1:8765")
     if config.auto_connect:

@@ -86,10 +86,12 @@ class ConfigRequest(BaseModel):
 class AddDeviceRequest(BaseModel):
     address: str
     label: str = ""
+    order_no: int = 0
 
 
 class UpdateDeviceRequest(BaseModel):
-    label: str = ""
+    label: Optional[str] = None
+    order_no: Optional[int] = None
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -277,8 +279,8 @@ async def list_devices(request: Request):
 @router.post("/api/devices")
 async def add_device(request: Request, body: AddDeviceRequest):
     from ..db import upsert_device
-    module = _registry(request).add_device(body.address, body.label)
-    upsert_device(module.address, module.label)
+    module = _registry(request).add_device(body.address, body.label, body.order_no)
+    upsert_device(module.address, module.label, module.order_no)
     return module.to_dict()
 
 
@@ -300,16 +302,23 @@ async def remove_device(request: Request, address: str):
 
 @router.patch("/api/devices/{address}")
 async def update_device(request: Request, address: str, body: UpdateDeviceRequest):
-    from ..db import update_label, upsert_device
+    from ..db import update_label, update_order, upsert_device
     reg = _registry(request)
     module = reg.get(address)
     if module is None:
-        # Device not in registry yet — create it
-        module = reg.add_device(address, body.label)
-        upsert_device(module.address, body.label)
+        module = reg.add_device(
+            address,
+            body.label or "",
+            body.order_no if body.order_no is not None else 0,
+        )
+        upsert_device(module.address, module.label, module.order_no)
     else:
-        module.label = body.label
-        update_label(module.address, body.label)
+        if body.label is not None:
+            module.label = body.label
+            update_label(module.address, body.label)
+        if body.order_no is not None:
+            module.order_no = body.order_no
+            update_order(module.address, body.order_no)
         reg._notify()
     return module.to_dict()
 

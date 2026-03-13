@@ -196,7 +196,10 @@ function updateStats() {
 // ── Device Rendering ──────────────────────────────────────────────────────
 function renderDevices() {
   const grid = $('device-grid');
-  const devices = Object.values(state.devices).sort((a, b) => a.address.localeCompare(b.address));
+  const devices = Object.values(state.devices).sort((a, b) => {
+    const oa = a.order_no ?? 0, ob = b.order_no ?? 0;
+    return oa !== ob ? oa - ob : a.address.localeCompare(b.address);
+  });
 
   if (devices.length === 0) {
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
@@ -235,8 +238,8 @@ function createDeviceCard(d) {
 }
 
 function updateDeviceCard(card, d) {
-  // Don't clobber the label input if the user is currently editing it
-  if (card.querySelector('.device-label-input:focus')) {
+  // Don't clobber if the user is currently editing label or order
+  if (card.querySelector('.device-label-input:focus, .device-order-input:focus')) {
     card.className = `device-card status-${d.status}`;
     return;
   }
@@ -250,6 +253,43 @@ function _bindCardActions(card, address) {
   card.querySelector('.btn-light-off')?.addEventListener('click', () => lightOff(address));
   card.querySelector('.btn-remove')?.addEventListener('click', () => removeDevice(address));
 
+  // ── Order number inline edit ──
+  const orderText = card.querySelector('.device-order-text');
+  const orderInput = card.querySelector('.device-order-input');
+  if (orderText && orderInput) {
+    function startOrderEdit() {
+      orderText.style.display = 'none';
+      orderInput.style.display = 'inline-block';
+      orderInput.focus();
+      orderInput.select();
+    }
+    async function saveOrder() {
+      const newOrder = parseInt(orderInput.value) || 0;
+      orderText.textContent = `#${newOrder}`;
+      orderText.style.display = '';
+      orderInput.style.display = 'none';
+      try {
+        await api('PATCH', `/api/devices/${address}`, { order_no: newOrder });
+        if (state.devices[address]) {
+          state.devices[address].order_no = newOrder;
+          renderDevices();
+        }
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+    }
+    orderText.addEventListener('click', startOrderEdit);
+    orderInput.addEventListener('blur', saveOrder);
+    orderInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); orderInput.blur(); }
+      if (e.key === 'Escape') {
+        orderInput.value = state.devices[address]?.order_no ?? 0;
+        orderInput.blur();
+      }
+    });
+  }
+
+  // ── Label inline edit ──
   const editBtn = card.querySelector('.btn-edit-label');
   const labelText = card.querySelector('.device-label-text');
   const labelInput = card.querySelector('.device-label-input');
@@ -292,9 +332,12 @@ function deviceCardHTML(d) {
   const rawDisplay = d.adjusted_quantity || d.display_data || '00000';
   const displayVal = rawDisplay.trim().replace(/^0+/, '') || '0';
   const labelVal = escHtml(d.label || '');
+  const orderVal = d.order_no ?? 0;
 
   return `
     <div class="device-header">
+      <span class="device-order-text" title="Display order">#${orderVal}</span>
+      <input class="device-order-input" type="number" value="${orderVal}" min="0" style="display:none">
       <span class="device-address">${d.address}</span>
       <span class="status-badge ${d.status}">${statusLabel}</span>
     </div>

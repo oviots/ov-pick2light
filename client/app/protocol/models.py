@@ -18,6 +18,7 @@ class LightModuleState:
     adjusted_quantity: Optional[str] = None
     block_no: str = "00"
     label: str = ""
+    order_no: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -33,6 +34,7 @@ class LightModuleState:
             "adjusted_quantity": self.adjusted_quantity,
             "block_no": self.block_no,
             "label": self.label,
+            "order_no": self.order_no,
         }
 
 
