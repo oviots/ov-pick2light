@@ -46,19 +46,28 @@ public static class AioiEncoder
         (LightState Led2, LightState Led1, LightState Led0, LightState Seg, LightState Buz) afterConfirm)
     {
         // LED2 byte: high nibble is fixed 0x3 prefix, low nibble is the state
-        static char Led2B(LightState s)                => (char)(0x30 | (byte)s);
-        // Packed-nibble byte: high nibble = first state, low nibble = second state
-        static char Pack(LightState hi, LightState lo) => (char)(((byte)hi << 4) | (byte)lo);
+        static char Led2B(LightState s) => (char)(0x30 | (byte)s);
+        // Packed-nibble byte: high nibble = first state, low nibble = second state.
+        // SafePack avoids 0x11 (XON) and 0x13 (XOFF): some gateway firmware strips those
+        // bytes via XON/XOFF flow control, silently corrupting the command.
+        // Substitute Off(0x1) hi-nibble → NoChange(0xF) when it would produce a control char.
+        static char SafePack(LightState hi, LightState lo)
+        {
+            byte b = (byte)(((byte)hi << 4) | (byte)lo);
+            if (b == 0x11 || b == 0x13)
+                hi = LightState.NoChange;
+            return (char)(((byte)hi << 4) | (byte)lo);
+        }
 
         return new StringBuilder("M")
             .Append("m1")
             .Append(Led2B(normal.Led2))
-            .Append(Pack(normal.Led1,        normal.Led0))
-            .Append(Pack(normal.Seg,         normal.Buz))
+            .Append(SafePack(normal.Led1,        normal.Led0))
+            .Append(SafePack(normal.Seg,         normal.Buz))
             .Append("m2")
             .Append(Led2B(afterConfirm.Led2))
-            .Append(Pack(afterConfirm.Led1,  afterConfirm.Led0))
-            .Append(Pack(afterConfirm.Seg,   afterConfirm.Buz))
+            .Append(SafePack(afterConfirm.Led1,  afterConfirm.Led0))
+            .Append(SafePack(afterConfirm.Seg,   afterConfirm.Buz))
             .Append("m4\x40")   // CONFIRM + Fn key: enabled; Fn-decrement: disabled
             .ToString();
     }
@@ -109,9 +118,15 @@ public static class AioiEncoder
                                      LightState led2, LightState led1, LightState led0,
                                      LightState seg,  LightState buz)
     {
-        static char Led2B(LightState s)                => (char)(0x30 | (byte)s);
-        static char Pack(LightState hi, LightState lo) => (char)(((byte)hi << 4) | (byte)lo);
-        return $"Am1{address.PadLeft(4, '0')}{Led2B(led2)}{Pack(led1, led0)}{Pack(seg, buz)}";
+        static char Led2B(LightState s) => (char)(0x30 | (byte)s);
+        static char SafePack(LightState hi, LightState lo)
+        {
+            byte b = (byte)(((byte)hi << 4) | (byte)lo);
+            if (b == 0x11 || b == 0x13)
+                hi = LightState.NoChange;
+            return (char)(((byte)hi << 4) | (byte)lo);
+        }
+        return $"Am1{address.PadLeft(4, '0')}{Led2B(led2)}{SafePack(led1, led0)}{SafePack(seg, buz)}";
     }
 
     /// <summary>
@@ -130,20 +145,22 @@ public static class AioiEncoder
     // ─── Block operation instructions ─────────────────────────────────────
 
     /// <summary>
-    /// P1 — Steady-on block instruction. Format: P1[BlockNo(2)][Addr(4)][Display(5)]...
-    /// FP1 — Flash-mode block instruction. Same format, LED flashes instead of steady on.
-    /// Use P5/FP5 when you need to overwrite an in-progress instruction.
+    /// P1 — Block instruction. Format: P1[BlockNo(2)][Addr(4)][Display(5)]...
+    /// Flash mode is set via Am1 nibbles before P1, not via a separate FP1 command
+    /// (FP1 is NACK'd by L-PICK Ethernet gateways; Am1 controls On/Flash/HighFlash).
+    /// Use P5 when you need to overwrite an in-progress instruction.
     /// </summary>
     public static string BlockInstruct(string blockNo, IEnumerable<PickingInstruction> items,
                                        LightState ledMode = LightState.On)
-        => BuildBlockCommand(ledMode == LightState.Flash ? "FP1" : "P1", blockNo, items);
+        => BuildBlockCommand("P1", blockNo, items);
 
     /// <summary>
-    /// P5/FP5 — Rewritable block operation instruction (overwrites in-progress instruction).
+    /// P5 — Rewritable block operation instruction (overwrites in-progress instruction).
+    /// Flash mode is set via Am1 nibbles before P5.
     /// </summary>
     public static string BlockInstructOverwrite(string blockNo, IEnumerable<PickingInstruction> items,
                                                 LightState ledMode = LightState.On)
-        => BuildBlockCommand(ledMode == LightState.Flash ? "FP5" : "P5", blockNo, items);
+        => BuildBlockCommand("P5", blockNo, items);
 
     private static string BuildBlockCommand(string cmd, string blockNo, IEnumerable<PickingInstruction> items)
     {

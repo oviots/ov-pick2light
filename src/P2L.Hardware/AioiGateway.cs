@@ -95,8 +95,10 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     // ─── Mode configuration (reserved for future use) ─────────────────────
 
     /// <summary>
-    /// Sends the M (mode array) command. Not used in normal operation — flash mode
-    /// is controlled via FP1/FP5 command prefixes. Kept for diagnostic purposes.
+    /// Sends the global M (mode array) command. Sets the same color for every module
+    /// that does not have a per-address Am1 override. Useful for diagnostics or
+    /// single-color batches; normal operation uses Am1 per address inside
+    /// InstructBatchAsync / OverwriteBatchAsync.
     /// </summary>
     public Task SetModeForColorAsync(LightColor color,
                                      LightState  ledMode = LightState.On,
@@ -107,13 +109,22 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Lights up a batch of modules using P1 (steady) or FP1 (flash).
-    /// M command is not used — this gateway controls flash mode via command prefix.
-    /// All items in the batch should share the same LED mode.
+    /// Sends Am1 per address before P1 so each module uses the correct color.
     /// </summary>
     public async Task InstructBatchAsync(IReadOnlyList<PickingInstruction> instructions,
                                          CancellationToken ct = default)
     {
         if (instructions.Count == 0) return;
+
+        // Am1 sets per-address color AND mode (On/Flash/HighFlash nibbles).
+        // Am1's state nibbles are the authoritative "display status during instruction" —
+        // they control whether the LED is steady or flashing. P1 just triggers the instruction.
+        foreach (var inst in instructions)
+        {
+            var (led2, led1, led0) = inst.Color.ToLedStates(inst.LedMode);
+            await SendAndWaitAsync(
+                AioiEncoder.SetModeAm1(inst.Address, led2, led1, led0, LightState.On, LightState.Off), ct);
+        }
 
         var ledMode = instructions[0].LedMode;
         var blockNo = instructions[0].BlockNo;
@@ -125,11 +136,20 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Overwrites an in-progress batch using P5 (steady) or FP5 (flash).
+    /// Sends Am1 per address before P5 so color is applied correctly.
     /// </summary>
     public async Task OverwriteBatchAsync(IReadOnlyList<PickingInstruction> instructions,
                                           CancellationToken ct = default)
     {
         if (instructions.Count == 0) return;
+
+        foreach (var inst in instructions)
+        {
+            var (led2, led1, led0) = inst.Color.ToLedStates(inst.LedMode);
+            await SendAndWaitAsync(
+                AioiEncoder.SetModeAm1(inst.Address, led2, led1, led0, LightState.On, LightState.Off), ct);
+        }
+
         var ledMode = instructions[0].LedMode;
         var blockNo = instructions[0].BlockNo;
         await SendAndWaitAsync(AioiEncoder.BlockInstructOverwrite(blockNo, instructions, ledMode), ct);

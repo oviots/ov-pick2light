@@ -37,6 +37,10 @@ public sealed class LightOnCommand : AsyncCommand<LightOnCommand.Settings>
         [DefaultValue(LightColor.Green)]
         public LightColor Color { get; init; } = LightColor.Green;
 
+        [CommandOption("-m|--mode")]
+        [Description("LED mode: On Flash HighFlash")]
+        [DefaultValue(LightState.On)]
+        public LightState LedMode { get; init; } = LightState.On;
     }
 
     public override async Task<int> ExecuteAsync(CommandContext ctx, Settings s)
@@ -50,8 +54,8 @@ public sealed class LightOnCommand : AsyncCommand<LightOnCommand.Settings>
 
         try
         {
-            await _engine.QuickLightAsync(s.Address, s.Quantity, s.Color, ct: cts.Token);
-            AnsiConsole.MarkupLine($"[green]Light ON:[/] addr=[bold]{s.Address}[/] qty=[bold]{s.Quantity}[/] color=[bold]{s.Color}[/]");
+            await _engine.QuickLightAsync(s.Address, s.Quantity, s.Color, s.LedMode, cts.Token);
+            AnsiConsole.MarkupLine($"[green]Light ON:[/] addr=[bold]{s.Address}[/] qty=[bold]{s.Quantity}[/] color=[bold]{s.Color}[/] mode=[bold]{s.LedMode}[/]");
             return 0;
         }
         catch (TimeoutException ex)
@@ -189,6 +193,10 @@ public sealed class BatchPickCommand : AsyncCommand<BatchPickCommand.Settings>
         [DefaultValue(LightColor.Green)]
         public LightColor Color { get; init; } = LightColor.Green;
 
+        [CommandOption("-m|--mode")]
+        [Description("LED mode for all entries: On Flash HighFlash")]
+        [DefaultValue(LightState.On)]
+        public LightState LedMode { get; init; } = LightState.On;
     }
 
     public override async Task<int> ExecuteAsync(CommandContext ctx, Settings s)
@@ -197,7 +205,7 @@ public sealed class BatchPickCommand : AsyncCommand<BatchPickCommand.Settings>
         using var sigInt  = PosixSignalRegistration.Create(PosixSignal.SIGINT,  sig => { sig.Cancel = true; cts.Cancel(); });
         using var sigTerm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, sig => { sig.Cancel = true; cts.Cancel(); });
 
-        var instructions = ParseInstructions(s.Instructions, s.Color);
+        var instructions = ParseInstructions(s.Instructions, s.Color, s.LedMode);
         if (instructions.Count == 0)
         {
             AnsiConsole.MarkupLine("[red]No valid instructions parsed. Format: 0001:5,0002:3[/]");
@@ -226,7 +234,7 @@ public sealed class BatchPickCommand : AsyncCommand<BatchPickCommand.Settings>
     }
 
     private static IReadOnlyList<PickingInstruction> ParseInstructions(
-        string raw, LightColor defaultColor)
+        string raw, LightColor defaultColor, LightState ledMode = LightState.On)
     {
         var result = new List<PickingInstruction>();
         foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries))
@@ -245,6 +253,7 @@ public sealed class BatchPickCommand : AsyncCommand<BatchPickCommand.Settings>
                 Address  = tokens[0].Trim().PadLeft(4, '0'),
                 Quantity = qty,
                 Color    = color,
+                LedMode  = ledMode,
             });
         }
         return result;

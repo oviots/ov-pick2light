@@ -37,7 +37,9 @@
       "Bash(ls -lh /Volumes/GTeck/Projects/1shot/light/publish/p2l && /Volumes/GTeck/Projects/1shot/light/publish/p2l --help)",
       "Bash(ls -la /Volumes/GTeck/Projects/1shot/light/deploy/ && find /Volumes/GTeck/Projects/1shot/light -type f -name \"*.sh\" -o -name \"*.ps1\" -o -name \"Dockerfile*\" 2>/dev/null | head -20)",
       "Bash(tree -L 3 -I 'obj|bin|artifacts' /Volumes/GTeck/Projects/1shot/light/src 2>/dev/null || find /Volumes/GTeck/Projects/1shot/light/src -type d -not -path '*/obj*' -not -path '*/bin*' | sort)",
-      "Bash(grep -r \"WindowsService\" /Volumes/GTeck/Projects/1shot/light/src/P2L.CLI --include=\"*.cs\" 2>/dev/null | head -5)"
+      "Bash(grep -r \"WindowsService\" /Volumes/GTeck/Projects/1shot/light/src/P2L.CLI --include=\"*.cs\" 2>/dev/null | head -5)",
+      "Bash(curl -s -X POST http://127.0.0.1:8765/api/devices -H \"Content-Type: application/json\" -d '{\"address\":\"0015\",\"label\":\"\",\"order_no\":0}')",
+      "Bash(find /Volumes/GTeck/Projects/1shot/light -name \"*Test*\" -o -name \"*test*\" | grep -E \"\\\\.\\(cs|md\\)$\" | head -20)"
     ]
   }
 }
