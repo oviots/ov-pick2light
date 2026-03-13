@@ -19,6 +19,8 @@ public sealed record LightOnCmd : MqttCommand
     public required int     Quantity { get; init; }
     public LightColor       Color    { get; init; } = LightColor.Green;
     public LightState       LedMode  { get; init; } = LightState.On;
+    /// <summary>Buzzer mode. Null = mirrors LedMode (beeps when flashing).</summary>
+    public LightState?      BuzMode  { get; init; }
     public string?          Label    { get; init; }
 }
 
@@ -37,6 +39,8 @@ public sealed record BatchStartCmd : MqttCommand
 {
     public LightColor                 Color   { get; init; } = LightColor.Green;
     public LightState                 LedMode { get; init; } = LightState.On;
+    /// <summary>Buzzer mode. Null = mirrors LedMode (beeps when flashing).</summary>
+    public LightState?                BuzMode { get; init; }
     public required List<BatchItemDto> Items  { get; init; }
 }
 

@@ -44,6 +44,7 @@ class LightRequest(BaseModel):
     quantity: int = Field(default=1, ge=0, le=99999)
     color: str = Field(default="GREEN")
     led_mode: str = Field(default="ON")
+    buzz: bool = Field(default=True)
     block_no: str = Field(default="00")
     label: str = Field(default="")
 
@@ -58,6 +59,7 @@ class BatchItem(BaseModel):
 
 class BatchRequest(BaseModel):
     block_no: str = Field(default="00")
+    buzz: bool = Field(default=True)
     items: list[BatchItem]
 
 
@@ -327,14 +329,17 @@ async def update_device(request: Request, address: str, body: UpdateDeviceReques
 async def light_on(request: Request, address: str, body: LightRequest):
     c = _parse_color(body.color)
     s = _parse_led_mode(body.led_mode)
-    await _publish(request, {
+    payload: dict = {
         "type":     "light_on",
         "address":  address.zfill(4)[-4:],
         "quantity": body.quantity,
         "color":    _COLOR_TO_MQTT.get(c, "Green"),
         "ledMode":  _STATE_TO_MQTT.get(s, "On"),
         "label":    body.label or None,
-    })
+    }
+    if not body.buzz:
+        payload["buzMode"] = "Off"
+    await _publish(request, payload)
     return {"status": "sent", "address": address}
 
 
@@ -363,11 +368,14 @@ async def start_batch(request: Request, body: BatchRequest):
         }
         for item in body.items
     ]
-    await _publish(request, {
+    payload: dict = {
         "type":    "batch_start",
         "ledMode": _STATE_TO_MQTT.get(first_mode, "On"),
         "items":   items,
-    })
+    }
+    if not body.buzz:
+        payload["buzMode"] = "Off"
+    await _publish(request, payload)
     return {"status": "sent", "count": len(items)}
 
 

@@ -57,10 +57,11 @@ internal sealed class MqttCommandDispatcher
                     var cmd = JsonSerializer.Deserialize(payload,
                         P2LMqttJsonContext.Default.LightOnCmd);
                     if (cmd is null) break;
+                    var buzMode = cmd.BuzMode ?? cmd.LedMode;
                     await _engine.QuickLightAsync(cmd.Address, cmd.Quantity,
-                        cmd.Color, cmd.LedMode, cmd.LedMode, ct);
-                    _log.LogInformation("[MQTT] light_on addr={A} qty={Q} color={C} mode={M}",
-                        cmd.Address, cmd.Quantity, cmd.Color, cmd.LedMode);
+                        cmd.Color, cmd.LedMode, buzMode, ct);
+                    _log.LogInformation("[MQTT] light_on addr={A} qty={Q} color={C} mode={M} buz={B}",
+                        cmd.Address, cmd.Quantity, cmd.Color, cmd.LedMode, buzMode);
                     break;
                 }
 
@@ -79,12 +80,14 @@ internal sealed class MqttCommandDispatcher
                     var cmd = JsonSerializer.Deserialize(payload,
                         P2LMqttJsonContext.Default.BatchStartCmd);
                     if (cmd is null) break;
+                    var batchBuzMode = cmd.BuzMode ?? cmd.LedMode;
                     var instructions = cmd.Items.Select(i => new PickingInstruction
                     {
                         Address  = i.Address,
                         Quantity = i.Quantity,
                         Color    = i.Color ?? cmd.Color,   // per-item color, falls back to batch default
                         LedMode  = cmd.LedMode,
+                        BuzMode  = batchBuzMode,
                         Label    = i.Label,
                     }).ToList();
                     await _engine.StartBatchAsync(instructions, ct);

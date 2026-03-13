@@ -118,11 +118,12 @@ automatically at startup) so they survive server restarts.
 
 | Function | Behaviour |
 |---|---|
-| `init_db()` | Creates `devices(address PK, label)` table if absent |
-| `load_devices()` | Returns all rows sorted by address — loaded into registry on startup |
-| `upsert_device(address, label)` | Insert or overwrite; used by explicit API calls (`POST /api/devices`, `PATCH /api/devices/{address}`) |
-| `insert_if_new(address)` | Insert with empty label only if address is unknown; returns the stored label.  Used when `light_changed` MQTT events arrive so auto-discovered devices persist without overwriting user-set labels |
+| `init_db()` | Creates `devices(address PK, label, order_no)` table if absent |
+| `load_devices()` | Returns all rows sorted by `order_no` then `address` — loaded into registry on startup |
+| `upsert_device(address, label, order_no)` | Insert or overwrite; used by explicit API calls (`POST /api/devices`, `PATCH /api/devices/{address}`) |
+| `insert_if_new(address)` | Insert with empty label and `order_no=0` only if address is unknown; returns the stored label.  Used when `light_changed` MQTT events arrive so auto-discovered devices persist without overwriting user-set labels |
 | `update_label(address, label)` | Update label only (address must already exist) |
+| `update_order(address, order_no)` | Update display order only (address must already exist) |
 | `remove_device(address)` | Delete one row |
 | `clear_devices()` | Delete all rows |
 
@@ -165,13 +166,16 @@ All field names are **camelCase**; enum strings are **PascalCase** (matching
 the P2L .NET `P2LMqttJsonContext` serialisation settings).
 
 ```jsonc
-// Light a single module
-{ "type": "light_on", "address": "0001", "quantity": 5, "color": "Green", "ledMode": "On", "label": "SKU-123" }
+// Light a single module (buzMode omitted → mirrors ledMode)
+{ "type": "light_on", "address": "0001", "quantity": 5, "color": "Green", "ledMode": "Flash", "label": "SKU-123" }
+
+// Light a single module with buzzer off
+{ "type": "light_on", "address": "0001", "quantity": 5, "color": "Red", "ledMode": "Flash", "buzMode": "Off" }
 
 // Turn off a single module
 { "type": "light_off", "address": "0001" }
 
-// Start a picking batch
+// Start a picking batch (buzzer on, mirrors ledMode)
 {
   "type": "batch_start",
   "ledMode": "On",
@@ -181,12 +185,27 @@ the P2L .NET `P2LMqttJsonContext` serialisation settings).
   ]
 }
 
+// Start a picking batch with buzzer explicitly off
+{
+  "type": "batch_start",
+  "ledMode": "Flash",
+  "buzMode": "Off",
+  "items": [
+    { "address": "0001", "quantity": 3, "color": "Green" }
+  ]
+}
+
 // Finish / terminate batch
 { "type": "batch_finish", "blockNo": "00" }
 
 // Emergency terminate all
 { "type": "terminate_all" }
 ```
+
+**`buzMode`** is optional in both `light_on` and `batch_start`.
+When omitted (or `null`), the buzzer mirrors `ledMode` — it beeps when the LED
+flashes and is steady when the LED is steady.  Set `"buzMode": "Off"` to
+silence the buzzer while keeping the LED active.
 
 ### Event envelope (`p2l/events`, `p2l/devices/#`, `p2l/status`)
 
@@ -248,18 +267,18 @@ All request/response bodies are JSON.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/devices` | List all registered modules |
-| `POST` | `/api/devices` | Register a device — body: `{address, label?}` |
-| `PATCH` | `/api/devices/{address}` | Update label — body: `{label}` |
+| `POST` | `/api/devices` | Register a device — body: `{address, label?, order_no?}` |
+| `PATCH` | `/api/devices/{address}` | Update label/order — body: `{label?, order_no?}` |
 | `DELETE` | `/api/devices` | Clear all devices from registry and DB |
 | `DELETE` | `/api/devices/{address}` | Remove one device from registry and DB |
-| `POST` | `/api/devices/{address}/light` | Turn on — body: `{quantity, color, led_mode, block_no, label?}` |
+| `POST` | `/api/devices/{address}/light` | Turn on — body: `{quantity, color, led_mode, block_no, buzz?, label?}` |
 | `POST` | `/api/devices/{address}/off` | Turn off |
 
 ### Batch
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/batch/start` | Start batch — body: `{block_no, items: [{address, quantity, color, led_mode, label?}]}` |
+| `POST` | `/api/batch/start` | Start batch — body: `{block_no, buzz?, items: [{address, quantity, color, led_mode, label?}]}` |
 | `POST` | `/api/batch/finish` | Finish batch (sends `batch_finish` to broker) |
 | `GET` | `/api/batch/status` | `{active, pending: [addr…], complete}` |
 | `POST` | `/api/terminate-all` | Publish `terminate_all` command |
@@ -310,8 +329,8 @@ replies `"pong"`.
 | Tab | Contents |
 |---|---|
 | **Dashboard** | Stats (total / active / pending / connected), Terminate All, confirmation event feed |
-| **Devices** | Card grid per module — address, status badge, color bar, display value, Light ON modal, Off button |
-| **Batch Pick** | Batch builder (manual entry or CSV import), active batch table with per-item confirmation ticks |
+| **Devices** | Card grid per module — address, status badge, color bar, display value, Light ON modal (color / qty / mode / buzz checkbox), Off button |
+| **Batch Pick** | Batch builder (manual entry or CSV import), LED mode selector, **Buzzer** checkbox, active batch table with per-item confirmation ticks |
 | **Data Processing** | Live grid of all known light addresses (qty, color, status, editable label) + Operating Events table + Event Stream feed |
 | **Settings** | MQTT broker settings, P2L service settings, block no, auto-connect, Save button |
 | **Logs** | Scrolling log stream, clear button |
@@ -319,8 +338,9 @@ replies `"pong"`.
 ### Light ON modal
 
 Per-module color picker (8 swatches), quantity, LED mode (Steady / Flash /
-High Flash), block number, and optional label.  Published as a `light_on`
-command to the MQTT broker.
+High Flash), block number, optional label, and **Buzzer** checkbox (default
+on).  When unchecked, `buzMode: "Off"` is sent so the light activates silently.
+Published as a `light_on` command to the MQTT broker.
 
 ### CSV import (Batch Pick)
 

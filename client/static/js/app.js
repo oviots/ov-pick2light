@@ -403,11 +403,12 @@ async function confirmLightOn() {
     || $('light-modal').dataset.selectedColor || 'GREEN';
   const qty = parseInt($('light-qty').value) || 1;
   const led_mode = $('light-mode').value || 'ON';
+  const buzz = $('light-buzz')?.checked !== false;
   const block_no = $('light-block').value || '00';
   const label = $('light-label').value || '';
 
   try {
-    await api('POST', `/api/devices/${_lightModalAddress}/light`, { quantity: qty, color, led_mode, block_no, label });
+    await api('POST', `/api/devices/${_lightModalAddress}/light`, { quantity: qty, color, led_mode, buzz, block_no, label });
     toast(`Module ${_lightModalAddress} → ON (${color})`, 'success');
     closeLightModal();
   } catch (e) {
@@ -578,8 +579,9 @@ function removeBatchItem(idx) {
 async function startBatch() {
   if (state.batchItems.length === 0) { toast('Add items first', 'warning'); return; }
   const block_no = $('batch-block').value || '00';
+  const buzz = $('batch-buzz')?.checked !== false;
   try {
-    const result = await api('POST', '/api/batch/start', { block_no, items: state.batchItems });
+    const result = await api('POST', '/api/batch/start', { block_no, buzz, items: state.batchItems });
     state.batchActive = true;
     state.batchPending = new Set(state.batchItems.map(i => i.address.padStart(4, '0').slice(-4)));
     state.batchItems = [];

@@ -47,27 +47,18 @@ public static class AioiEncoder
     {
         // LED2 byte: high nibble is fixed 0x3 prefix, low nibble is the state
         static char Led2B(LightState s) => (char)(0x30 | (byte)s);
-        // Packed-nibble byte: high nibble = first state, low nibble = second state.
-        // SafePack avoids 0x11 (XON) and 0x13 (XOFF): some gateway firmware strips those
-        // bytes via XON/XOFF flow control, silently corrupting the command.
-        // Substitute Off(0x1) hi-nibble → NoChange(0xF) when it would produce a control char.
-        static char SafePack(LightState hi, LightState lo)
-        {
-            byte b = (byte)(((byte)hi << 4) | (byte)lo);
-            if (b == 0x11 || b == 0x13)
-                hi = LightState.NoChange;
-            return (char)(((byte)hi << 4) | (byte)lo);
-        }
+        // Packed-nibble byte: high nibble = first state, low nibble = second state
+        static char Pack(LightState hi, LightState lo) => (char)(((byte)hi << 4) | (byte)lo);
 
         return new StringBuilder("M")
             .Append("m1")
             .Append(Led2B(normal.Led2))
-            .Append(SafePack(normal.Led1,        normal.Led0))
-            .Append(SafePack(normal.Seg,         normal.Buz))
+            .Append(Pack(normal.Led1,        normal.Led0))
+            .Append(Pack(normal.Seg,         normal.Buz))
             .Append("m2")
             .Append(Led2B(afterConfirm.Led2))
-            .Append(SafePack(afterConfirm.Led1,  afterConfirm.Led0))
-            .Append(SafePack(afterConfirm.Seg,   afterConfirm.Buz))
+            .Append(Pack(afterConfirm.Led1,  afterConfirm.Led0))
+            .Append(Pack(afterConfirm.Seg,   afterConfirm.Buz))
             .Append("m4\x40")   // CONFIRM + Fn key: enabled; Fn-decrement: disabled
             .ToString();
     }
@@ -119,14 +110,8 @@ public static class AioiEncoder
                                      LightState seg,  LightState buz)
     {
         static char Led2B(LightState s) => (char)(0x30 | (byte)s);
-        static char SafePack(LightState hi, LightState lo)
-        {
-            byte b = (byte)(((byte)hi << 4) | (byte)lo);
-            if (b == 0x11 || b == 0x13)
-                hi = LightState.NoChange;
-            return (char)(((byte)hi << 4) | (byte)lo);
-        }
-        return $"Am1{address.PadLeft(4, '0')}{Led2B(led2)}{SafePack(led1, led0)}{SafePack(seg, buz)}";
+        static char Pack(LightState hi, LightState lo) => (char)(((byte)hi << 4) | (byte)lo);
+        return $"Am1{address.PadLeft(4, '0')}{Led2B(led2)}{Pack(led1, led0)}{Pack(seg, buz)}";
     }
 
     /// <summary>

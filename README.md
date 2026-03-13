@@ -428,10 +428,11 @@ Press **Ctrl+C** at any time for a clean shutdown.
 
 ```bash
 # Turn on a module
-./p2l light on  <address> <quantity>
-./p2l light on  0001 5                     # green, steady
+./p2l light on  <address> <quantity> [options]
+./p2l light on  0001 5                              # green, steady, buzzer on
 ./p2l light on  0002 3 --color Red
-./p2l light on  0003 10 --color Yellow --flash
+./p2l light on  0003 10 --color Yellow --mode Flash # flash + beep
+./p2l light on  0003 10 --color Yellow --mode Flash --no-buzz  # flash, silent
 
 # Turn off a single module
 ./p2l light off <address>
@@ -440,6 +441,14 @@ Press **Ctrl+C** at any time for a clean shutdown.
 # Terminate all modules (D00)
 ./p2l light terminate
 ```
+
+**`light on` options:**
+
+| Option | Values | Default |
+|---|---|---|
+| `-c, --color` | `Off Red Green Blue Yellow Cyan Magenta White` | `Green` |
+| `-m, --mode` | `On Flash HighFlash` | `On` |
+| `--no-buzz` | flag | buzzer mirrors `--mode` (beeps when flashing) |
 
 **Colors:** `Off` `Red` `Green` `Blue` `Yellow` `Cyan` `Magenta` `White`
 
@@ -493,6 +502,12 @@ confirmed (button press) before the batch is considered complete.
 ./p2l pick "0001:5,0002:3,0003:10"
 ./p2l pick "0001:5,0002:3" --color Yellow
 
+# Flash mode with beep (default when --mode Flash)
+./p2l pick "0001:5,0002:3" --color Red --mode Flash
+
+# Flash mode, silent
+./p2l pick "0001:5,0002:3" --color Red --mode Flash --no-buzz
+
 # Per-entry color override (append :color as a third token)
 ./p2l pick "0001:5:Red,0002:3,0003:10:Blue" --color Green
 #          ^^^^^^^^^^  ^^^^^^  ^^^^^^^^^^^
@@ -503,8 +518,16 @@ confirmed (button press) before the batch is considered complete.
 **Format:** `<address>:<quantity>[:<color>]` — comma-separated. Color is case-insensitive and
 optional per entry; omitted entries use the global `--color` (default `Green`).
 
+**`pick` options:**
+
+| Option | Values | Default |
+|---|---|---|
+| `-c, --color` | `Off Red Green Blue Yellow Cyan Magenta White` | `Green` |
+| `-m, --mode` | `On Flash HighFlash` | `On` |
+| `--no-buzz` | flag | buzzer mirrors `--mode` (beeps when flashing) |
+
 > **Note:** If modules are already under instruction and the P1 block-instruct command is NACKed
-> by the gateway (per Aioi spec §3.4), `light on` automatically retries with the P5 rewritable
+> by the gateway (per Aioi spec §3.4), `pick` automatically retries with the P5 rewritable
 > overwrite command. This fallback is transparent to the user.
 
 ---
@@ -1419,30 +1442,27 @@ The `Z` command resets all modules to standby. It is sent **only** by the intera
 `run`) do not send `Z`, so they can be used while the dashboard is running without wiping active
 lights.
 
-### `light on` protocol (single module)
-```
-P1 <blockNo> <addr><display>   (block operation instruction, steady)
-   or
-FP1 <blockNo> <addr><display>  (block operation instruction, flash)
-```
+### `light on` / `pick` protocol
 
-If the gateway NACKs P1 because the module is already under instruction (Aioi spec §3.4), the
-command automatically retries with P5 (rewritable overwrite):
+For each address in the instruction, an `Am1` per-address mode command is sent first to set
+color, LED mode (On / Flash / HighFlash), and buzzer mode. Then a single `P1` block command
+activates all modules at once:
 
 ```
-P5 <blockNo> <addr><display>   (overwrite instruction, steady)
-   or
-FP5 <blockNo> <addr><display>  (overwrite instruction, flash)
+Am1 <addr> <LED2_byte><LED1+LED0_byte><SEG+BUZ_byte>   (per address, sets color + mode)
+P1  <blockNo> <addr1><disp1> <addr2><disp2> ...        (activates modules)
 ```
 
-### `pick` protocol (batch)
-```
-P1  <blockNo> <addr1><disp1> <addr2><disp2> ...   (steady)
-   or
-FP1 <blockNo> <addr1><disp1> <addr2><disp2> ...   (flash)
-```
+Flash and HighFlash are controlled entirely by the `Am1` LED state nibbles — `FP1` is not used
+as it is NACK'd by L-PICK Ethernet gateways.
 
-Overwrite uses `P5` / `FP5`.
+If the gateway NACKs `P1` because a module is already under instruction (Aioi spec §3.4), the
+command automatically retries with `P5` (rewritable overwrite):
+
+```
+Am1 <addr> ...   (re-sent per address)
+P5  <blockNo> <addr1><disp1> ...
+```
 
 ### Confirmation interrupt
 The gateway pushes an unsolicited `t` packet when an operator presses CONFIRM. P2L ACKs it
