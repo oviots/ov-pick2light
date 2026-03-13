@@ -883,6 +883,24 @@ async function saveConfig() {
   }
 }
 
+// ── CSV Sample Download ────────────────────────────────────────────────────
+function downloadSampleCSV() {
+  const rows = [
+    'address,quantity,color,label',
+    '0001,5,GREEN,SKU-A001',
+    '0002,3,YELLOW,SKU-B002',
+    '0003,10,RED,SKU-C003',
+    '0004,1,BLUE,SKU-D004',
+  ];
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = el('a');
+  a.href = url;
+  a.download = 'batch_sample.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ── CSV Import ────────────────────────────────────────────────────────────
 function importCSV() {
   const input = el('input');
@@ -985,6 +1003,7 @@ async function init() {
   $('btn-start-batch')?.addEventListener('click', startBatch);
   $('btn-finish-batch')?.addEventListener('click', finishBatch);
   $('btn-import-csv')?.addEventListener('click', importCSV);
+  $('btn-download-sample-csv')?.addEventListener('click', downloadSampleCSV);
   $('batch-addr')?.addEventListener('keydown', e => { if (e.key === 'Enter') { $('batch-qty').focus(); } });
   $('batch-qty')?.addEventListener('keydown', e => { if (e.key === 'Enter') addBatchItem(); });
 
