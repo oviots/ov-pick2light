@@ -649,6 +649,126 @@ html, body {
   .content { padding: 1rem; }
 }
 
+/* ── Data Processing ──────────────────────────────────────────────────────── */
+.dp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .8rem;
+}
+
+.dp-table th {
+  text-align: left;
+  padding: .5rem .75rem;
+  font-size: .72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-muted);
+  border-bottom: 2px solid var(--border);
+  white-space: nowrap;
+}
+
+.dp-table td {
+  padding: .45rem .75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.dp-table tr:last-child td { border-bottom: none; }
+.dp-table tr:hover td { background: var(--bg3); }
+.dp-table tr.dp-new td { animation: dpFlash .6s ease; }
+
+@keyframes dpFlash {
+  0%   { background: rgba(59,130,246,.18); }
+  100% { background: transparent; }
+}
+
+.dp-table .dp-addr {
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  letter-spacing: .05em;
+}
+
+.dp-table .dp-qty {
+  font-family: 'Courier New', monospace;
+  font-weight: 700;
+  font-size: .95rem;
+  color: var(--text);
+}
+
+.dp-table .dp-time {
+  font-family: 'Courier New', monospace;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.dp-color-dot {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  margin-right: .35rem;
+  vertical-align: middle;
+}
+
+
+.evt-container {
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+}
+
+.evt-row {
+  display: grid;
+  grid-template-columns: 80px 130px 1fr;
+  gap: .75rem;
+  align-items: start;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .5rem .75rem;
+  font-size: .8rem;
+  animation: slideIn .15s ease;
+}
+
+.evt-row:hover { background: var(--bg3); }
+
+.evt-time {
+  font-family: 'Courier New', monospace;
+  color: var(--text-muted);
+  font-size: .75rem;
+  padding-top: .05rem;
+}
+
+.evt-type {
+  font-weight: 600;
+  font-size: .7rem;
+  padding: .15rem .45rem;
+  border-radius: 4px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.evt-type.confirmed      { background: rgba(34,197,94,.15);  color: var(--green); }
+.evt-type.light_changed  { background: rgba(59,130,246,.15); color: var(--accent); }
+.evt-type.batch_completed{ background: rgba(234,179,8,.15);  color: var(--yellow); }
+.evt-type.bridge_status  { background: rgba(217,70,239,.15); color: var(--magenta); }
+.evt-type.other          { background: rgba(139,148,158,.15);color: var(--text-muted); }
+
+.evt-payload {
+  font-family: 'Courier New', monospace;
+  color: var(--text-muted);
+  word-break: break-all;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.evt-payload .k { color: var(--text-muted); }
+.evt-payload .s { color: var(--green); }
+.evt-payload .n { color: var(--yellow); }
+.evt-payload .b { color: var(--magenta); }
+
 /* ── Batch item row color dot ────────────────────────────────────────────── */
 .color-dot {
   width: 12px; height: 12px;

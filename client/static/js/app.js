@@ -106,6 +106,7 @@ function handleWsMessage(msg) {
       break;
 
     case 'bridge_status': {
+      pushEvent('bridge_status', msg.data);
       const badge = $('mqtt-status-badge');
       if (badge) {
         badge.dataset.bridge = '1';
@@ -122,14 +123,18 @@ function handleWsMessage(msg) {
     }
 
     case 'state_update':
-      state.devices = {};
-      msg.data.forEach(d => { state.devices[d.address] = d; });
+      msg.data.forEach(d => {
+        pushOperatingRow(d);
+        pushEvent('light_changed', d);
+        state.devices[d.address] = d;
+      });
       renderDevices();
       updateStats();
       break;
 
     case 'confirmation': {
       const evt = msg.data;
+      pushEvent('confirmed', evt);
       addEvent(`${evt.address} confirmed`, evt.status === 'SHORTAGE' ? 'warning' : 'success');
       if (state.batchPending.has(evt.address)) {
         state.batchPending.delete(evt.address);
@@ -140,6 +145,7 @@ function handleWsMessage(msg) {
     }
 
     case 'batch_completed':
+      pushEvent('batch_completed', {});
       toast('Batch complete! All items confirmed.', 'success');
       state.batchActive = false;
       state.batchPending.clear();
@@ -508,6 +514,87 @@ function updateBatchStatus() {
     });
 }
 
+// ── Data Processing ────────────────────────────────────────────────────────
+
+const MAX_EVENTS = 500;
+const _evtStore  = [];   // { time, type, data }
+const _opStore   = [];   // operating event rows
+
+function pushOperatingRow(d) {
+  if (d.status !== 'OPERATING' && d.status !== 'OPERATING2') return;
+  const time = new Date().toLocaleTimeString();
+  _opStore.push({ time, ...d });
+  if (_opStore.length > MAX_EVENTS) _opStore.shift();
+
+  const tbody = $('operating-tbody');
+  if (!tbody) return;
+
+  // Remove empty-state row on first real row
+  const empty = $('operating-empty-row');
+  if (empty) empty.remove();
+
+  const qty = (d.display_data || '00000').replace(/^0+/, '') || '0';
+  const colorHex = COLOR_HEX[d.color] || '#374151';
+  const tr = el('tr', 'dp-new');
+  tr.innerHTML =
+    `<td class="dp-time">${time}</td>` +
+    `<td class="dp-addr">${d.address}</td>` +
+    `<td class="dp-qty">${qty}</td>` +
+    `<td><span class="dp-color-dot" style="background:${colorHex}"></span>${d.color}</td>` +
+    `<td>${d.led_mode || '—'}</td>` +
+    `<td>${d.block_no || '—'}</td>` +
+    `<td>${d.label || '—'}</td>`;
+  tbody.insertBefore(tr, tbody.firstChild);
+  while (tbody.rows.length > MAX_EVENTS) tbody.deleteRow(tbody.rows.length - 1);
+}
+
+const KNOWN_EVT_TYPES = ['confirmed','light_changed','batch_completed','bridge_status'];
+
+function _colorizeJson(obj) {
+  return JSON.stringify(obj, null, 2)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/("[\w]+")\s*:/g, '<span class="k">$1</span>:')
+    .replace(/:\s*(".*?")/g, ': <span class="s">$1</span>')
+    .replace(/:\s*(\d+\.?\d*)/g, ': <span class="n">$1</span>')
+    .replace(/:\s*(true|false)/g, ': <span class="b">$1</span>');
+}
+
+function _renderEvtRow(evt) {
+  const row = el('div', 'evt-row');
+  const typeClass = KNOWN_EVT_TYPES.includes(evt.type) ? evt.type : 'other';
+  row.dataset.evtType = evt.type;
+  row.innerHTML =
+    `<span class="evt-time">${evt.time}</span>` +
+    `<span class="evt-type ${typeClass}">${evt.type}</span>` +
+    `<span class="evt-payload">${_colorizeJson(evt.data)}</span>`;
+  return row;
+}
+
+function pushEvent(type, data) {
+  const time = new Date().toLocaleTimeString();
+  const evt = { time, type, data };
+  _evtStore.push(evt);
+  if (_evtStore.length > MAX_EVENTS) _evtStore.shift();
+
+  const filter = $('evt-filter')?.value || '';
+  if (filter && filter !== type) return;
+
+  const container = $('evt-container');
+  if (!container) return;
+  container.insertBefore(_renderEvtRow(evt), container.firstChild);
+  // Trim rendered rows to MAX_EVENTS
+  while (container.children.length > MAX_EVENTS) container.removeChild(container.lastChild);
+}
+
+function applyEvtFilter() {
+  const filter = $('evt-filter')?.value || '';
+  const container = $('evt-container');
+  if (!container) return;
+  container.innerHTML = '';
+  const filtered = filter ? _evtStore.filter(e => e.type === filter) : _evtStore;
+  [...filtered].reverse().forEach(evt => container.appendChild(_renderEvtRow(evt)));
+}
+
 // ── Events Feed ────────────────────────────────────────────────────────────
 function addEvent(message, type = 'info') {
   const feed = $('events-feed');
@@ -708,6 +795,23 @@ async function init() {
 
   // Wire up settings
   $('btn-save-config')?.addEventListener('click', saveConfig);
+
+  // Wire up data processing tab
+  $('btn-clear-operating')?.addEventListener('click', () => {
+    _opStore.length = 0;
+    const tbody = $('operating-tbody');
+    if (tbody) {
+      tbody.innerHTML =
+        '<tr id="operating-empty-row"><td colspan="7" class="text-muted"' +
+        ' style="text-align:center;padding:1.5rem">Waiting for OPERATING events…</td></tr>';
+    }
+  });
+  $('btn-clear-events')?.addEventListener('click', () => {
+    _evtStore.length = 0;
+    const c = $('evt-container');
+    if (c) c.innerHTML = '';
+  });
+  $('evt-filter')?.addEventListener('change', applyEvtFilter);
 
   // Wire up logs
   $('btn-clear-logs')?.addEventListener('click', clearLogs);

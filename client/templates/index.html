@@ -55,6 +55,12 @@
       </svg>
       Settings
     </button>
+    <button class="tab-btn" data-tab="events">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+      </svg>
+      Data Processing
+    </button>
     <button class="tab-btn" data-tab="logs">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
@@ -345,6 +351,56 @@
           </p>
         </div>
       </div>
+    </div>
+
+    <!-- ── Data Processing Tab ───────────────────────────────────────────── -->
+    <div id="pane-events" class="tab-pane">
+
+      <!-- Operating events table -->
+      <div class="section-header">
+        <span class="section-title">Operating Events</span>
+        <div class="section-spacer"></div>
+        <button id="btn-clear-operating" class="btn btn-ghost btn-sm">Clear</button>
+      </div>
+      <div style="overflow-x:auto; margin-bottom:1.5rem">
+        <table class="dp-table" id="operating-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Address</th>
+              <th>Qty</th>
+              <th>Color</th>
+              <th>Mode</th>
+              <th>Block</th>
+              <th>Label</th>
+            </tr>
+          </thead>
+          <tbody id="operating-tbody">
+            <tr id="operating-empty-row">
+              <td colspan="7" class="text-muted" style="text-align:center;padding:1.5rem">
+                Waiting for OPERATING events…
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- All raw events feed -->
+      <div class="section-header">
+        <span class="section-title">Event Stream</span>
+        <div class="section-spacer"></div>
+        <div class="flex-gap">
+          <select id="evt-filter" class="form-select" style="width:auto;font-size:.75rem;padding:.25rem .5rem">
+            <option value="">All</option>
+            <option value="confirmed">confirmed</option>
+            <option value="light_changed">light_changed</option>
+            <option value="batch_completed">batch_completed</option>
+            <option value="bridge_status">bridge_status</option>
+          </select>
+          <button id="btn-clear-events" class="btn btn-ghost btn-sm">Clear</button>
+        </div>
+      </div>
+      <div id="evt-container" class="evt-container"></div>
     </div>
 
     <!-- ── Logs Tab ───────────────────────────────────────────────────────── -->
