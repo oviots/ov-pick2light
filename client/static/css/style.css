@@ -169,6 +169,7 @@ html, body {
 .btn-ghost:hover:not(:disabled) { color: var(--text); border-color: #4a5568; }
 
 .btn-sm { padding: .3rem .65rem; font-size: .75rem; }
+.btn-xs { padding: .1rem .35rem; font-size: .7rem; }
 .btn-lg { padding: .65rem 1.4rem; font-size: .9rem; }
 .btn-icon { padding: .4rem; border-radius: 6px; }
 
@@ -272,6 +273,47 @@ html, body {
   letter-spacing: .05em;
 }
 
+.device-label-row {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  min-height: 1.4rem;
+  padding: 0 .1rem .25rem;
+}
+
+.device-label-text {
+  font-size: .75rem;
+  color: var(--text-muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+.device-label-text:hover { color: var(--text); }
+
+.device-label-input {
+  font-size: .75rem;
+  flex: 1;
+  background: var(--bg3);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  padding: .1rem .35rem;
+  outline: none;
+  min-width: 0;
+}
+
+.btn-edit-label {
+  flex-shrink: 0;
+  font-size: .8rem;
+  padding: .05rem .3rem;
+  opacity: .45;
+  line-height: 1;
+}
+.btn-edit-label:hover { opacity: 1; }
+
+/* legacy — kept for any remaining references */
 .device-label {
   font-size: .75rem;
   color: var(--text-muted);
@@ -700,6 +742,31 @@ html, body {
   font-family: 'Courier New', monospace;
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+.dp-label-cell { position: relative; min-width: 100px; }
+
+.dp-label-text {
+  cursor: text;
+  display: inline-block;
+  min-width: 60px;
+  color: var(--text-muted);
+  border-bottom: 1px dashed transparent;
+  transition: border-color .15s;
+}
+
+.dp-label-text:hover { border-bottom-color: var(--accent); color: var(--text); }
+
+.dp-label-input {
+  display: none;
+  width: 100%;
+  background: var(--bg3);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: .8rem;
+  padding: .15rem .4rem;
+  outline: none;
 }
 
 .dp-color-dot {

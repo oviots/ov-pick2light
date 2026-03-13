@@ -227,33 +227,78 @@ function createDeviceCard(d) {
   const card = el('div', `device-card status-${d.status}`);
   card.dataset.address = d.address;
   card.innerHTML = deviceCardHTML(d);
-  card.querySelector('.btn-light-on')?.addEventListener('click', () => openLightModal(d.address));
-  card.querySelector('.btn-light-off')?.addEventListener('click', () => lightOff(d.address));
-  card.querySelector('.btn-remove')?.addEventListener('click', () => removeDevice(d.address));
+  _bindCardActions(card, d.address);
   return card;
 }
 
 function updateDeviceCard(card, d) {
+  // Don't clobber the label input if the user is currently editing it
+  if (card.querySelector('.device-label-input:focus')) {
+    card.className = `device-card status-${d.status}`;
+    return;
+  }
   card.className = `device-card status-${d.status}`;
   card.innerHTML = deviceCardHTML(d);
-  card.querySelector('.btn-light-on')?.addEventListener('click', () => openLightModal(d.address));
-  card.querySelector('.btn-light-off')?.addEventListener('click', () => lightOff(d.address));
-  card.querySelector('.btn-remove')?.addEventListener('click', () => removeDevice(d.address));
+  _bindCardActions(card, d.address);
+}
+
+function _bindCardActions(card, address) {
+  card.querySelector('.btn-light-on')?.addEventListener('click', () => openLightModal(address));
+  card.querySelector('.btn-light-off')?.addEventListener('click', () => lightOff(address));
+  card.querySelector('.btn-remove')?.addEventListener('click', () => removeDevice(address));
+
+  const editBtn = card.querySelector('.btn-edit-label');
+  const labelText = card.querySelector('.device-label-text');
+  const labelInput = card.querySelector('.device-label-input');
+  if (!editBtn || !labelText || !labelInput) return;
+
+  function startEdit() {
+    labelText.style.display = 'none';
+    editBtn.style.display = 'none';
+    labelInput.style.display = 'inline-block';
+    labelInput.focus();
+    labelInput.select();
+  }
+
+  async function saveLabel() {
+    const newLabel = labelInput.value.trim();
+    labelText.textContent = newLabel;
+    labelText.title = newLabel;
+    labelText.style.display = '';
+    editBtn.style.display = '';
+    labelInput.style.display = 'none';
+    try {
+      await api('PATCH', `/api/devices/${address}`, { label: newLabel });
+      if (state.devices[address]) state.devices[address].label = newLabel;
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  editBtn.addEventListener('click', startEdit);
+  labelText.addEventListener('dblclick', startEdit);
+  labelInput.addEventListener('blur', saveLabel);
+  labelInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); labelInput.blur(); }
+    if (e.key === 'Escape') { labelInput.value = labelText.textContent; labelInput.blur(); }
+  });
 }
 
 function deviceCardHTML(d) {
   const statusLabel = d.status.replace('_', ' ');
-  const colorHex = COLOR_HEX[d.color] || '#374151';
   const rawDisplay = d.adjusted_quantity || d.display_data || '00000';
   const displayVal = rawDisplay.trim().replace(/^0+/, '') || '0';
-  const label = d.label ? `<span class="device-label" title="${d.label}">${d.label}</span>` : '';
-  const pendingStr = state.batchPending.has(d.address) ? '(pending)' : '';
+  const labelVal = escHtml(d.label || '');
 
   return `
     <div class="device-header">
       <span class="device-address">${d.address}</span>
-      ${label}
       <span class="status-badge ${d.status}">${statusLabel}</span>
+    </div>
+    <div class="device-label-row">
+      <span class="device-label-text" title="${labelVal}">${labelVal || '<span style="opacity:.35">no label</span>'}</span>
+      <input class="device-label-input" value="${labelVal}" placeholder="label…" style="display:none">
+      <button class="btn btn-xs btn-ghost btn-edit-label" title="Edit label">✎</button>
     </div>
     <div class="color-indicator ${d.color !== 'OFF' && d.status === 'OPERATING' ? 'color-' + d.color : 'color-OFF'}"></div>
     <div class="device-display">${displayVal}</div>
@@ -541,6 +586,10 @@ function upsertAddressRow(d) {
   const colorHex = COLOR_HEX[d.color] || '#374151';
   const statusClass = (d.status || 'STANDBY').toUpperCase();
 
+  // Preserve any label the user has typed but not yet saved
+  const existingRow = tbody.querySelector(`tr[data-addr="${d.address}"]`);
+  const editingNow  = existingRow?.querySelector('.dp-label-input:focus');
+
   const html =
     `<td class="dp-addr">${d.address}</td>` +
     `<td><span class="status-badge ${statusClass}">${d.status || '—'}</span></td>` +
@@ -548,24 +597,60 @@ function upsertAddressRow(d) {
     `<td><span class="dp-color-dot" style="background:${colorHex}"></span>${d.color || '—'}</td>` +
     `<td>${d.led_mode || '—'}</td>` +
     `<td>${d.block_no || '—'}</td>` +
-    `<td>${d.label || '—'}</td>` +
+    `<td class="dp-label-cell"><span class="dp-label-text">${escHtml(d.label || '')}</span>` +
+      `<input class="dp-label-input" value="${escHtml(d.label || '')}" placeholder="label…"></td>` +
     `<td class="dp-time">${time}</td>`;
 
-  let row = tbody.querySelector(`tr[data-addr="${d.address}"]`);
+  let row = existingRow;
   if (row) {
-    row.innerHTML = html;
+    if (!editingNow) {
+      row.innerHTML = html;
+      _bindLabelEdit(row, d.address);
+    }
     row.classList.remove('dp-new');
-    void row.offsetWidth;  // reflow to restart animation
+    void row.offsetWidth;
     row.classList.add('dp-new');
   } else {
     row = el('tr', 'dp-new');
     row.dataset.addr = d.address;
     row.innerHTML = html;
-    // Insert sorted by address
+    _bindLabelEdit(row, d.address);
     const rows = [...tbody.querySelectorAll('tr[data-addr]')];
     const after = rows.find(r => r.dataset.addr > d.address);
     tbody.insertBefore(row, after || null);
   }
+}
+
+function _bindLabelEdit(row, address) {
+  const text  = row.querySelector('.dp-label-text');
+  const input = row.querySelector('.dp-label-input');
+  if (!text || !input) return;
+
+  text.addEventListener('click', () => {
+    text.style.display = 'none';
+    input.style.display = 'inline-block';
+    input.focus();
+    input.select();
+  });
+
+  async function saveLabel() {
+    const newLabel = input.value.trim();
+    text.textContent = newLabel || '';
+    text.style.display = '';
+    input.style.display = 'none';
+    try {
+      await api('PATCH', `/api/devices/${address}`, { label: newLabel });
+      if (state.devices[address]) state.devices[address].label = newLabel;
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+
+  input.addEventListener('blur', saveLabel);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = text.textContent; input.blur(); }
+  });
 }
 
 function pushOperatingRow(d) {

@@ -88,6 +88,10 @@ class AddDeviceRequest(BaseModel):
     label: str = ""
 
 
+class UpdateDeviceRequest(BaseModel):
+    label: str = ""
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _parse_color(name: str) -> LightColor:
@@ -272,20 +276,42 @@ async def list_devices(request: Request):
 
 @router.post("/api/devices")
 async def add_device(request: Request, body: AddDeviceRequest):
+    from ..db import upsert_device
     module = _registry(request).add_device(body.address, body.label)
+    upsert_device(module.address, module.label)
     return module.to_dict()
 
 
 @router.delete("/api/devices")
 async def clear_devices(request: Request):
+    from ..db import clear_devices as db_clear
     _registry(request).clear()
+    db_clear()
     return {"status": "cleared"}
 
 
 @router.delete("/api/devices/{address}")
 async def remove_device(request: Request, address: str):
+    from ..db import remove_device as db_remove
     _registry(request).remove_device(address)
+    db_remove(address)
     return {"status": "removed"}
+
+
+@router.patch("/api/devices/{address}")
+async def update_device(request: Request, address: str, body: UpdateDeviceRequest):
+    from ..db import update_label, upsert_device
+    reg = _registry(request)
+    module = reg.get(address)
+    if module is None:
+        # Device not in registry yet — create it
+        module = reg.add_device(address, body.label)
+        upsert_device(module.address, body.label)
+    else:
+        module.label = body.label
+        update_label(module.address, body.label)
+        reg._notify()
+    return module.to_dict()
 
 
 @router.post("/api/devices/{address}/light")

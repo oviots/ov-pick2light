@@ -38,6 +38,7 @@ client/
 ├── app/
 │   ├── main.py              # FastAPI app, lifespan, global state, MQTT event wiring
 │   ├── config.py            # AppConfig, MqttConfig, TlsConfig, ServiceConfig
+│   ├── db.py                # SQLite persistence for device registry (p2l_devices.db)
 │   ├── service.py           # P2L .NET service lifecycle (check running, start, stop)
 │   ├── protocol/
 │   │   ├── enums.py         # LightState, LightColor, ModuleStatus, CompletionStatus
@@ -54,6 +55,7 @@ client/
 │   └── js/app.js
 ├── templates/
 │   └── index.html
+├── p2l_devices.db           # SQLite device registry (auto-created on first run)
 ├── requirements.txt
 ├── run.py
 └── CLIENT.md                # this file
@@ -106,6 +108,23 @@ config) and copies the relevant fields.  Subsequent saves write
 | `service.auto_start` | `true` | Launch the service automatically when clicking Connect |
 
 All settings are editable live in the **Settings** tab and saved with **Save Settings**.
+
+---
+
+## Device persistence (SQLite)
+
+Device addresses and labels are stored in `p2l_devices.db` (SQLite, created
+automatically at startup) so they survive server restarts.
+
+| Function | Behaviour |
+|---|---|
+| `init_db()` | Creates `devices(address PK, label)` table if absent |
+| `load_devices()` | Returns all rows sorted by address — loaded into registry on startup |
+| `upsert_device(address, label)` | Insert or overwrite; used by explicit API calls (`POST /api/devices`, `PATCH /api/devices/{address}`) |
+| `insert_if_new(address)` | Insert with empty label only if address is unknown; returns the stored label.  Used when `light_changed` MQTT events arrive so auto-discovered devices persist without overwriting user-set labels |
+| `update_label(address, label)` | Update label only (address must already exist) |
+| `remove_device(address)` | Delete one row |
+| `clear_devices()` | Delete all rows |
 
 ---
 
@@ -230,8 +249,9 @@ All request/response bodies are JSON.
 |---|---|---|
 | `GET` | `/api/devices` | List all registered modules |
 | `POST` | `/api/devices` | Register a device — body: `{address, label?}` |
-| `DELETE` | `/api/devices` | Clear all devices from registry |
-| `DELETE` | `/api/devices/{address}` | Remove one device |
+| `PATCH` | `/api/devices/{address}` | Update label — body: `{label}` |
+| `DELETE` | `/api/devices` | Clear all devices from registry and DB |
+| `DELETE` | `/api/devices/{address}` | Remove one device from registry and DB |
 | `POST` | `/api/devices/{address}/light` | Turn on — body: `{quantity, color, led_mode, block_no, label?}` |
 | `POST` | `/api/devices/{address}/off` | Turn off |
 
@@ -272,13 +292,16 @@ replies `"pong"`.
 
 | `type` | Payload | Trigger |
 |---|---|---|
-| `init` | `{connected, host, port, devices[]}` | On WS connect |
-| `connection_changed` | `{connected, host, port}` | MQTT broker connect/disconnect |
+| `init` | `{connected, mqtt_connected, host, port, devices[]}` | On WS connect |
+| `connection_changed` | `{connected, mqtt_connected, host, port}` | MQTT broker connect/disconnect |
 | `state_update` | `[LightModuleState…]` | Any registry mutation |
 | `confirmation` | `{address, status, adjusted_display, received_at}` | Operator presses CONFIRM |
 | `batch_completed` | `{}` | All batch items confirmed |
 | `bridge_status` | `{online, gateway_connected}` | P2L bridge health event |
 | `log` | `{time, level, message}` | Internal log entry |
+
+> `connected` = P2L .NET service is running (detected via `psutil`).
+> `mqtt_connected` = Python client is connected to the MQTT broker.
 
 ---
 
@@ -289,6 +312,7 @@ replies `"pong"`.
 | **Dashboard** | Stats (total / active / pending / connected), Terminate All, confirmation event feed |
 | **Devices** | Card grid per module — address, status badge, color bar, display value, Light ON modal, Off button |
 | **Batch Pick** | Batch builder (manual entry or CSV import), active batch table with per-item confirmation ticks |
+| **Data Processing** | Live grid of all known light addresses (qty, color, status, editable label) + Operating Events table + Event Stream feed |
 | **Settings** | MQTT broker settings, P2L service settings, block no, auto-connect, Save button |
 | **Logs** | Scrolling log stream, clear button |
 
@@ -325,3 +349,4 @@ address,quantity,color,label
 | `python-multipart` | ≥ 0.0.9 | Form data parsing |
 | `aiomqtt` | ≥ 2.0 | Async MQTT client |
 | `psutil` | ≥ 5.9 | Process detection for service lifecycle manager |
+| `sqlite3` | stdlib | Device registry persistence (`p2l_devices.db`) |

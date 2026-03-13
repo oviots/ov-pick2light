@@ -100,9 +100,13 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
         await ws_manager.broadcast({"type": "confirmation", "data": event.to_dict()})
 
     elif evt_type == "light_changed":
+        from .db import insert_if_new
         from .protocol.models import LightModuleState
         addr = payload.get("address", "0000")
         module = registry.get(addr) or LightModuleState(address=addr)
+        stored_label = insert_if_new(registry._normalize(addr))
+        if not module.label and stored_label:
+            module.label = stored_label
         module.status = mqtt_to_module_status(payload.get("moduleStatus", "Standby"))
         module.color = mqtt_to_color(payload.get("color", "Off"))
         module.led_mode = mqtt_to_state(payload.get("ledMode", "Off"))
@@ -176,6 +180,10 @@ def _append_log(level: str, message: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from .db import init_db, load_devices
+    init_db()
+    for dev in load_devices():
+        registry.add_device(dev["address"], dev["label"])
     _setup_registry_callbacks()
     logger.info("P2L Web Dashboard → http://127.0.0.1:8765")
     if config.auto_connect:
