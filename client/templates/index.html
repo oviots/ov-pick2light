@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>P2L Web Dashboard</title>
+  <title>PTM/Pick2Light</title>
   <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -16,7 +16,7 @@
         <rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
         <line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/>
       </svg>
-      Pick2Light Dashboard
+      PTM/Pick2Light
     </div>
     <div class="header-spacer"></div>
     <div id="connection-badge" class="connection-badge">
@@ -48,13 +48,6 @@
       </svg>
       Batch Pick
     </button>
-    <button class="tab-btn" data-tab="settings">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="3"/>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-      </svg>
-      Settings
-    </button>
     <button class="tab-btn" data-tab="events">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -68,6 +61,13 @@
         <line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
       </svg>
       Logs
+    </button>
+    <button class="tab-btn" data-tab="settings">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+      Settings
     </button>
   </nav>
 
@@ -126,8 +126,9 @@
     <!-- ── Devices Tab ────────────────────────────────────────────────────── -->
     <div id="pane-devices" class="tab-pane">
       <div class="section-header">
-        <span class="section-title">Light Modules</span>
+        <span class="section-title">Lights</span>
         <div class="section-spacer"></div>
+        <button id="btn-terminate-all-devices" class="btn btn-danger btn-sm">Terminate All</button>
         <button id="btn-add-device" class="btn btn-primary btn-sm">+ Add Device</button>
         <button id="btn-clear-devices" class="btn btn-ghost btn-sm">Clear All</button>
       </div>
@@ -204,6 +205,7 @@
           <div class="flex-gap" style="margin-top:1rem">
             <button id="btn-start-batch" class="btn btn-success btn-lg">▶ Start Batch</button>
             <button id="btn-finish-batch" class="btn btn-danger" disabled>■ Finish Batch</button>
+            <button id="btn-terminate-all-batch" class="btn btn-danger">Terminate All</button>
           </div>
         </div>
 
@@ -359,7 +361,7 @@
 
       <!-- Latest state per address -->
       <div class="section-header">
-        <span class="section-title">Light Addresses</span>
+        <span class="section-title">Events</span>
         <div class="section-spacer"></div>
         <button id="btn-clear-address-table" class="btn btn-ghost btn-sm">Clear</button>
       </div>
@@ -382,35 +384,6 @@
             <tr id="address-empty-row">
               <td colspan="9" class="text-muted" style="text-align:center;padding:1.5rem">
                 No data yet. Waiting for events…
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Operating events table -->
-      <div class="section-header">
-        <span class="section-title">Operating Events</span>
-        <div class="section-spacer"></div>
-        <button id="btn-clear-operating" class="btn btn-ghost btn-sm">Clear</button>
-      </div>
-      <div style="overflow-x:auto; margin-bottom:1.5rem">
-        <table class="dp-table" id="operating-table">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Address</th>
-              <th>Qty</th>
-              <th>Color</th>
-              <th>Mode</th>
-              <th>Block</th>
-              <th>Label</th>
-            </tr>
-          </thead>
-          <tbody id="operating-tbody">
-            <tr id="operating-empty-row">
-              <td colspan="7" class="text-muted" style="text-align:center;padding:1.5rem">
-                Waiting for OPERATING events…
               </td>
             </tr>
           </tbody>

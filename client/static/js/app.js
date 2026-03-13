@@ -128,7 +128,6 @@ function handleWsMessage(msg) {
     case 'state_update':
       msg.data.forEach(d => {
         upsertAddressRow(d);
-        pushOperatingRow(d);
         pushEvent('light_changed', d);
         state.devices[d.address] = d;
       });
@@ -980,6 +979,7 @@ async function init() {
   $('btn-terminate-all')?.addEventListener('click', terminateAll);
 
   // Wire up device tab
+  $('btn-terminate-all-devices')?.addEventListener('click', terminateAll);
   $('btn-add-device')?.addEventListener('click', openAddDeviceModal);
   $('btn-clear-devices')?.addEventListener('click', async () => {
     if (!confirm('Remove all devices from registry?')) return;
@@ -1002,6 +1002,7 @@ async function init() {
   $('btn-add-batch-item')?.addEventListener('click', addBatchItem);
   $('btn-start-batch')?.addEventListener('click', startBatch);
   $('btn-finish-batch')?.addEventListener('click', finishBatch);
+  $('btn-terminate-all-batch')?.addEventListener('click', terminateAll);
   $('btn-import-csv')?.addEventListener('click', importCSV);
   $('btn-download-sample-csv')?.addEventListener('click', downloadSampleCSV);
   $('batch-addr')?.addEventListener('keydown', e => { if (e.key === 'Enter') { $('batch-qty').focus(); } });
@@ -1020,16 +1021,7 @@ async function init() {
         ' style="text-align:center;padding:1.5rem">No data yet. Waiting for events…</td></tr>';
     }
   });
-  $('btn-clear-operating')?.addEventListener('click', () => {
-    _opStore.length = 0;
-    const tbody = $('operating-tbody');
-    if (tbody) {
-      tbody.innerHTML =
-        '<tr id="operating-empty-row"><td colspan="7" class="text-muted"' +
-        ' style="text-align:center;padding:1.5rem">Waiting for OPERATING events…</td></tr>';
-    }
-  });
-  $('btn-clear-events')?.addEventListener('click', () => {
+$('btn-clear-events')?.addEventListener('click', () => {
     _evtStore.length = 0;
     const c = $('evt-container');
     if (c) c.innerHTML = '';
