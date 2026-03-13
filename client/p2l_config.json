@@ -16,7 +16,7 @@
       "client_cert_path": null,
       "client_key_path": null,
       "cert_password": null,
-      "allow_untrusted_certs": false
+      "allow_untrusted_certs": true
     }
   },
   "service": {
@@ -26,5 +26,5 @@
     "auto_start": true
   },
   "block_no": "00",
-  "auto_connect": false
+  "auto_connect": true
 }

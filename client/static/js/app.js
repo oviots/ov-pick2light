@@ -3,7 +3,8 @@
 
 // ── State ──────────────────────────────────────────────────────────────────
 const state = {
-  connected: false,
+  connected: false,      // P2L service is running
+  mqttConnected: false,  // Python client → MQTT broker
   host: 'localhost',
   port: 8883,
   devices: {},           // address → device object
@@ -83,6 +84,7 @@ function handleWsMessage(msg) {
   switch (msg.type) {
     case 'init':
       state.connected = msg.data.connected;
+      state.mqttConnected = msg.data.mqtt_connected || false;
       state.host = msg.data.host;
       state.port = msg.data.port;
       msg.data.devices.forEach(d => { state.devices[d.address] = d; });
@@ -92,12 +94,15 @@ function handleWsMessage(msg) {
 
     case 'connection_changed':
       state.connected = msg.data.connected;
+      state.mqttConnected = msg.data.mqtt_connected || false;
       state.host = msg.data.host || state.host;
       state.port = msg.data.port || state.port;
       updateConnectionUI();
-      toast(msg.data.connected
-        ? `MQTT broker connected: ${msg.data.host}:${msg.data.port}`
-        : 'MQTT broker disconnected', msg.data.connected ? 'success' : 'warning');
+      if (msg.data.mqtt_connected !== undefined) {
+        toast(msg.data.mqtt_connected
+          ? `MQTT broker connected: ${msg.data.host}:${msg.data.port}`
+          : 'MQTT broker disconnected', msg.data.mqtt_connected ? 'success' : 'warning');
+      }
       break;
 
     case 'bridge_status': {
@@ -151,7 +156,11 @@ function handleWsMessage(msg) {
 function updateConnectionUI() {
   const badge = $('connection-badge');
   badge.className = 'connection-badge' + (state.connected ? ' connected' : '');
-  badge.innerHTML = `<span class="dot"></span>${state.connected ? (state.host + ':' + state.port) : 'Disconnected'}`;
+  let label;
+  if (state.connected && state.mqttConnected) label = `Online · ${state.host}:${state.port}`;
+  else if (state.connected) label = 'Service Running';
+  else label = 'Disconnected';
+  badge.innerHTML = `<span class="dot"></span>${label}`;
 
   $('btn-connect').disabled = state.connected;
   $('btn-disconnect').disabled = !state.connected;
@@ -340,13 +349,24 @@ async function removeDevice(address) {
 
 // ── Connection Actions ─────────────────────────────────────────────────────
 async function connect() {
+  $('btn-connect').disabled = true;
+  $('btn-connect').textContent = 'Connecting…';
   try {
     const result = await api('POST', '/api/connect');
     if (result.service_started) toast('P2L service started', 'success');
-    toast('Connecting to MQTT broker…', 'info');
+    // REST only returns after MQTT is connected — sync state immediately
+    const s = await api('GET', '/api/status');
+    state.connected = s.connected;
+    state.mqttConnected = s.mqtt_connected || false;
+    state.host = s.host;
+    state.port = s.port;
+    updateConnectionUI();
     refreshServiceBadge();
   } catch (e) {
     toast(e.message, 'error');
+    $('btn-connect').disabled = false;
+  } finally {
+    $('btn-connect').textContent = 'Connect';
   }
 }
 
@@ -701,6 +721,7 @@ async function init() {
   try {
     const status = await api('GET', '/api/status');
     state.connected = status.connected;
+    state.mqttConnected = status.mqtt_connected || false;
     state.host = status.host;
     state.port = status.port;
     updateConnectionUI();
@@ -716,6 +737,18 @@ async function init() {
 
   // Connect WebSocket
   connectWs();
+
+  // Periodic status sync — keeps badge in sync if WS message was missed
+  setInterval(async () => {
+    try {
+      const s = await api('GET', '/api/status');
+      state.connected = s.connected;
+      state.mqttConnected = s.mqtt_connected || false;
+      state.host = s.host;
+      state.port = s.port;
+      updateConnectionUI();
+    } catch { /* ignore */ }
+  }, 5000);
 
   // Poll batch status periodically
   setInterval(async () => {

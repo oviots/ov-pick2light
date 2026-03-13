@@ -61,10 +61,14 @@ def _setup_registry_callbacks() -> None:
 
 def _setup_mqtt_client(mc: MqttClient) -> None:
     def on_state(connected: bool):
+        from .service import is_running
+        binary = config.service.binary_path
+        service_running = is_running(binary) if binary else False
         asyncio.create_task(ws_manager.broadcast({
             "type": "connection_changed",
             "data": {
-                "connected": connected,
+                "connected": service_running,
+                "mqtt_connected": connected,
                 "host": config.mqtt.host,
                 "port": config.mqtt.port,
             },
@@ -139,7 +143,7 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
 
 
 async def _do_connect() -> None:
-    """Connect to the MQTT broker."""
+    """Connect to the MQTT broker and wait until the connection is established."""
     global mqtt_client
     if mqtt_client and mqtt_client.is_connected:
         return
@@ -147,6 +151,12 @@ async def _do_connect() -> None:
     _setup_mqtt_client(mc)
     await mc.start()
     mqtt_client = mc
+    # Wait up to 15 s for the MQTT handshake to complete
+    for _ in range(150):
+        if mc.is_connected:
+            return
+        await asyncio.sleep(0.1)
+    raise RuntimeError("Timed out waiting for MQTT broker connection")
 
 
 async def _do_disconnect() -> None:

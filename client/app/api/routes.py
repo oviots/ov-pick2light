@@ -133,11 +133,15 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await ws_mgr.connect(websocket)
     try:
+        from .. import service as svc
         mc = get_mqtt_client()
+        binary = cfg.service.binary_path
+        service_running = svc.is_running(binary) if binary else False
         await websocket.send_json({
             "type": "init",
             "data": {
-                "connected": mc.is_connected if mc else False,
+                "connected": service_running,
+                "mqtt_connected": mc.is_connected if mc else False,
                 "host": cfg.mqtt.host,
                 "port": cfg.mqtt.port,
                 "devices": [m.to_dict() for m in registry.all],
@@ -159,11 +163,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @router.get("/api/status")
 async def get_status(request: Request):
+    from .. import service as svc
     mc = _mqtt(request)
     reg = _registry(request)
     cfg = _config(request)
+    binary = cfg.service.binary_path
+    print(binary)
+    service_running = svc.is_running(binary) if binary else False
     return {
-        "connected": mc.is_connected if mc else False,
+        "connected": service_running,
+        "mqtt_connected": mc.is_connected if mc else False,
         "host": cfg.mqtt.host,
         "port": cfg.mqtt.port,
         "total_devices": reg.total_count,
