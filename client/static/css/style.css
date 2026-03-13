@@ -317,6 +317,13 @@ html, body {
   cursor: default;
 }
 .device-label-text:hover { color: var(--text); }
+.device-label-text.has-label {
+  color: var(--accent);
+  font-weight: 600;
+  background: rgba(59,130,246,.1);
+  border-radius: 4px;
+  padding: .05rem .35rem;
+}
 
 .device-label-input {
   font-size: .75rem;

@@ -209,19 +209,22 @@ function renderDevices() {
   // Remove static placeholder (from HTML template) once we have real cards
   grid.querySelector('.empty-state')?.remove();
 
-  // Update existing cards, add new ones, remove stale
+  // Remove stale cards
   const existing = new Set(Object.keys(state.devices));
   grid.querySelectorAll('.device-card[data-address]').forEach(card => {
     if (!existing.has(card.dataset.address)) card.remove();
   });
 
+  // Render in sorted order — appendChild on an existing element moves it
   devices.forEach(d => {
     let card = grid.querySelector(`.device-card[data-address="${d.address}"]`);
+    const isEditing = card?.querySelector('.device-label-input:focus, .device-order-input:focus');
     if (!card) {
       card = createDeviceCard(d);
       grid.appendChild(card);
     } else {
       updateDeviceCard(card, d);
+      if (!isEditing) grid.appendChild(card); // reposition to maintain sort order
     }
   });
 
@@ -257,7 +260,8 @@ function _bindCardActions(card, address) {
   const orderText = card.querySelector('.device-order-text');
   const orderInput = card.querySelector('.device-order-input');
   if (orderText && orderInput) {
-    function startOrderEdit() {
+    function startOrderEdit(e) {
+      e?.stopPropagation();
       orderText.style.display = 'none';
       orderInput.style.display = 'inline-block';
       orderInput.focus();
@@ -279,8 +283,10 @@ function _bindCardActions(card, address) {
       }
     }
     orderText.addEventListener('click', startOrderEdit);
+    orderInput.addEventListener('click', e => e.stopPropagation());
     orderInput.addEventListener('blur', saveOrder);
     orderInput.addEventListener('keydown', e => {
+      e.stopPropagation();
       if (e.key === 'Enter') { e.preventDefault(); orderInput.blur(); }
       if (e.key === 'Escape') {
         orderInput.value = state.devices[address]?.order_no ?? 0;
@@ -342,7 +348,7 @@ function deviceCardHTML(d) {
       <span class="status-badge ${d.status}">${statusLabel}</span>
     </div>
     <div class="device-label-row">
-      <span class="device-label-text" title="${labelVal}">${labelVal || '<span style="opacity:.35">no label</span>'}</span>
+      <span class="device-label-text${labelVal ? ' has-label' : ''}" title="${labelVal}">${labelVal || '<span style="opacity:.35">no label</span>'}</span>
       <input class="device-label-input" value="${labelVal}" placeholder="label…" style="display:none">
       <button class="btn btn-xs btn-ghost btn-edit-label" title="Edit label">✎</button>
     </div>
