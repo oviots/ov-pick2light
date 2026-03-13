@@ -12,6 +12,10 @@ Browser → FastAPI REST → MQTT broker → P2L .NET bridge → Aioi hardware
 Browser ← WebSocket   ← MQTT events ← P2L .NET bridge ← Aioi hardware
 ```
 
+When **Connect** is clicked, the dashboard optionally launches the P2L .NET
+service automatically if it is not already running (configurable via
+`service.auto_start` and `service.binary_path`).
+
 ---
 
 ## Quick start
@@ -33,7 +37,8 @@ python run.py
 client/
 ├── app/
 │   ├── main.py              # FastAPI app, lifespan, global state, MQTT event wiring
-│   ├── config.py            # AppConfig, MqttConfig, TlsConfig
+│   ├── config.py            # AppConfig, MqttConfig, TlsConfig, ServiceConfig
+│   ├── service.py           # P2L .NET service lifecycle (check running, start, stop)
 │   ├── protocol/
 │   │   ├── enums.py         # LightState, LightColor, ModuleStatus, CompletionStatus
 │   │   └── models.py        # LightModuleState, PickingInstruction, ConfirmationEvent
@@ -66,33 +71,59 @@ config) and copies the relevant fields.  Subsequent saves write
 
 | Field | Default | Description |
 |---|---|---|
-| `block_no` | `00` | Default block sent with `batch_finish` / `terminate_all` |
+| `block_no` | `"00"` | Default block sent with `batch_finish` / `terminate_all` |
 | `auto_connect` | `false` | Connect to MQTT broker on startup |
 
 ### MQTT
 
 | Field | Default | Description |
 |---|---|---|
-| `host` | `localhost` | Broker hostname |
-| `port` | `8883` | Broker port |
-| `client_id` | `p2l-webclient` | MQTT client identifier |
-| `username` / `password` | — | Broker credentials |
-| `command_topic` | `p2l/commands` | Topic for outgoing commands |
-| `event_topic` | `p2l/events` | Topic for confirmations / batch events |
-| `devices_topic` | `p2l/devices` | Topic prefix for per-device state (`{topic}/{addr}`) |
-| `status_topic` | `p2l/status` | Bridge health / Last Will |
+| `mqtt.host` | `"localhost"` | Broker hostname |
+| `mqtt.port` | `8883` | Broker port |
+| `mqtt.client_id` | `"p2l-webclient"` | MQTT client identifier |
+| `mqtt.username` / `password` | — | Broker credentials |
+| `mqtt.command_topic` | `"p2l/commands"` | Topic for outgoing commands |
+| `mqtt.event_topic` | `"p2l/events"` | Topic for confirmations / batch events |
+| `mqtt.devices_topic` | `"p2l/devices"` | Topic prefix for per-device state (`{topic}/{addr}`) |
+| `mqtt.status_topic` | `"p2l/status"` | Bridge health / Last Will |
 
 #### TLS
 
 | Field | Default | Description |
 |---|---|---|
-| `tls.enabled` | `true` | Use TLS for broker connection |
-| `tls.ca_cert_path` | `null` | Custom CA cert (PEM); `null` = OS trust store |
-| `tls.client_cert_path` / `client_key_path` | `null` | Mutual TLS |
-| `tls.allow_untrusted_certs` | `false` | Skip cert verification — **dev/test only** |
+| `mqtt.tls.enabled` | `true` | Use TLS for broker connection |
+| `mqtt.tls.ca_cert_path` | `null` | Custom CA cert (PEM); `null` = OS trust store |
+| `mqtt.tls.client_cert_path` / `client_key_path` | `null` | Mutual TLS |
+| `mqtt.tls.allow_untrusted_certs` | `false` | Skip cert verification — **dev/test only** |
 
-All settings are editable live in the **Settings** tab and saved with
-**Save Settings**.
+### Service
+
+| Field | Default | Description |
+|---|---|---|
+| `service.binary_path` | `""` | Absolute path to the `p2l` binary |
+| `service.args` | `[]` | CLI arguments passed to the binary (e.g. `["run", "tasks.csv"]`) |
+| `service.working_dir` | `""` | Working directory; defaults to the binary's parent folder |
+| `service.auto_start` | `true` | Launch the service automatically when clicking Connect |
+
+All settings are editable live in the **Settings** tab and saved with **Save Settings**.
+
+---
+
+## P2L service lifecycle
+
+`app/service.py` manages the P2L .NET process:
+
+- **`is_running(binary_path)`** — uses `psutil` to find a running `p2l` process by exe path or
+  name; falls back to tracking the subprocess spawned by this manager.
+- **`start(binary_path, args, working_dir)`** — launches the binary with
+  `asyncio.create_subprocess_exec`; stdout/stderr are appended to
+  `p2l_webclient.log` in the working directory.  Raises `RuntimeError` if the
+  binary is missing or exits within 1.5 s.
+- **`stop()`** — sends SIGTERM to the managed subprocess (5 s timeout, then SIGKILL).
+
+`POST /api/connect` calls `service.start()` automatically when
+`service.auto_start = true` and the binary is not already running, then waits
+2 s for the service to connect to the broker before opening the MQTT session.
 
 ---
 
@@ -138,7 +169,7 @@ the P2L .NET `P2LMqttJsonContext` serialisation settings).
 { "type": "terminate_all" }
 ```
 
-#### MQTT event envelope (`p2l/events`, `p2l/devices/#`, `p2l/status`)
+### Event envelope (`p2l/events`, `p2l/devices/#`, `p2l/status`)
 
 ```jsonc
 // Operator pressed CONFIRM (p2l/events)
@@ -155,12 +186,11 @@ the P2L .NET `P2LMqttJsonContext` serialisation settings).
 { "type": "bridge_status", "online": true, "gatewayConnected": true }
 ```
 
-#### Enum name mapping
+### Enum name mapping
 
 | Python | MQTT / C# |
 |---|---|
 | `LightColor.GREEN` | `"Green"` |
-| `LightColor.HIGH_FLASH` | — (not a color) |
 | `LightState.ON` | `"On"` |
 | `LightState.FLASH` | `"Flash"` |
 | `LightState.HIGH_FLASH` | `"HighFlash"` |
@@ -180,9 +210,19 @@ All request/response bodies are JSON.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/status` | Full status snapshot |
-| `POST` | `/api/connect` | Connect to MQTT broker |
+| `GET` | `/api/status` | Status snapshot: `{connected, host, port, total_devices, active_devices, pending_confirm}` |
+| `POST` | `/api/connect` | Start P2L service (if configured) then connect to MQTT broker |
 | `POST` | `/api/disconnect` | Disconnect from MQTT broker |
+
+`POST /api/connect` response: `{"status": "connecting", "service_started": bool}`
+
+### Service
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/service/status` | `{"running": bool, "binary_path": str}` |
+| `POST` | `/api/service/start` | Start the P2L service manually |
+| `POST` | `/api/service/stop` | Stop the managed P2L service subprocess |
 
 ### Devices
 
@@ -200,16 +240,19 @@ All request/response bodies are JSON.
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/batch/start` | Start batch — body: `{block_no, items: [{address, quantity, color, led_mode, label?}]}` |
-| `POST` | `/api/batch/finish` | Terminate batch and clear pending set |
+| `POST` | `/api/batch/finish` | Finish batch (sends `batch_finish` to broker) |
 | `GET` | `/api/batch/status` | `{active, pending: [addr…], complete}` |
-| `POST` | `/api/terminate-all` | Terminate all modules in default block |
+| `POST` | `/api/terminate-all` | Publish `terminate_all` command |
 
 ### Configuration
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/config` | Current config (password omitted) |
-| `PUT` | `/api/config` | Update fields — partial update, all fields optional |
+| `GET` | `/api/config` | Current config (MQTT password omitted) |
+| `PUT` | `/api/config` | Partial update — all fields optional |
+
+`PUT /api/config` accepts: `block_no`, `auto_connect`, `mqtt_*`, `service_binary_path`,
+`service_args`, `service_working_dir`, `service_auto_start`.
 
 ### Logs
 
@@ -229,12 +272,12 @@ replies `"pong"`.
 
 | `type` | Payload | Trigger |
 |---|---|---|
-| `init` | Full snapshot (devices, connection state) | On WS connect |
+| `init` | `{connected, host, port, devices[]}` | On WS connect |
 | `connection_changed` | `{connected, host, port}` | MQTT broker connect/disconnect |
 | `state_update` | `[LightModuleState…]` | Any registry mutation |
 | `confirmation` | `{address, status, adjusted_display, received_at}` | Operator presses CONFIRM |
 | `batch_completed` | `{}` | All batch items confirmed |
-| `bridge_status` | `{online, gateway_connected}` | MQTT bridge health event |
+| `bridge_status` | `{online, gateway_connected}` | P2L bridge health event |
 | `log` | `{time, level, message}` | Internal log entry |
 
 ---
@@ -243,10 +286,10 @@ replies `"pong"`.
 
 | Tab | Contents |
 |---|---|
-| **Dashboard** | Stats (total / active / pending / connected), quick actions, confirmation event feed |
+| **Dashboard** | Stats (total / active / pending / connected), Terminate All, confirmation event feed |
 | **Devices** | Card grid per module — address, status badge, color bar, display value, Light ON modal, Off button |
 | **Batch Pick** | Batch builder (manual entry or CSV import), active batch table with per-item confirmation ticks |
-| **Settings** | MQTT broker settings (host, auth, topics, TLS), block no, auto-connect, save button |
+| **Settings** | MQTT broker settings, P2L service settings, block no, auto-connect, Save button |
 | **Logs** | Scrolling log stream, clear button |
 
 ### Light ON modal
@@ -280,4 +323,5 @@ address,quantity,color,label
 | `jinja2` | ≥ 3.1.3 | HTML template rendering |
 | `aiofiles` | ≥ 23.2 | Async file I/O |
 | `python-multipart` | ≥ 0.0.9 | Form data parsing |
-| `aiomqtt` | ≥ 2.0 | Async MQTT client (optional feature) |
+| `aiomqtt` | ≥ 2.0 | Async MQTT client |
+| `psutil` | ≥ 5.9 | Process detection for service lifecycle manager |

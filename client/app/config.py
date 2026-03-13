@@ -32,8 +32,17 @@ class MqttConfig:
 
 
 @dataclass
+class ServiceConfig:
+    binary_path: str = ""        # Absolute path to the p2l binary
+    args: list = field(default_factory=list)   # Extra CLI arguments (e.g. ["run", "tasks.csv"])
+    working_dir: str = ""        # Working directory; defaults to binary's parent dir
+    auto_start: bool = True      # Start the service automatically before connecting MQTT
+
+
+@dataclass
 class AppConfig:
     mqtt: MqttConfig = field(default_factory=MqttConfig)
+    service: ServiceConfig = field(default_factory=ServiceConfig)
     block_no: str = "00"        # Default block sent with batch_finish / terminate_all
     auto_connect: bool = False  # Auto-connect to MQTT broker on startup
 
@@ -59,6 +68,12 @@ class AppConfig:
                     "cert_password": tls.cert_password,
                     "allow_untrusted_certs": tls.allow_untrusted_certs,
                 },
+            },
+            "service": {
+                "binary_path": self.service.binary_path,
+                "args": self.service.args,
+                "working_dir": self.service.working_dir,
+                "auto_start": self.service.auto_start,
             },
             "block_no": self.block_no,
             "auto_connect": self.auto_connect,
@@ -97,6 +112,12 @@ class AppConfig:
                             ),
                         ),
                         block_no=data.get("Gateway", {}).get("BlockNo", "00"),
+                        service=ServiceConfig(
+                            binary_path=data.get("Service", {}).get("BinaryPath", ""),
+                            args=data.get("Service", {}).get("Args", []),
+                            working_dir=data.get("Service", {}).get("WorkingDir", ""),
+                            auto_start=data.get("Service", {}).get("AutoStart", True),
+                        ),
                     )
                 except Exception:
                     pass
@@ -129,6 +150,12 @@ class AppConfig:
                 ),
                 block_no=data.get("block_no", "00"),
                 auto_connect=data.get("auto_connect", False),
+                service=ServiceConfig(
+                    binary_path=data.get("service", {}).get("binary_path", ""),
+                    args=data.get("service", {}).get("args", []),
+                    working_dir=data.get("service", {}).get("working_dir", ""),
+                    auto_start=data.get("service", {}).get("auto_start", True),
+                ),
             )
         except Exception:
             return cls()
@@ -155,6 +182,12 @@ class AppConfig:
                     "allow_untrusted_certs": tls.allow_untrusted_certs,
                     # cert_password intentionally omitted
                 },
+            },
+            "service": {
+                "binary_path": self.service.binary_path,
+                "args": self.service.args,
+                "working_dir": self.service.working_dir,
+                "auto_start": self.service.auto_start,
             },
             "block_no": self.block_no,
             "auto_connect": self.auto_connect,

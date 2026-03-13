@@ -306,6 +306,34 @@
           </div>
         </div>
 
+        <!-- P2L Service -->
+        <div class="card mb-2">
+          <div class="card-title" style="display:flex;align-items:center;gap:.75rem">
+            P2L Service
+            <span id="svc-status-badge" class="status-badge STANDBY">Unknown</span>
+          </div>
+          <p style="font-size:.8rem;color:var(--text-muted);margin-bottom:.75rem">
+            When <strong>Auto-start</strong> is enabled, clicking Connect will launch the P2L .NET
+            service automatically if it is not already running.
+          </p>
+          <div class="form-group">
+            <label class="form-label">Binary Path</label>
+            <input id="cfg-svc-path" class="form-input" placeholder="/path/to/p2l">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Arguments (space-separated, optional)</label>
+            <input id="cfg-svc-args" class="form-input" placeholder='e.g. run tasks.csv'>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Working Directory (defaults to binary folder)</label>
+            <input id="cfg-svc-workdir" class="form-input" placeholder="/path/to/publish">
+          </div>
+          <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+            <input id="cfg-svc-autostart" type="checkbox" style="width:16px;height:16px" checked>
+            <label class="form-label" style="margin:0" for="cfg-svc-autostart">Auto-start service when connecting</label>
+          </div>
+        </div>
+
         <button id="btn-save-config" class="btn btn-primary">Save Settings</button>
 
         <div class="card" style="margin-top:1rem">

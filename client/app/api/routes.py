@@ -77,6 +77,10 @@ class ConfigRequest(BaseModel):
     mqtt_tls_enabled: Optional[bool] = None
     mqtt_tls_allow_untrusted: Optional[bool] = None
     mqtt_tls_ca_cert_path: Optional[str] = None
+    service_binary_path: Optional[str] = None
+    service_args: Optional[list] = None
+    service_working_dir: Optional[str] = None
+    service_auto_start: Optional[bool] = None
 
 
 class AddDeviceRequest(BaseModel):
@@ -172,11 +176,35 @@ async def get_status(request: Request):
 
 @router.post("/api/connect")
 async def connect(request: Request):
+    import asyncio
+    from .. import service as svc
+    cfg = _config(request)
+    svc_cfg = cfg.service
+
+    # ── 1. Optionally start the P2L .NET service ─────────────────────────────
+    service_started = False
+    if svc_cfg.auto_start and svc_cfg.binary_path:
+        already = svc.is_running(svc_cfg.binary_path)
+        if not already:
+            try:
+                await svc.start(
+                    svc_cfg.binary_path,
+                    svc_cfg.args,
+                    svc_cfg.working_dir,
+                )
+                service_started = True
+                # Short grace period so the service can connect to the broker
+                await asyncio.sleep(2)
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f"Failed to start P2L service: {exc}")
+
+    # ── 2. Connect to MQTT broker ─────────────────────────────────────────────
     try:
         await request.app.state.do_connect()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
-    return {"status": "connecting"}
+
+    return {"status": "connecting", "service_started": service_started}
 
 
 @router.post("/api/disconnect")
@@ -186,6 +214,44 @@ async def disconnect(request: Request):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return {"status": "disconnected"}
+
+
+# ─── Service management ────────────────────────────────────────────────────
+
+@router.get("/api/service/status")
+async def service_status(request: Request):
+    from .. import service as svc
+    cfg = _config(request)
+    binary = cfg.service.binary_path
+    running = svc.is_running(binary) if binary else False
+    return {"running": running, "binary_path": binary}
+
+
+@router.post("/api/service/start")
+async def service_start(request: Request):
+    import asyncio
+    from .. import service as svc
+    cfg = _config(request)
+    svc_cfg = cfg.service
+    if not svc_cfg.binary_path:
+        raise HTTPException(status_code=400, detail="Service binary path not configured")
+    if svc.is_running(svc_cfg.binary_path):
+        return {"status": "already_running"}
+    try:
+        await svc.start(svc_cfg.binary_path, svc_cfg.args, svc_cfg.working_dir)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {"status": "started"}
+
+
+@router.post("/api/service/stop")
+async def service_stop(request: Request):
+    from .. import service as svc
+    try:
+        await svc.stop()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "stopped"}
 
 
 # ─── Device management ────────────────────────────────────────────────────────
@@ -336,6 +402,14 @@ async def update_config(request: Request, body: ConfigRequest):
         cfg.mqtt.tls.allow_untrusted_certs = body.mqtt_tls_allow_untrusted
     if body.mqtt_tls_ca_cert_path is not None:
         cfg.mqtt.tls.ca_cert_path = body.mqtt_tls_ca_cert_path
+    if body.service_binary_path is not None:
+        cfg.service.binary_path = body.service_binary_path
+    if body.service_args is not None:
+        cfg.service.args = body.service_args
+    if body.service_working_dir is not None:
+        cfg.service.working_dir = body.service_working_dir
+    if body.service_auto_start is not None:
+        cfg.service.auto_start = body.service_auto_start
     cfg.save()
     out = cfg.to_dict()
     out["mqtt"].pop("password", None)

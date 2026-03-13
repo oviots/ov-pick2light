@@ -1,0 +1,30 @@
+{
+  "mqtt": {
+    "enabled": true,
+    "host": "s28f7f16.ala.asia-southeast1.emqxsl.com",
+    "port": 8883,
+    "client_id": "p2l-webclient",
+    "username": "pick2light",
+    "password": "P2l123456",
+    "command_topic": "p2l/commands",
+    "event_topic": "p2l/events",
+    "devices_topic": "p2l/devices",
+    "status_topic": "p2l/status",
+    "tls": {
+      "enabled": true,
+      "ca_cert_path": null,
+      "client_cert_path": null,
+      "client_key_path": null,
+      "cert_password": null,
+      "allow_untrusted_certs": false
+    }
+  },
+  "service": {
+    "binary_path": "/Volumes/GTeck/Projects/1shot/light/publish/p2l",
+    "args": [],
+    "working_dir": "/Volumes/GTeck/Projects/1shot/light/publish",
+    "auto_start": true
+  },
+  "block_no": "00",
+  "auto_connect": false
+}

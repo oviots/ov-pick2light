@@ -48,6 +48,7 @@ function initTabs() {
       document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
       btn.classList.add('active');
       $('pane-' + tab).classList.add('active');
+      if (tab === 'settings') refreshServiceBadge();
     });
   });
 }
@@ -340,11 +341,23 @@ async function removeDevice(address) {
 // ── Connection Actions ─────────────────────────────────────────────────────
 async function connect() {
   try {
-    await api('POST', '/api/connect');
+    const result = await api('POST', '/api/connect');
+    if (result.service_started) toast('P2L service started', 'success');
     toast('Connecting to MQTT broker…', 'info');
+    refreshServiceBadge();
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+async function refreshServiceBadge() {
+  try {
+    const s = await api('GET', '/api/service/status');
+    const badge = $('svc-status-badge');
+    if (!badge) return;
+    badge.textContent = s.running ? 'Running' : 'Stopped';
+    badge.className = `status-badge ${s.running ? 'OPERATING' : 'STANDBY'}`;
+  } catch { /* ignore */ }
 }
 
 async function disconnect() {
@@ -528,12 +541,19 @@ async function loadConfig() {
     $('cfg-mqtt-tls').checked = mq.tls?.enabled ?? true;
     $('cfg-mqtt-tls-untrusted').checked = mq.tls?.allow_untrusted_certs || false;
     $('cfg-mqtt-ca-cert').value = mq.tls?.ca_cert_path || '';
+
+    const svc = cfg.service || {};
+    $('cfg-svc-path').value = svc.binary_path || '';
+    $('cfg-svc-args').value = (svc.args || []).join(' ');
+    $('cfg-svc-workdir').value = svc.working_dir || '';
+    $('cfg-svc-autostart').checked = svc.auto_start !== false;
   } catch (e) {
     toast(e.message, 'error');
   }
 }
 
 async function saveConfig() {
+  const argsRaw = $('cfg-svc-args').value.trim();
   const body = {
     block_no: $('cfg-block').value,
     auto_connect: $('cfg-autoconnect').checked,
@@ -548,6 +568,10 @@ async function saveConfig() {
     mqtt_tls_enabled: $('cfg-mqtt-tls').checked,
     mqtt_tls_allow_untrusted: $('cfg-mqtt-tls-untrusted').checked,
     mqtt_tls_ca_cert_path: $('cfg-mqtt-ca-cert').value || null,
+    service_binary_path: $('cfg-svc-path').value || null,
+    service_args: argsRaw ? argsRaw.split(/\s+/) : [],
+    service_working_dir: $('cfg-svc-workdir').value || null,
+    service_auto_start: $('cfg-svc-autostart').checked,
   };
   try {
     await api('PUT', '/api/config', body);
@@ -671,6 +695,7 @@ async function init() {
   // Load initial data
   await loadConfig();
   await loadLogs();
+  refreshServiceBadge();
 
   // Load initial status
   try {
