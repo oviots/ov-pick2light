@@ -193,9 +193,13 @@ function updateStats() {
 }
 
 // ── Device Rendering ──────────────────────────────────────────────────────
+const STATUS_PRIORITY = { OPERATING: 0, OPERATING2: 1, SHORTAGE: 2, COMPLETED: 3, MAINTENANCE: 4, POWER_ON: 5, STANDBY: 6 };
+
 function renderDevices() {
   const grid = $('device-grid');
   const devices = Object.values(state.devices).sort((a, b) => {
+    const sa = STATUS_PRIORITY[a.status] ?? 9, sb = STATUS_PRIORITY[b.status] ?? 9;
+    if (sa !== sb) return sa - sb;
     const oa = a.order_no ?? 0, ob = b.order_no ?? 0;
     return oa !== ob ? oa - ob : a.address.localeCompare(b.address);
   });
@@ -906,6 +910,28 @@ async function saveConfig() {
   }
 }
 
+// ── Device Export ──────────────────────────────────────────────────────────
+function exportDevicesCSV() {
+  const devices = Object.values(state.devices).sort((a, b) => {
+    const oa = a.order_no ?? 0, ob = b.order_no ?? 0;
+    return oa !== ob ? oa - ob : a.address.localeCompare(b.address);
+  });
+  if (devices.length === 0) { toast('No devices to export', 'warning'); return; }
+  const rows = ['order_no,address,label,status,color,qty'];
+  devices.forEach(d => {
+    const qty = (d.adjusted_quantity || d.display_data || '00000').trim().replace(/^0+/, '') || '0';
+    rows.push([d.order_no ?? 0, d.address, `"${(d.label || '').replace(/"/g, '""')}"`, d.status, d.color, qty].join(','));
+  });
+  const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = el('a');
+  a.href = url;
+  a.download = `devices_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast(`Exported ${devices.length} device(s)`, 'success');
+}
+
 // ── CSV Sample Download ────────────────────────────────────────────────────
 function downloadSampleCSV() {
   const rows = [
@@ -1004,6 +1030,7 @@ async function init() {
 
   // Wire up device tab
   $('btn-terminate-all-devices')?.addEventListener('click', terminateAll);
+  $('btn-export-devices')?.addEventListener('click', exportDevicesCSV);
   $('btn-add-device')?.addEventListener('click', openAddDeviceModal);
   $('btn-clear-devices')?.addEventListener('click', async () => {
     if (!confirm('Remove all devices from registry?')) return;
