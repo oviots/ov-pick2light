@@ -915,7 +915,7 @@ function importCSV() {
         const parts = line.split(',').map(p => p.trim());
         if (parts.length < 2) return;
         const [addr, qty, color = 'GREEN', label = ''] = parts;
-        if (!addr) return;
+        if (!addr || !/^\d+$/.test(addr)) return;  // skip header / non-numeric rows
         state.batchItems.push({
           address: addr.padStart(4, '0').slice(-4),
           quantity: parseInt(qty) || 1,
