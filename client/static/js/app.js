@@ -87,7 +87,10 @@ function handleWsMessage(msg) {
       state.mqttConnected = msg.data.mqtt_connected || false;
       state.host = msg.data.host;
       state.port = msg.data.port;
-      msg.data.devices.forEach(d => { state.devices[d.address] = d; });
+      msg.data.devices.forEach(d => {
+        state.devices[d.address] = d;
+        upsertAddressRow(d);
+      });
       updateConnectionUI();
       renderDevices();
       break;
@@ -124,6 +127,7 @@ function handleWsMessage(msg) {
 
     case 'state_update':
       msg.data.forEach(d => {
+        upsertAddressRow(d);
         pushOperatingRow(d);
         pushEvent('light_changed', d);
         state.devices[d.address] = d;
@@ -240,7 +244,8 @@ function updateDeviceCard(card, d) {
 function deviceCardHTML(d) {
   const statusLabel = d.status.replace('_', ' ');
   const colorHex = COLOR_HEX[d.color] || '#374151';
-  const displayVal = (d.display_data || '00000').replace(/^0+/, '') || '0';
+  const rawDisplay = d.adjusted_quantity || d.display_data || '00000';
+  const displayVal = rawDisplay.trim().replace(/^0+/, '') || '0';
   const label = d.label ? `<span class="device-label" title="${d.label}">${d.label}</span>` : '';
   const pendingStr = state.batchPending.has(d.address) ? '(pending)' : '';
 
@@ -506,7 +511,7 @@ function updateBatchStatus() {
       const tr = el('tr');
       tr.innerHTML = `
         <td class="addr-cell">${d.address}</td>
-        <td>${(d.display_data || '').replace(/^0+/, '') || '0'}</td>
+        <td>${(d.adjusted_quantity || d.display_data || '').trim().replace(/^0+/, '') || '0'}</td>
         <td><span class="color-dot" style="background:${COLOR_HEX[d.color] || '#374151'}"></span></td>
         <td>${d.label || '—'}</td>
         <td>${confirmed ? '<span class="confirm-icon">✓</span>' : '<span class="pending-icon">○</span>'}</td>`;
@@ -517,8 +522,51 @@ function updateBatchStatus() {
 // ── Data Processing ────────────────────────────────────────────────────────
 
 const MAX_EVENTS = 500;
-const _evtStore  = [];   // { time, type, data }
-const _opStore   = [];   // operating event rows
+const _evtStore  = [];        // { time, type, data }
+const _opStore   = [];        // operating event rows
+const _addrMap   = {};        // address → latest device state + updated time
+
+function upsertAddressRow(d) {
+  const time = new Date().toLocaleTimeString();
+  _addrMap[d.address] = { ...d, _updated: time };
+
+  const tbody = $('address-tbody');
+  if (!tbody) return;
+
+  const empty = $('address-empty-row');
+  if (empty) empty.remove();
+
+  const rawQty  = d.adjusted_quantity || d.display_data || '00000';
+  const qty     = rawQty.trim().replace(/^0+/, '') || '0';
+  const colorHex = COLOR_HEX[d.color] || '#374151';
+  const statusClass = (d.status || 'STANDBY').toUpperCase();
+
+  const html =
+    `<td class="dp-addr">${d.address}</td>` +
+    `<td><span class="status-badge ${statusClass}">${d.status || '—'}</span></td>` +
+    `<td class="dp-qty">${qty}</td>` +
+    `<td><span class="dp-color-dot" style="background:${colorHex}"></span>${d.color || '—'}</td>` +
+    `<td>${d.led_mode || '—'}</td>` +
+    `<td>${d.block_no || '—'}</td>` +
+    `<td>${d.label || '—'}</td>` +
+    `<td class="dp-time">${time}</td>`;
+
+  let row = tbody.querySelector(`tr[data-addr="${d.address}"]`);
+  if (row) {
+    row.innerHTML = html;
+    row.classList.remove('dp-new');
+    void row.offsetWidth;  // reflow to restart animation
+    row.classList.add('dp-new');
+  } else {
+    row = el('tr', 'dp-new');
+    row.dataset.addr = d.address;
+    row.innerHTML = html;
+    // Insert sorted by address
+    const rows = [...tbody.querySelectorAll('tr[data-addr]')];
+    const after = rows.find(r => r.dataset.addr > d.address);
+    tbody.insertBefore(row, after || null);
+  }
+}
 
 function pushOperatingRow(d) {
   if (d.status !== 'OPERATING' && d.status !== 'OPERATING2') return;
@@ -533,7 +581,8 @@ function pushOperatingRow(d) {
   const empty = $('operating-empty-row');
   if (empty) empty.remove();
 
-  const qty = (d.display_data || '00000').replace(/^0+/, '') || '0';
+  const rawQty = d.adjusted_quantity || d.display_data || '00000';
+  const qty    = rawQty.trim().replace(/^0+/, '') || '0';
   const colorHex = COLOR_HEX[d.color] || '#374151';
   const tr = el('tr', 'dp-new');
   tr.innerHTML =
@@ -797,6 +846,15 @@ async function init() {
   $('btn-save-config')?.addEventListener('click', saveConfig);
 
   // Wire up data processing tab
+  $('btn-clear-address-table')?.addEventListener('click', () => {
+    Object.keys(_addrMap).forEach(k => delete _addrMap[k]);
+    const tbody = $('address-tbody');
+    if (tbody) {
+      tbody.innerHTML =
+        '<tr id="address-empty-row"><td colspan="8" class="text-muted"' +
+        ' style="text-align:center;padding:1.5rem">No data yet. Waiting for events…</td></tr>';
+    }
+  });
   $('btn-clear-operating')?.addEventListener('click', () => {
     _opStore.length = 0;
     const tbody = $('operating-tbody');
