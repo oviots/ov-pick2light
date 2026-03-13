@@ -99,6 +99,7 @@ public sealed class PickingEngine : IDisposable
     public async Task QuickLightAsync(string address, int quantity,
                                       LightColor color   = LightColor.Green,
                                       LightState ledMode = LightState.On,
+                                      LightState buzMode = LightState.Off,
                                       CancellationToken ct = default)
     {
         var inst = new PickingInstruction
@@ -107,6 +108,7 @@ public sealed class PickingEngine : IDisposable
             Quantity = quantity,
             Color    = color,
             LedMode  = ledMode,
+            BuzMode  = buzMode,
         };
         _registry.SetInstructed(inst);
 
@@ -118,6 +120,7 @@ public sealed class PickingEngine : IDisposable
                 Quantity = int.TryParse(m.DisplayData.Trim(), out int q) ? q : 0,
                 Color    = m.Color,
                 LedMode  = m.LedMode,
+                BuzMode  = m.BuzMode,
             })
             .ToList();
 

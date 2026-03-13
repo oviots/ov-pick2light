@@ -123,7 +123,7 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         {
             var (led2, led1, led0) = inst.Color.ToLedStates(inst.LedMode);
             await SendAndWaitAsync(
-                AioiEncoder.SetModeAm1(inst.Address, led2, led1, led0, LightState.On, LightState.Off), ct);
+                AioiEncoder.SetModeAm1(inst.Address, led2, led1, led0, LightState.On, inst.BuzMode), ct);
         }
 
         var ledMode = instructions[0].LedMode;
@@ -147,7 +147,7 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         {
             var (led2, led1, led0) = inst.Color.ToLedStates(inst.LedMode);
             await SendAndWaitAsync(
-                AioiEncoder.SetModeAm1(inst.Address, led2, led1, led0, LightState.On, LightState.Off), ct);
+                AioiEncoder.SetModeAm1(inst.Address, led2, led1, led0, LightState.On, inst.BuzMode), ct);
         }
 
         var ledMode = instructions[0].LedMode;

@@ -37,6 +37,7 @@ public sealed class LightModuleRegistry
                 DisplayData       = instruction.FormattedDisplay,
                 Color             = instruction.Color,
                 LedMode           = instruction.LedMode,
+                BuzMode           = instruction.BuzMode,
                 BlockNo           = instruction.BlockNo,
                 LastInstructionAt = DateTime.UtcNow,
             },
@@ -46,6 +47,7 @@ public sealed class LightModuleRegistry
                 existing.DisplayData       = instruction.FormattedDisplay;
                 existing.Color             = instruction.Color;
                 existing.LedMode           = instruction.LedMode;
+                existing.BuzMode           = instruction.BuzMode;
                 existing.BlockNo           = instruction.BlockNo;
                 existing.LastInstructionAt = DateTime.UtcNow;
                 return existing;

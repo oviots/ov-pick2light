@@ -58,7 +58,7 @@ internal sealed class MqttCommandDispatcher
                         P2LMqttJsonContext.Default.LightOnCmd);
                     if (cmd is null) break;
                     await _engine.QuickLightAsync(cmd.Address, cmd.Quantity,
-                        cmd.Color, cmd.LedMode, ct);
+                        cmd.Color, cmd.LedMode, cmd.LedMode, ct);
                     _log.LogInformation("[MQTT] light_on addr={A} qty={Q} color={C} mode={M}",
                         cmd.Address, cmd.Quantity, cmd.Color, cmd.LedMode);
                     break;

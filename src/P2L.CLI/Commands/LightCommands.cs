@@ -54,7 +54,7 @@ public sealed class LightOnCommand : AsyncCommand<LightOnCommand.Settings>
 
         try
         {
-            await _engine.QuickLightAsync(s.Address, s.Quantity, s.Color, s.LedMode, cts.Token);
+            await _engine.QuickLightAsync(s.Address, s.Quantity, s.Color, s.LedMode, s.LedMode, cts.Token);
             AnsiConsole.MarkupLine($"[green]Light ON:[/] addr=[bold]{s.Address}[/] qty=[bold]{s.Quantity}[/] color=[bold]{s.Color}[/] mode=[bold]{s.LedMode}[/]");
             return 0;
         }
@@ -254,6 +254,7 @@ public sealed class BatchPickCommand : AsyncCommand<BatchPickCommand.Settings>
                 Quantity = qty,
                 Color    = color,
                 LedMode  = ledMode,
+                BuzMode  = ledMode,
             });
         }
         return result;
