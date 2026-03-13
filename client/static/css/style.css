@@ -751,6 +751,14 @@ html, body {
   100% { background: transparent; }
 }
 
+.dp-table .dp-order {
+  text-align: center;
+  font-size: .75rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  width: 3rem;
+}
+
 .dp-table .dp-addr {
   font-family: 'Courier New', monospace;
   font-weight: 700;

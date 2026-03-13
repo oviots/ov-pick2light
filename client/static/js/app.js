@@ -617,6 +617,17 @@ const _evtStore  = [];        // { time, type, data }
 const _opStore   = [];        // operating event rows
 const _addrMap   = {};        // address → latest device state + updated time
 
+function _resortAddressRow(tbody, row) {
+  const order = parseInt(row.dataset.order) || 0;
+  const addr  = row.dataset.addr || '';
+  const rows  = [...tbody.querySelectorAll('tr[data-addr]')].filter(r => r !== row);
+  const after = rows.find(r => {
+    const ro = parseInt(r.dataset.order) || 0;
+    return ro > order || (ro === order && (r.dataset.addr || '') > addr);
+  });
+  tbody.insertBefore(row, after || null);
+}
+
 function upsertAddressRow(d) {
   const time = new Date().toLocaleTimeString();
   _addrMap[d.address] = { ...d, _updated: time };
@@ -627,16 +638,18 @@ function upsertAddressRow(d) {
   const empty = $('address-empty-row');
   if (empty) empty.remove();
 
-  const rawQty  = d.adjusted_quantity || d.display_data || '00000';
-  const qty     = rawQty.trim().replace(/^0+/, '') || '0';
+  const rawQty   = d.adjusted_quantity || d.display_data || '00000';
+  const qty      = rawQty.trim().replace(/^0+/, '') || '0';
   const colorHex = COLOR_HEX[d.color] || '#374151';
   const statusClass = (d.status || 'STANDBY').toUpperCase();
+  const orderNo  = d.order_no ?? 0;
 
   // Preserve any label the user has typed but not yet saved
   const existingRow = tbody.querySelector(`tr[data-addr="${d.address}"]`);
   const editingNow  = existingRow?.querySelector('.dp-label-input:focus');
 
   const html =
+    `<td class="dp-order">${orderNo}</td>` +
     `<td class="dp-addr">${d.address}</td>` +
     `<td><span class="status-badge ${statusClass}">${d.status || '—'}</span></td>` +
     `<td class="dp-qty">${qty}</td>` +
@@ -649,6 +662,7 @@ function upsertAddressRow(d) {
 
   let row = existingRow;
   if (row) {
+    row.dataset.order = orderNo;
     if (!editingNow) {
       row.innerHTML = html;
       _bindLabelEdit(row, d.address);
@@ -656,14 +670,15 @@ function upsertAddressRow(d) {
     row.classList.remove('dp-new');
     void row.offsetWidth;
     row.classList.add('dp-new');
+    // Re-sort the row in case order_no changed
+    _resortAddressRow(tbody, row);
   } else {
     row = el('tr', 'dp-new');
     row.dataset.addr = d.address;
+    row.dataset.order = orderNo;
     row.innerHTML = html;
     _bindLabelEdit(row, d.address);
-    const rows = [...tbody.querySelectorAll('tr[data-addr]')];
-    const after = rows.find(r => r.dataset.addr > d.address);
-    tbody.insertBefore(row, after || null);
+    _resortAddressRow(tbody, row);
   }
 }
 
@@ -982,7 +997,7 @@ async function init() {
     const tbody = $('address-tbody');
     if (tbody) {
       tbody.innerHTML =
-        '<tr id="address-empty-row"><td colspan="8" class="text-muted"' +
+        '<tr id="address-empty-row"><td colspan="9" class="text-muted"' +
         ' style="text-align:center;padding:1.5rem">No data yet. Waiting for events…</td></tr>';
     }
   });
