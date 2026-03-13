@@ -204,6 +204,9 @@ function renderDevices() {
     return;
   }
 
+  // Remove static placeholder (from HTML template) once we have real cards
+  grid.querySelector('.empty-state')?.remove();
+
   // Update existing cards, add new ones, remove stale
   const existing = new Set(Object.keys(state.devices));
   grid.querySelectorAll('.device-card[data-address]').forEach(card => {
