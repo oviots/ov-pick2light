@@ -1,0 +1,709 @@
+/* P2L Web Dashboard — Frontend Logic */
+'use strict';
+
+// ── State ──────────────────────────────────────────────────────────────────
+const state = {
+  connected: false,
+  host: 'localhost',
+  port: 8883,
+  devices: {},           // address → device object
+  batchItems: [],        // items in the batch builder (not yet sent)
+  batchActive: false,
+  batchPending: new Set(),
+  eventFeed: [],
+};
+
+let ws = null;
+let wsReconnectTimer = null;
+
+// ── Color definitions ──────────────────────────────────────────────────────
+const COLORS = ['OFF', 'RED', 'GREEN', 'BLUE', 'YELLOW', 'CYAN', 'MAGENTA', 'WHITE'];
+const COLOR_HEX = {
+  OFF: '#374151', RED: '#ef4444', GREEN: '#22c55e', BLUE: '#3b82f6',
+  YELLOW: '#eab308', CYAN: '#06b6d4', MAGENTA: '#d946ef', WHITE: '#e2e8f0',
+};
+
+const LED_MODES = ['ON', 'FLASH', 'HIGH_FLASH'];
+
+// ── DOM helpers ────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; return e; };
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+function toast(msg, type = 'info') {
+  const container = $('toast-container');
+  const t = el('div', `toast ${type}`);
+  const icons = { info: '●', success: '✓', error: '✗', warning: '⚠' };
+  t.innerHTML = `<span>${icons[type] || '●'}</span><span>${msg}</span>`;
+  container.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+
+// ── Tabs ───────────────────────────────────────────────────────────────────
+function initTabs() {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset.tab;
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      $('pane-' + tab).classList.add('active');
+    });
+  });
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────
+function connectWs() {
+  const wsUrl = `ws://${location.host}/ws`;
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    clearTimeout(wsReconnectTimer);
+    // ping every 25s
+    setInterval(() => ws && ws.readyState === 1 && ws.send('ping'), 25000);
+  };
+
+  ws.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      handleWsMessage(msg);
+    } catch { /* ignore */ }
+  };
+
+  ws.onclose = () => {
+    ws = null;
+    wsReconnectTimer = setTimeout(connectWs, 3000);
+  };
+
+  ws.onerror = () => ws && ws.close();
+}
+
+function handleWsMessage(msg) {
+  switch (msg.type) {
+    case 'init':
+      state.connected = msg.data.connected;
+      state.host = msg.data.host;
+      state.port = msg.data.port;
+      msg.data.devices.forEach(d => { state.devices[d.address] = d; });
+      updateConnectionUI();
+      renderDevices();
+      break;
+
+    case 'connection_changed':
+      state.connected = msg.data.connected;
+      state.host = msg.data.host || state.host;
+      state.port = msg.data.port || state.port;
+      updateConnectionUI();
+      toast(msg.data.connected
+        ? `MQTT broker connected: ${msg.data.host}:${msg.data.port}`
+        : 'MQTT broker disconnected', msg.data.connected ? 'success' : 'warning');
+      break;
+
+    case 'bridge_status': {
+      const badge = $('mqtt-status-badge');
+      if (badge) {
+        badge.dataset.bridge = '1';
+        if (msg.data.online) {
+          badge.textContent = msg.data.gateway_connected ? 'Bridge Online ✓' : 'Bridge Online (gw offline)';
+          badge.className = 'status-badge OPERATING';
+        } else {
+          badge.textContent = 'Bridge Offline';
+          badge.className = 'status-badge STANDBY';
+          delete badge.dataset.bridge;
+        }
+      }
+      break;
+    }
+
+    case 'state_update':
+      state.devices = {};
+      msg.data.forEach(d => { state.devices[d.address] = d; });
+      renderDevices();
+      updateStats();
+      break;
+
+    case 'confirmation': {
+      const evt = msg.data;
+      addEvent(`${evt.address} confirmed`, evt.status === 'SHORTAGE' ? 'warning' : 'success');
+      if (state.batchPending.has(evt.address)) {
+        state.batchPending.delete(evt.address);
+        updateBatchStatus();
+      }
+      renderDevices();
+      break;
+    }
+
+    case 'batch_completed':
+      toast('Batch complete! All items confirmed.', 'success');
+      state.batchActive = false;
+      state.batchPending.clear();
+      updateBatchStatus();
+      break;
+
+    case 'log':
+      appendLog(msg.data);
+      break;
+  }
+}
+
+// ── Connection UI ─────────────────────────────────────────────────────────
+function updateConnectionUI() {
+  const badge = $('connection-badge');
+  badge.className = 'connection-badge' + (state.connected ? ' connected' : '');
+  badge.innerHTML = `<span class="dot"></span>${state.connected ? (state.host + ':' + state.port) : 'Disconnected'}`;
+
+  $('btn-connect').disabled = state.connected;
+  $('btn-disconnect').disabled = !state.connected;
+
+  // Update bridge status badge
+  const mqttBadge = $('mqtt-status-badge');
+  if (mqttBadge && !mqttBadge.dataset.bridge) {
+    mqttBadge.textContent = state.connected ? 'Connected' : 'Offline';
+    mqttBadge.className = `status-badge ${state.connected ? 'OPERATING' : 'STANDBY'}`;
+  }
+
+  updateStats();
+}
+
+function updateStats() {
+  const devices = Object.values(state.devices);
+  $('stat-total').textContent = devices.length;
+  $('stat-active').textContent = devices.filter(d => d.status === 'OPERATING' || d.status === 'OPERATING2').length;
+  $('stat-confirm').textContent = devices.filter(d => d.status === 'COMPLETED').length;
+  $('stat-connected').textContent = state.connected ? '1' : '0';
+}
+
+// ── Device Rendering ──────────────────────────────────────────────────────
+function renderDevices() {
+  const grid = $('device-grid');
+  const devices = Object.values(state.devices).sort((a, b) => a.address.localeCompare(b.address));
+
+  if (devices.length === 0) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
+      <p>No devices registered. Add a device or connect to the gateway.</p></div>`;
+    return;
+  }
+
+  // Update existing cards, add new ones, remove stale
+  const existing = new Set(Object.keys(state.devices));
+  grid.querySelectorAll('.device-card[data-address]').forEach(card => {
+    if (!existing.has(card.dataset.address)) card.remove();
+  });
+
+  devices.forEach(d => {
+    let card = grid.querySelector(`.device-card[data-address="${d.address}"]`);
+    if (!card) {
+      card = createDeviceCard(d);
+      grid.appendChild(card);
+    } else {
+      updateDeviceCard(card, d);
+    }
+  });
+
+  updateStats();
+}
+
+function createDeviceCard(d) {
+  const card = el('div', `device-card status-${d.status}`);
+  card.dataset.address = d.address;
+  card.innerHTML = deviceCardHTML(d);
+  card.querySelector('.btn-light-on')?.addEventListener('click', () => openLightModal(d.address));
+  card.querySelector('.btn-light-off')?.addEventListener('click', () => lightOff(d.address));
+  card.querySelector('.btn-remove')?.addEventListener('click', () => removeDevice(d.address));
+  return card;
+}
+
+function updateDeviceCard(card, d) {
+  card.className = `device-card status-${d.status}`;
+  card.innerHTML = deviceCardHTML(d);
+  card.querySelector('.btn-light-on')?.addEventListener('click', () => openLightModal(d.address));
+  card.querySelector('.btn-light-off')?.addEventListener('click', () => lightOff(d.address));
+  card.querySelector('.btn-remove')?.addEventListener('click', () => removeDevice(d.address));
+}
+
+function deviceCardHTML(d) {
+  const statusLabel = d.status.replace('_', ' ');
+  const colorHex = COLOR_HEX[d.color] || '#374151';
+  const displayVal = (d.display_data || '00000').replace(/^0+/, '') || '0';
+  const label = d.label ? `<span class="device-label" title="${d.label}">${d.label}</span>` : '';
+  const pendingStr = state.batchPending.has(d.address) ? '(pending)' : '';
+
+  return `
+    <div class="device-header">
+      <span class="device-address">${d.address}</span>
+      ${label}
+      <span class="status-badge ${d.status}">${statusLabel}</span>
+    </div>
+    <div class="color-indicator ${d.color !== 'OFF' && d.status === 'OPERATING' ? 'color-' + d.color : 'color-OFF'}"></div>
+    <div class="device-display">${displayVal}</div>
+    <div class="device-actions">
+      <button class="btn btn-sm btn-success btn-light-on">ON</button>
+      <button class="btn btn-sm btn-danger btn-light-off">OFF</button>
+      <button class="btn btn-sm btn-ghost btn-remove" title="Remove device">✕</button>
+    </div>`;
+}
+
+// ── Light Modal ────────────────────────────────────────────────────────────
+let _lightModalAddress = null;
+
+function openLightModal(address) {
+  _lightModalAddress = address;
+  $('light-modal-title').textContent = `Light Module ${address}`;
+  const d = state.devices[address];
+  if (d) {
+    $('light-qty').value = parseInt(d.display_data) || 1;
+    selectColor(d.color || 'GREEN');
+    $('light-block').value = d.block_no || '00';
+    $('light-label').value = d.label || '';
+  }
+  $('light-modal').classList.remove('hidden');
+}
+
+function closeLightModal() {
+  $('light-modal').classList.add('hidden');
+  _lightModalAddress = null;
+}
+
+function selectColor(name) {
+  const picker = $('light-color-picker');
+  if (picker) {
+    picker.querySelectorAll('.color-swatch').forEach(s => {
+      s.classList.toggle('selected', s.dataset.color === name);
+    });
+  }
+  $('light-modal').dataset.selectedColor = name;
+}
+
+async function confirmLightOn() {
+  if (!_lightModalAddress) return;
+  const color = $('light-color-picker')?.querySelector('.color-swatch.selected')?.dataset.color
+    || $('light-modal').dataset.selectedColor || 'GREEN';
+  const qty = parseInt($('light-qty').value) || 1;
+  const led_mode = $('light-mode').value || 'ON';
+  const block_no = $('light-block').value || '00';
+  const label = $('light-label').value || '';
+
+  try {
+    await api('POST', `/api/devices/${_lightModalAddress}/light`, { quantity: qty, color, led_mode, block_no, label });
+    toast(`Module ${_lightModalAddress} → ON (${color})`, 'success');
+    closeLightModal();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Add Device Modal ───────────────────────────────────────────────────────
+function openAddDeviceModal() {
+  $('add-device-modal').classList.remove('hidden');
+  $('new-device-addr').value = '';
+  $('new-device-label').value = '';
+  $('new-device-addr').focus();
+}
+
+function closeAddDeviceModal() {
+  $('add-device-modal').classList.add('hidden');
+}
+
+async function confirmAddDevice() {
+  const address = $('new-device-addr').value.trim().padStart(4, '0').slice(-4);
+  const label = $('new-device-label').value.trim();
+  if (!address) { toast('Address required', 'warning'); return; }
+  try {
+    await api('POST', '/api/devices', { address, label });
+    toast(`Device ${address} added`, 'success');
+    closeAddDeviceModal();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Device Actions ─────────────────────────────────────────────────────────
+async function lightOff(address) {
+  try {
+    await api('POST', `/api/devices/${address}/off`);
+    toast(`Module ${address} → OFF`, 'info');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function removeDevice(address) {
+  try {
+    await api('DELETE', `/api/devices/${address}`);
+    delete state.devices[address];
+    renderDevices();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Connection Actions ─────────────────────────────────────────────────────
+async function connect() {
+  try {
+    await api('POST', '/api/connect');
+    toast('Connecting to MQTT broker…', 'info');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function disconnect() {
+  try {
+    await api('POST', '/api/disconnect');
+    state.connected = false;
+    updateConnectionUI();
+    toast('Disconnected', 'warning');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function terminateAll() {
+  if (!confirm('Terminate ALL active lights?')) return;
+  try {
+    await api('POST', '/api/terminate-all');
+    toast('All lights terminated', 'warning');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── Batch Builder ──────────────────────────────────────────────────────────
+function renderBatchBuilder() {
+  const tbody = $('batch-builder-body');
+  tbody.innerHTML = '';
+  if (state.batchItems.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:1rem">No items added yet</td></tr>';
+    return;
+  }
+  state.batchItems.forEach((item, i) => {
+    const tr = el('tr');
+    tr.innerHTML = `
+      <td class="addr-cell">${item.address}</td>
+      <td>${item.quantity}</td>
+      <td><span class="color-dot" style="background:${COLOR_HEX[item.color] || '#374151'}"></span> ${item.color}</td>
+      <td>${item.led_mode}</td>
+      <td>${item.label || '—'}</td>
+      <td><button class="btn btn-sm btn-ghost" onclick="removeBatchItem(${i})">✕</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function addBatchItem() {
+  const addr = $('batch-addr').value.trim().padStart(4, '0').slice(-4);
+  const qty = parseInt($('batch-qty').value) || 1;
+  const color = document.querySelector('#batch-color-picker .color-swatch.selected')?.dataset.color || 'GREEN';
+  const led_mode = $('batch-mode').value || 'ON';
+  const label = $('batch-label').value.trim();
+
+  if (!addr || addr === '0000') { toast('Valid address required', 'warning'); return; }
+
+  state.batchItems.push({ address: addr, quantity: qty, color, led_mode, label });
+  renderBatchBuilder();
+
+  // Reset quick fields
+  $('batch-addr').value = '';
+  $('batch-qty').value = '1';
+  $('batch-label').value = '';
+  $('batch-addr').focus();
+}
+
+function removeBatchItem(idx) {
+  state.batchItems.splice(idx, 1);
+  renderBatchBuilder();
+}
+
+async function startBatch() {
+  if (state.batchItems.length === 0) { toast('Add items first', 'warning'); return; }
+  const block_no = $('batch-block').value || '00';
+  try {
+    const result = await api('POST', '/api/batch/start', { block_no, items: state.batchItems });
+    state.batchActive = true;
+    state.batchPending = new Set(state.batchItems.map(i => i.address.padStart(4, '0').slice(-4)));
+    state.batchItems = [];
+    renderBatchBuilder();
+    updateBatchStatus();
+    toast(`Batch started: ${result.count} modules`, 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function finishBatch() {
+  try {
+    await api('POST', '/api/batch/finish');
+    state.batchActive = false;
+    state.batchPending.clear();
+    updateBatchStatus();
+    toast('Batch finished', 'info');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function updateBatchStatus() {
+  const statusEl = $('batch-status');
+  const btnFinish = $('btn-finish-batch');
+
+  if (!state.batchActive) {
+    statusEl.innerHTML = '<span class="text-muted">No active batch</span>';
+    if (btnFinish) btnFinish.disabled = true;
+    return;
+  }
+
+  const pending = state.batchPending.size;
+  statusEl.innerHTML = `<span class="badge badge-blue">Active</span> &nbsp;${pending} pending confirmation(s)`;
+  if (btnFinish) btnFinish.disabled = false;
+
+  // Refresh the active batch table
+  const tbody = $('active-batch-body');
+  if (!tbody) return;
+  const devices = Object.values(state.devices);
+  tbody.innerHTML = '';
+  devices.filter(d => d.status === 'OPERATING' || d.status === 'COMPLETED' || d.status === 'SHORTAGE')
+    .sort((a, b) => a.address.localeCompare(b.address))
+    .forEach(d => {
+      const confirmed = d.status === 'COMPLETED' || d.status === 'SHORTAGE';
+      const tr = el('tr');
+      tr.innerHTML = `
+        <td class="addr-cell">${d.address}</td>
+        <td>${(d.display_data || '').replace(/^0+/, '') || '0'}</td>
+        <td><span class="color-dot" style="background:${COLOR_HEX[d.color] || '#374151'}"></span></td>
+        <td>${d.label || '—'}</td>
+        <td>${confirmed ? '<span class="confirm-icon">✓</span>' : '<span class="pending-icon">○</span>'}</td>`;
+      tbody.appendChild(tr);
+    });
+}
+
+// ── Events Feed ────────────────────────────────────────────────────────────
+function addEvent(message, type = 'info') {
+  const feed = $('events-feed');
+  const item = el('div', 'event-item');
+  const now = new Date().toLocaleTimeString();
+  item.innerHTML = `<span class="event-type">${message}</span><span class="event-time">${now}</span>`;
+  feed.insertBefore(item, feed.firstChild);
+  // Keep max 20 events
+  while (feed.children.length > 20) feed.removeChild(feed.lastChild);
+}
+
+// ── Logs ───────────────────────────────────────────────────────────────────
+function appendLog(entry) {
+  const container = $('log-container');
+  const div = el('div', 'log-entry');
+  const time = new Date(entry.time).toLocaleTimeString();
+  div.innerHTML = `<span class="log-time">${time}</span><span class="log-level ${entry.level}">${entry.level.toUpperCase()}</span><span class="log-msg">${escHtml(entry.message)}</span>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+async function loadLogs() {
+  try {
+    const data = await api('GET', '/api/logs');
+    const container = $('log-container');
+    container.innerHTML = '';
+    data.logs.forEach(appendLog);
+  } catch { /* ignore */ }
+}
+
+async function clearLogs() {
+  await api('DELETE', '/api/logs');
+  $('log-container').innerHTML = '';
+}
+
+// ── Settings ───────────────────────────────────────────────────────────────
+async function loadConfig() {
+  try {
+    const cfg = await api('GET', '/api/config');
+    $('cfg-block').value = cfg.block_no || '00';
+    $('cfg-autoconnect').checked = cfg.auto_connect || false;
+
+    const mq = cfg.mqtt || {};
+    $('cfg-mqtt-host').value = mq.host || '';
+    $('cfg-mqtt-port').value = mq.port || 8883;
+    $('cfg-mqtt-client-id').value = mq.client_id || '';
+    $('cfg-mqtt-username').value = mq.username || '';
+    $('cfg-mqtt-cmd-topic').value = mq.command_topic || 'p2l/commands';
+    $('cfg-mqtt-event-topic').value = mq.event_topic || 'p2l/events';
+    $('cfg-mqtt-devices-topic').value = mq.devices_topic || 'p2l/devices';
+    $('cfg-mqtt-tls').checked = mq.tls?.enabled ?? true;
+    $('cfg-mqtt-tls-untrusted').checked = mq.tls?.allow_untrusted_certs || false;
+    $('cfg-mqtt-ca-cert').value = mq.tls?.ca_cert_path || '';
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function saveConfig() {
+  const body = {
+    block_no: $('cfg-block').value,
+    auto_connect: $('cfg-autoconnect').checked,
+    mqtt_host: $('cfg-mqtt-host').value,
+    mqtt_port: parseInt($('cfg-mqtt-port').value) || 8883,
+    mqtt_client_id: $('cfg-mqtt-client-id').value,
+    mqtt_username: $('cfg-mqtt-username').value || null,
+    mqtt_password: $('cfg-mqtt-password').value || null,
+    mqtt_command_topic: $('cfg-mqtt-cmd-topic').value,
+    mqtt_event_topic: $('cfg-mqtt-event-topic').value,
+    mqtt_devices_topic: $('cfg-mqtt-devices-topic').value,
+    mqtt_tls_enabled: $('cfg-mqtt-tls').checked,
+    mqtt_tls_allow_untrusted: $('cfg-mqtt-tls-untrusted').checked,
+    mqtt_tls_ca_cert_path: $('cfg-mqtt-ca-cert').value || null,
+  };
+  try {
+    await api('PUT', '/api/config', body);
+    toast('Settings saved', 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ── CSV Import ────────────────────────────────────────────────────────────
+function importCSV() {
+  const input = el('input');
+  input.type = 'file';
+  input.accept = '.csv,text/csv';
+  input.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = evt => {
+      const lines = evt.target.result.split('\n').filter(l => l.trim());
+      lines.forEach(line => {
+        const parts = line.split(',').map(p => p.trim());
+        if (parts.length < 2) return;
+        const [addr, qty, color = 'GREEN', label = ''] = parts;
+        if (!addr) return;
+        state.batchItems.push({
+          address: addr.padStart(4, '0').slice(-4),
+          quantity: parseInt(qty) || 1,
+          color: COLORS.includes(color.toUpperCase()) ? color.toUpperCase() : 'GREEN',
+          led_mode: 'ON',
+          label,
+        });
+      });
+      renderBatchBuilder();
+      toast(`Imported ${lines.length} item(s)`, 'success');
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+// ── API helper ────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body && method !== 'GET') opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  return data;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+function buildColorPickers() {
+  document.querySelectorAll('.color-picker').forEach(picker => {
+    picker.innerHTML = '';
+    COLORS.forEach(c => {
+      const sw = el('div', `color-swatch swatch-${c}`);
+      sw.dataset.color = c;
+      sw.title = c;
+      sw.addEventListener('click', () => {
+        picker.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
+        sw.classList.add('selected');
+      });
+      picker.appendChild(sw);
+    });
+    // Default select
+    const def = picker.dataset.default || 'GREEN';
+    const defSwatch = picker.querySelector(`[data-color="${def}"]`);
+    if (defSwatch) defSwatch.classList.add('selected');
+  });
+}
+
+async function init() {
+  initTabs();
+  buildColorPickers();
+
+  // Wire up header buttons
+  $('btn-connect').addEventListener('click', connect);
+  $('btn-disconnect').addEventListener('click', disconnect);
+
+  // Wire up dashboard buttons
+  $('btn-terminate-all')?.addEventListener('click', terminateAll);
+
+  // Wire up device tab
+  $('btn-add-device')?.addEventListener('click', openAddDeviceModal);
+  $('btn-clear-devices')?.addEventListener('click', async () => {
+    if (!confirm('Remove all devices from registry?')) return;
+    await api('DELETE', '/api/devices');
+    state.devices = {};
+    renderDevices();
+  });
+
+  // Wire up add device modal
+  $('btn-confirm-add-device')?.addEventListener('click', confirmAddDevice);
+  $('btn-cancel-add-device')?.addEventListener('click', closeAddDeviceModal);
+  $('add-device-modal')?.addEventListener('click', e => { if (e.target === $('add-device-modal')) closeAddDeviceModal(); });
+
+  // Wire up light modal
+  $('btn-confirm-light')?.addEventListener('click', confirmLightOn);
+  $('btn-cancel-light')?.addEventListener('click', closeLightModal);
+  $('light-modal')?.addEventListener('click', e => { if (e.target === $('light-modal')) closeLightModal(); });
+
+  // Wire up batch tab
+  $('btn-add-batch-item')?.addEventListener('click', addBatchItem);
+  $('btn-start-batch')?.addEventListener('click', startBatch);
+  $('btn-finish-batch')?.addEventListener('click', finishBatch);
+  $('btn-import-csv')?.addEventListener('click', importCSV);
+  $('batch-addr')?.addEventListener('keydown', e => { if (e.key === 'Enter') { $('batch-qty').focus(); } });
+  $('batch-qty')?.addEventListener('keydown', e => { if (e.key === 'Enter') addBatchItem(); });
+
+  // Wire up settings
+  $('btn-save-config')?.addEventListener('click', saveConfig);
+
+  // Wire up logs
+  $('btn-clear-logs')?.addEventListener('click', clearLogs);
+
+  // Load initial data
+  await loadConfig();
+  await loadLogs();
+
+  // Load initial status
+  try {
+    const status = await api('GET', '/api/status');
+    state.connected = status.connected;
+    state.host = status.host;
+    state.port = status.port;
+    updateConnectionUI();
+  } catch { /* ignore */ }
+
+  // Load initial devices
+  try {
+    const data = await api('GET', '/api/devices');
+    state.devices = {};
+    data.devices.forEach(d => { state.devices[d.address] = d; });
+    renderDevices();
+  } catch { /* ignore */ }
+
+  // Connect WebSocket
+  connectWs();
+
+  // Poll batch status periodically
+  setInterval(async () => {
+    if (!state.connected) return;
+    try {
+      const bs = await api('GET', '/api/batch/status');
+      state.batchActive = bs.active;
+      if (bs.active) {
+        state.batchPending = new Set(bs.pending);
+        updateBatchStatus();
+      }
+    } catch { /* ignore */ }
+  }, 5000);
+}
+
+document.addEventListener('DOMContentLoaded', init);

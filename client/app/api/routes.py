@@ -1,0 +1,357 @@
+"""REST API and WebSocket endpoints.
+
+All commands are forwarded to the P2L service via MQTT.
+No direct Aioi hardware communication happens in this process.
+"""
+import logging
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
+
+from ..protocol.enums import LightColor, LightState
+from ..mqtt.client import _COLOR_TO_MQTT, _STATE_TO_MQTT
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+def _get_templates(request: Request) -> Jinja2Templates:
+    import os
+    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return Jinja2Templates(directory=os.path.join(base, "templates"))
+
+
+# ─── Accessors ────────────────────────────────────────────────────────────────
+
+def _mqtt(request: Request):
+    from ..main import get_mqtt_client
+    return get_mqtt_client()
+
+def _registry(request: Request):
+    return request.app.state.registry
+
+def _config(request: Request):
+    return request.app.state.config
+
+
+# ─── Schemas ──────────────────────────────────────────────────────────────────
+
+class LightRequest(BaseModel):
+    quantity: int = Field(default=1, ge=0, le=99999)
+    color: str = Field(default="GREEN")
+    led_mode: str = Field(default="ON")
+    block_no: str = Field(default="00")
+    label: str = Field(default="")
+
+
+class BatchItem(BaseModel):
+    address: str
+    quantity: int = Field(ge=0, le=99999)
+    color: str = Field(default="GREEN")
+    led_mode: str = Field(default="ON")
+    label: str = Field(default="")
+
+
+class BatchRequest(BaseModel):
+    block_no: str = Field(default="00")
+    items: list[BatchItem]
+
+
+class ConfigRequest(BaseModel):
+    block_no: Optional[str] = None
+    auto_connect: Optional[bool] = None
+    mqtt_enabled: Optional[bool] = None
+    mqtt_host: Optional[str] = None
+    mqtt_port: Optional[int] = None
+    mqtt_client_id: Optional[str] = None
+    mqtt_username: Optional[str] = None
+    mqtt_password: Optional[str] = None
+    mqtt_command_topic: Optional[str] = None
+    mqtt_event_topic: Optional[str] = None
+    mqtt_devices_topic: Optional[str] = None
+    mqtt_status_topic: Optional[str] = None
+    mqtt_tls_enabled: Optional[bool] = None
+    mqtt_tls_allow_untrusted: Optional[bool] = None
+    mqtt_tls_ca_cert_path: Optional[str] = None
+
+
+class AddDeviceRequest(BaseModel):
+    address: str
+    label: str = ""
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _parse_color(name: str) -> LightColor:
+    try:
+        return LightColor[name.upper()]
+    except KeyError:
+        return LightColor.GREEN
+
+
+def _parse_led_mode(name: str) -> LightState:
+    try:
+        return LightState[name.upper()]
+    except KeyError:
+        return LightState.ON
+
+
+async def _publish(request: Request, command: dict) -> None:
+    """Publish a command to the P2L service via MQTT."""
+    mc = _mqtt(request)
+    if mc is None or not mc.is_connected:
+        raise HTTPException(status_code=503, detail="Not connected to MQTT broker")
+    try:
+        await mc.publish_command(command)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ─── Page ──────────────────────────────────────────────────────────────────────
+
+@router.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return _get_templates(request).TemplateResponse("index.html", {"request": request})
+
+
+# ─── WebSocket ────────────────────────────────────────────────────────────────
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    from ..main import get_mqtt_client
+    ws_mgr = websocket.app.state.ws_manager
+    registry = websocket.app.state.registry
+    cfg = websocket.app.state.config
+
+    await ws_mgr.connect(websocket)
+    try:
+        mc = get_mqtt_client()
+        await websocket.send_json({
+            "type": "init",
+            "data": {
+                "connected": mc.is_connected if mc else False,
+                "host": cfg.mqtt.host,
+                "port": cfg.mqtt.port,
+                "devices": [m.to_dict() for m in registry.all],
+            },
+        })
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug("WebSocket error: %s", exc)
+    finally:
+        ws_mgr.disconnect(websocket)
+
+
+# ─── Status ───────────────────────────────────────────────────────────────────
+
+@router.get("/api/status")
+async def get_status(request: Request):
+    mc = _mqtt(request)
+    reg = _registry(request)
+    cfg = _config(request)
+    return {
+        "connected": mc.is_connected if mc else False,
+        "host": cfg.mqtt.host,
+        "port": cfg.mqtt.port,
+        "total_devices": reg.total_count,
+        "active_devices": reg.active_count,
+        "pending_confirm": reg.pending_confirm_count,
+    }
+
+
+# ─── Connection ────────────────────────────────────────────────────────────────
+
+@router.post("/api/connect")
+async def connect(request: Request):
+    try:
+        await request.app.state.do_connect()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "connecting"}
+
+
+@router.post("/api/disconnect")
+async def disconnect(request: Request):
+    try:
+        await request.app.state.do_disconnect()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"status": "disconnected"}
+
+
+# ─── Device management ────────────────────────────────────────────────────────
+
+@router.get("/api/devices")
+async def list_devices(request: Request):
+    return {"devices": [m.to_dict() for m in _registry(request).all]}
+
+
+@router.post("/api/devices")
+async def add_device(request: Request, body: AddDeviceRequest):
+    module = _registry(request).add_device(body.address, body.label)
+    return module.to_dict()
+
+
+@router.delete("/api/devices")
+async def clear_devices(request: Request):
+    _registry(request).clear()
+    return {"status": "cleared"}
+
+
+@router.delete("/api/devices/{address}")
+async def remove_device(request: Request, address: str):
+    _registry(request).remove_device(address)
+    return {"status": "removed"}
+
+
+@router.post("/api/devices/{address}/light")
+async def light_on(request: Request, address: str, body: LightRequest):
+    c = _parse_color(body.color)
+    s = _parse_led_mode(body.led_mode)
+    await _publish(request, {
+        "type":     "light_on",
+        "address":  address.zfill(4)[-4:],
+        "quantity": body.quantity,
+        "color":    _COLOR_TO_MQTT.get(c, "Green"),
+        "ledMode":  _STATE_TO_MQTT.get(s, "On"),
+        "label":    body.label or None,
+    })
+    return {"status": "sent", "address": address}
+
+
+@router.post("/api/devices/{address}/off")
+async def light_off(request: Request, address: str):
+    await _publish(request, {
+        "type":    "light_off",
+        "address": address.zfill(4)[-4:],
+    })
+    return {"status": "sent", "address": address}
+
+
+# ─── Batch ────────────────────────────────────────────────────────────────────
+
+@router.post("/api/batch/start")
+async def start_batch(request: Request, body: BatchRequest):
+    if not body.items:
+        raise HTTPException(status_code=400, detail="No items in batch")
+    first_mode = _parse_led_mode(body.items[0].led_mode)
+    items = [
+        {
+            "address":  item.address.zfill(4)[-4:],
+            "quantity": item.quantity,
+            "color":    _COLOR_TO_MQTT.get(_parse_color(item.color), "Green"),
+            "label":    item.label or None,
+        }
+        for item in body.items
+    ]
+    await _publish(request, {
+        "type":    "batch_start",
+        "ledMode": _STATE_TO_MQTT.get(first_mode, "On"),
+        "items":   items,
+    })
+    return {"status": "sent", "count": len(items)}
+
+
+@router.post("/api/batch/finish")
+async def finish_batch(request: Request):
+    cfg = _config(request)
+    await _publish(request, {
+        "type":    "batch_finish",
+        "blockNo": cfg.block_no,
+    })
+    return {"status": "sent"}
+
+
+@router.get("/api/batch/status")
+async def batch_status(request: Request):
+    reg = _registry(request)
+    from ..protocol.enums import ModuleStatus
+    active = [m.address for m in reg.all
+              if m.status in (ModuleStatus.OPERATING, ModuleStatus.OPERATING2)]
+    pending = [m.address for m in reg.all if m.status == ModuleStatus.COMPLETED]
+    return {
+        "active":   len(active) > 0,
+        "pending":  pending,
+        "complete": len(active) > 0 and len(pending) == 0,
+    }
+
+
+# ─── Terminate all ────────────────────────────────────────────────────────────
+
+@router.post("/api/terminate-all")
+async def terminate_all(request: Request):
+    await _publish(request, {"type": "terminate_all"})
+    return {"status": "sent"}
+
+
+# ─── Configuration ────────────────────────────────────────────────────────────
+
+@router.get("/api/config")
+async def get_config(request: Request):
+    cfg = _config(request).to_dict()
+    # Strip password from API response
+    cfg["mqtt"].pop("password", None)
+    return cfg
+
+
+@router.put("/api/config")
+async def update_config(request: Request, body: ConfigRequest):
+    cfg = _config(request)
+    if body.block_no is not None:
+        cfg.block_no = body.block_no
+    if body.auto_connect is not None:
+        cfg.auto_connect = body.auto_connect
+    if body.mqtt_enabled is not None:
+        cfg.mqtt.enabled = body.mqtt_enabled
+    if body.mqtt_host is not None:
+        cfg.mqtt.host = body.mqtt_host
+    if body.mqtt_port is not None:
+        cfg.mqtt.port = body.mqtt_port
+    if body.mqtt_client_id is not None:
+        cfg.mqtt.client_id = body.mqtt_client_id
+    if body.mqtt_username is not None:
+        cfg.mqtt.username = body.mqtt_username
+    if body.mqtt_password is not None:
+        cfg.mqtt.password = body.mqtt_password
+    if body.mqtt_command_topic is not None:
+        cfg.mqtt.command_topic = body.mqtt_command_topic
+    if body.mqtt_event_topic is not None:
+        cfg.mqtt.event_topic = body.mqtt_event_topic
+    if body.mqtt_devices_topic is not None:
+        cfg.mqtt.devices_topic = body.mqtt_devices_topic
+    if body.mqtt_status_topic is not None:
+        cfg.mqtt.status_topic = body.mqtt_status_topic
+    if body.mqtt_tls_enabled is not None:
+        cfg.mqtt.tls.enabled = body.mqtt_tls_enabled
+    if body.mqtt_tls_allow_untrusted is not None:
+        cfg.mqtt.tls.allow_untrusted_certs = body.mqtt_tls_allow_untrusted
+    if body.mqtt_tls_ca_cert_path is not None:
+        cfg.mqtt.tls.ca_cert_path = body.mqtt_tls_ca_cert_path
+    cfg.save()
+    out = cfg.to_dict()
+    out["mqtt"].pop("password", None)
+    return out
+
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+
+@router.get("/api/logs")
+async def get_logs(request: Request):
+    from ..main import logs
+    return {"logs": list(logs)}
+
+
+@router.delete("/api/logs")
+async def clear_logs(request: Request):
+    from ..main import logs
+    logs.clear()
+    return {"status": "cleared"}

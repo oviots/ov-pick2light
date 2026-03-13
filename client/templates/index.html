@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>P2L Web Dashboard</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header class="header">
+    <div class="header-logo">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
+        <line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/>
+      </svg>
+      Pick2Light Dashboard
+    </div>
+    <div class="header-spacer"></div>
+    <div id="connection-badge" class="connection-badge">
+      <span class="dot"></span>Disconnected
+    </div>
+    <button id="btn-connect" class="btn btn-primary btn-sm">Connect</button>
+    <button id="btn-disconnect" class="btn btn-ghost btn-sm" disabled>Disconnect</button>
+  </header>
+
+  <!-- ── Nav Tabs ────────────────────────────────────────────────────────── -->
+  <nav class="nav-tabs">
+    <button class="tab-btn active" data-tab="dashboard">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+        <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+      </svg>
+      Dashboard
+    </button>
+    <button class="tab-btn" data-tab="devices">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+        <path d="M4.93 4.93a10 10 0 0 0 0 14.14"/>
+      </svg>
+      Devices
+    </button>
+    <button class="tab-btn" data-tab="batch">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+      </svg>
+      Batch Pick
+    </button>
+    <button class="tab-btn" data-tab="settings">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+      Settings
+    </button>
+    <button class="tab-btn" data-tab="logs">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+      </svg>
+      Logs
+    </button>
+  </nav>
+
+  <!-- ── Content ─────────────────────────────────────────────────────────── -->
+  <main class="content">
+
+    <!-- ── Dashboard Tab ─────────────────────────────────────────────────── -->
+    <div id="pane-dashboard" class="tab-pane active">
+
+      <!-- Stats -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-total">0</div>
+          <div class="stat-label">Total Devices</div>
+        </div>
+        <div class="stat-card stat-active">
+          <div class="stat-value" id="stat-active">0</div>
+          <div class="stat-label">Active Lights</div>
+        </div>
+        <div class="stat-card stat-confirm">
+          <div class="stat-value" id="stat-confirm">0</div>
+          <div class="stat-label">Pending Confirm</div>
+        </div>
+        <div class="stat-card stat-ok">
+          <div class="stat-value" id="stat-connected">0</div>
+          <div class="stat-label">Gateways Online</div>
+        </div>
+      </div>
+
+      <div class="form-row" style="gap:1rem; align-items:flex-start">
+
+        <!-- Quick Actions -->
+        <div class="card">
+          <div class="card-title">Quick Actions</div>
+          <div class="flex-gap flex-wrap">
+            <button id="btn-terminate-all" class="btn btn-danger">Terminate All</button>
+          </div>
+          <div style="margin-top:.75rem; font-size:.8rem; color:var(--text-muted)">
+            <strong>Terminate All</strong> turns off every active light module.
+          </div>
+        </div>
+
+        <!-- Recent Events -->
+        <div class="card" style="flex:1">
+          <div class="card-title">Recent Confirmations</div>
+          <div id="events-feed" class="events-feed">
+            <div class="empty-state" style="padding:1rem">
+              <p>No confirmations yet.</p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── Devices Tab ────────────────────────────────────────────────────── -->
+    <div id="pane-devices" class="tab-pane">
+      <div class="section-header">
+        <span class="section-title">Light Modules</span>
+        <div class="section-spacer"></div>
+        <button id="btn-add-device" class="btn btn-primary btn-sm">+ Add Device</button>
+        <button id="btn-clear-devices" class="btn btn-ghost btn-sm">Clear All</button>
+      </div>
+      <div id="device-grid" class="device-grid">
+        <div class="empty-state" style="grid-column:1/-1">
+          <p>No devices. Click "Add Device" to register a light module.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Batch Pick Tab ─────────────────────────────────────────────────── -->
+    <div id="pane-batch" class="tab-pane">
+      <div class="form-row" style="gap:1rem; align-items:flex-start">
+
+        <!-- Batch Builder -->
+        <div class="card" style="flex:1">
+          <div class="card-title">Build Batch</div>
+
+          <div class="form-row-3">
+            <div class="form-group">
+              <label class="form-label">Module Address</label>
+              <input id="batch-addr" class="form-input" placeholder="0001" maxlength="4">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Quantity</label>
+              <input id="batch-qty" class="form-input" type="number" value="1" min="0" max="99999">
+            </div>
+            <div class="form-group">
+              <label class="form-label">LED Mode</label>
+              <select id="batch-mode" class="form-select">
+                <option value="ON">Steady On</option>
+                <option value="FLASH">Flash</option>
+                <option value="HIGH_FLASH">High Flash</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Color</label>
+            <div id="batch-color-picker" class="color-picker" data-default="GREEN"></div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Label / SKU (optional)</label>
+              <input id="batch-label" class="form-input" placeholder="e.g. SKU-1234">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Block No</label>
+              <input id="batch-block" class="form-input" value="00" maxlength="2">
+            </div>
+          </div>
+
+          <div class="flex-gap">
+            <button id="btn-add-batch-item" class="btn btn-primary">+ Add Item</button>
+            <button id="btn-import-csv" class="btn btn-ghost" title="CSV format: address,qty,color,label">Import CSV</button>
+          </div>
+
+          <!-- Batch items table -->
+          <div style="margin-top:1rem; overflow-x:auto">
+            <table class="batch-table">
+              <thead>
+                <tr>
+                  <th>Address</th><th>Qty</th><th>Color</th><th>Mode</th><th>Label</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="batch-builder-body">
+                <tr><td colspan="6" class="text-muted" style="text-align:center;padding:1rem">No items added yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="flex-gap" style="margin-top:1rem">
+            <button id="btn-start-batch" class="btn btn-success btn-lg">▶ Start Batch</button>
+            <button id="btn-finish-batch" class="btn btn-danger" disabled>■ Finish Batch</button>
+          </div>
+        </div>
+
+        <!-- Active Batch Status -->
+        <div class="card" style="min-width:260px; max-width:340px">
+          <div class="card-title">Active Batch</div>
+          <div id="batch-status" class="mb-2 text-muted" style="font-size:.85rem">No active batch</div>
+          <div style="overflow-x:auto">
+            <table class="batch-table">
+              <thead>
+                <tr><th>Addr</th><th>Qty</th><th>Color</th><th>Label</th><th>✓</th></tr>
+              </thead>
+              <tbody id="active-batch-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ── Settings Tab ───────────────────────────────────────────────────── -->
+    <div id="pane-settings" class="tab-pane">
+      <div style="max-width:520px">
+        <!-- MQTT -->
+        <div class="card mb-2">
+          <div class="card-title" style="display:flex;align-items:center;gap:.75rem">
+            MQTT Broker
+            <span id="mqtt-status-badge" class="status-badge STANDBY">Offline</span>
+          </div>
+          <p style="font-size:.8rem;color:var(--text-muted);margin-bottom:.75rem">
+            Commands are published to the MQTT broker. The P2L .NET bridge handles all hardware communication.
+          </p>
+
+          <div id="mqtt-settings-panel">
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Broker Host</label>
+                <input id="cfg-mqtt-host" class="form-input" placeholder="localhost">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Port</label>
+                <input id="cfg-mqtt-port" class="form-input" type="number" placeholder="8883">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Client ID</label>
+                <input id="cfg-mqtt-client-id" class="form-input" placeholder="p2l-webclient">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Username</label>
+                <input id="cfg-mqtt-username" class="form-input" placeholder="(optional)">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Password</label>
+                <input id="cfg-mqtt-password" class="form-input" type="password" placeholder="(optional)">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Command Topic</label>
+                <input id="cfg-mqtt-cmd-topic" class="form-input" placeholder="p2l/commands">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Event Topic</label>
+                <input id="cfg-mqtt-event-topic" class="form-input" placeholder="p2l/events">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Devices Topic</label>
+                <input id="cfg-mqtt-devices-topic" class="form-input" placeholder="p2l/devices">
+              </div>
+            </div>
+
+            <!-- TLS -->
+            <div style="border-top:1px solid var(--border);padding-top:.75rem;margin-top:.25rem">
+              <div style="font-size:.8rem;font-weight:600;margin-bottom:.5rem;color:var(--text-muted)">TLS</div>
+              <div class="form-row">
+                <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+                  <input id="cfg-mqtt-tls" type="checkbox" style="width:16px;height:16px">
+                  <label class="form-label" style="margin:0" for="cfg-mqtt-tls">Enable TLS</label>
+                </div>
+                <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+                  <input id="cfg-mqtt-tls-untrusted" type="checkbox" style="width:16px;height:16px">
+                  <label class="form-label" style="margin:0" for="cfg-mqtt-tls-untrusted">Allow untrusted certs (dev)</label>
+                </div>
+              </div>
+              <div class="form-group">
+                <label class="form-label">CA Certificate Path (optional)</label>
+                <input id="cfg-mqtt-ca-cert" class="form-input" placeholder="/path/to/ca.crt">
+              </div>
+            </div>
+          </div><!-- mqtt-settings-panel -->
+
+          <div style="border-top:1px solid var(--border);padding-top:.75rem;margin-top:.75rem">
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Default Block No</label>
+                <input id="cfg-block" class="form-input" maxlength="2" placeholder="00">
+              </div>
+              <div class="form-group" style="display:flex;align-items:flex-end;gap:.5rem;padding-bottom:.1rem">
+                <input id="cfg-autoconnect" type="checkbox" style="width:16px;height:16px">
+                <label class="form-label" style="margin:0" for="cfg-autoconnect">Auto-connect on startup</label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <button id="btn-save-config" class="btn btn-primary">Save Settings</button>
+
+        <div class="card" style="margin-top:1rem">
+          <div class="card-title">About</div>
+          <p style="font-size:.8rem;color:var(--text-muted);line-height:1.8">
+            <strong>Pick2Light Web Dashboard</strong> — Python/FastAPI<br>
+            Commands → MQTT → P2L .NET bridge → Aioi hardware<br>
+            Topics: <code>p2l/commands</code> · <code>p2l/events</code> · <code>p2l/devices/#</code>
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Logs Tab ───────────────────────────────────────────────────────── -->
+    <div id="pane-logs" class="tab-pane">
+      <div class="section-header">
+        <span class="section-title">Application Logs</span>
+        <div class="section-spacer"></div>
+        <button id="btn-clear-logs" class="btn btn-ghost btn-sm">Clear</button>
+      </div>
+      <div id="log-container" class="log-container"></div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ── Modals ──────────────────────────────────────────────────────────────── -->
+
+<!-- Add Device Modal -->
+<div id="add-device-modal" class="modal-backdrop hidden">
+  <div class="modal">
+    <div class="modal-title">Add Light Module</div>
+    <div class="form-group">
+      <label class="form-label">Module Address (4-digit BCD)</label>
+      <input id="new-device-addr" class="form-input" placeholder="0001" maxlength="4">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Label / Location (optional)</label>
+      <input id="new-device-label" class="form-input" placeholder="e.g. Shelf A-1">
+    </div>
+    <div class="modal-footer">
+      <button id="btn-cancel-add-device" class="btn btn-ghost">Cancel</button>
+      <button id="btn-confirm-add-device" class="btn btn-primary">Add Device</button>
+    </div>
+  </div>
+</div>
+
+<!-- Light On Modal -->
+<div id="light-modal" class="modal-backdrop hidden" data-selected-color="GREEN">
+  <div class="modal">
+    <div class="modal-title" id="light-modal-title">Light Module</div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Quantity to Display</label>
+        <input id="light-qty" class="form-input" type="number" value="1" min="0" max="99999">
+      </div>
+      <div class="form-group">
+        <label class="form-label">LED Mode</label>
+        <select id="light-mode" class="form-select">
+          <option value="ON">Steady On</option>
+          <option value="FLASH">Flash</option>
+          <option value="HIGH_FLASH">High Flash</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Color</label>
+      <div id="light-color-picker" class="color-picker" data-default="GREEN"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Block No</label>
+        <input id="light-block" class="form-input" value="00" maxlength="2">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Label (optional)</label>
+        <input id="light-label" class="form-input" placeholder="SKU or location">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button id="btn-cancel-light" class="btn btn-ghost">Cancel</button>
+      <button id="btn-confirm-light" class="btn btn-success">Turn ON</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Toast container ─────────────────────────────────────────────────────── -->
+<div id="toast-container" class="toast-container"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
