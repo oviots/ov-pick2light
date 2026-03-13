@@ -250,6 +250,7 @@ function updateDeviceCard(card, d) {
 function _bindCardActions(card, address) {
   card.querySelector('.btn-light-on')?.addEventListener('click', () => openLightModal(address));
   card.querySelector('.btn-light-off')?.addEventListener('click', () => lightOff(address));
+  card.querySelector('.btn-check')?.addEventListener('click', () => checkDevice(address));
   card.querySelector('.btn-remove')?.addEventListener('click', () => removeDevice(address));
 
   // ── Order number inline edit ──
@@ -350,6 +351,7 @@ function deviceCardHTML(d) {
     <div class="device-actions">
       <button class="btn btn-sm btn-success btn-light-on">ON</button>
       <button class="btn btn-sm btn-danger btn-light-off">OFF</button>
+      <button class="btn btn-sm btn-warning btn-check" title="Flash green for 3 s then off">Check</button>
       <button class="btn btn-sm btn-ghost btn-remove" title="Remove device">✕</button>
     </div>`;
 }
@@ -429,6 +431,22 @@ async function confirmAddDevice() {
 }
 
 // ── Device Actions ─────────────────────────────────────────────────────────
+async function checkDevice(address) {
+  const btn = document.querySelector(`.device-card[data-address="${address}"] .btn-check`);
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    await api('POST', `/api/devices/${address}/light`, { quantity: 1, color: 'GREEN', led_mode: 'ON' });
+    toast(`Check ${address} — light on for 3 s`, 'info');
+    setTimeout(async () => {
+      await api('POST', `/api/devices/${address}/off`).catch(() => {});
+      if (btn) { btn.disabled = false; btn.textContent = 'Check'; }
+    }, 3000);
+  } catch (e) {
+    toast(e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Check'; }
+  }
+}
+
 async function lightOff(address) {
   try {
     await api('POST', `/api/devices/${address}/off`);
