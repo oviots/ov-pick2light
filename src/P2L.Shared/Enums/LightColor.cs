@@ -2,7 +2,9 @@ namespace P2L.Shared.Enums;
 
 /// <summary>
 /// Logical color aliases mapping to the three physical LED channels on Aioi light modules.
-/// LED0 = typically Red, LED1 = typically Green, LED2 = typically Blue.
+/// Per spec §5.5.2 (L-PICK Controller Command Reference V4.1) for full-color modules
+/// (AW2xxxF, TW2xxxF, DW2xxxF, TW2928, NW294x, NW297x):
+///   LED0 = Blue, LED1 = Green, LED2 = Red.
 /// </summary>
 public enum LightColor
 {
@@ -10,10 +12,10 @@ public enum LightColor
     Red,
     Green,
     Blue,
-    Yellow,   // LED0 + LED1
-    Cyan,     // LED1 + LED2
-    Magenta,  // LED0 + LED2
-    White,    // LED0 + LED1 + LED2
+    Yellow,   // LED2 + LED1  (Red + Green)
+    Cyan,     // LED1 + LED0  (Green + Blue)
+    Magenta,  // LED2 + LED0  (Red + Blue)
+    White,    // LED2 + LED1 + LED0
 }
 
 /// <summary>
@@ -28,15 +30,17 @@ public static class LightColorExtensions
         this LightColor color,
         LightState activeMode = LightState.On)
     {
+        // LED channel assignment per §5.5.2 for full-color modules (AW2xxxF, TW2xxxF, etc.):
+        //   LED2 = Red,  LED1 = Green,  LED0 = Blue
         return color switch
         {
-            LightColor.Red     => (LightState.Off, LightState.Off, activeMode),
-            LightColor.Green   => (LightState.Off, activeMode,     LightState.Off),
-            LightColor.Blue    => (activeMode,     LightState.Off, LightState.Off),
-            LightColor.Yellow  => (LightState.Off, activeMode,     activeMode),
-            LightColor.Cyan    => (activeMode,     activeMode,     LightState.Off),
-            LightColor.Magenta => (activeMode,     LightState.Off, activeMode),
-            LightColor.White   => (activeMode,     activeMode,     activeMode),
+            LightColor.Red     => (activeMode,     LightState.Off, LightState.Off),  // LED2=Red
+            LightColor.Green   => (LightState.Off, activeMode,     LightState.Off),  // LED1=Green
+            LightColor.Blue    => (LightState.Off, LightState.Off, activeMode),      // LED0=Blue
+            LightColor.Yellow  => (activeMode,     activeMode,     LightState.Off),  // LED2+LED1 = Red+Green
+            LightColor.Cyan    => (LightState.Off, activeMode,     activeMode),      // LED1+LED0 = Green+Blue
+            LightColor.Magenta => (activeMode,     LightState.Off, activeMode),      // LED2+LED0 = Red+Blue
+            LightColor.White   => (activeMode,     activeMode,     activeMode),      // all
             _                  => (LightState.Off, LightState.Off, LightState.Off),
         };
     }
