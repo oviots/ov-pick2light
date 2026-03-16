@@ -1,0 +1,12 @@
+{
+  "name": "p2l-sdk",
+  "version": "1.0.0",
+  "description": "Node.js client SDK for Pick2Light (P2L) bridge",
+  "main": "p2l.js",
+  "scripts": {
+    "example": "node example.js"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.1"
+  }
+}
