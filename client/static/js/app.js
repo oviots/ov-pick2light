@@ -537,16 +537,18 @@ function renderBatchBuilder() {
   const tbody = $('batch-builder-body');
   tbody.innerHTML = '';
   if (state.batchItems.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:1rem">No items added yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:1rem">No items added yet</td></tr>';
     return;
   }
   state.batchItems.forEach((item, i) => {
     const tr = el('tr');
+    const buzzIcon = item.buzzer ? '🔊' : '🔇';
     tr.innerHTML = `
       <td class="addr-cell">${item.address}</td>
       <td>${item.quantity}</td>
       <td><span class="color-dot" style="background:${COLOR_HEX[item.color] || '#374151'}"></span> ${item.color}</td>
       <td>${item.led_mode}</td>
+      <td>${buzzIcon}</td>
       <td>${item.label || '—'}</td>
       <td><button class="btn btn-sm btn-ghost" onclick="removeBatchItem(${i})">✕</button></td>`;
     tbody.appendChild(tr);
@@ -558,11 +560,12 @@ function addBatchItem() {
   const qty = parseInt($('batch-qty').value) || 1;
   const color = document.querySelector('#batch-color-picker .color-swatch.selected')?.dataset.color || 'GREEN';
   const led_mode = $('batch-mode').value || 'ON';
+  const buzzer = $('batch-buzz')?.checked !== false;
   const label = $('batch-label').value.trim();
 
   if (!addr || addr === '0000') { toast('Valid address required', 'warning'); return; }
 
-  state.batchItems.push({ address: addr, quantity: qty, color, led_mode, label });
+  state.batchItems.push({ address: addr, quantity: qty, color, led_mode, buzzer, label });
   renderBatchBuilder();
 
   // Reset quick fields
@@ -951,20 +954,47 @@ function exportDevicesCSV() {
 
 // ── CSV Sample Download ────────────────────────────────────────────────────
 function downloadSampleCSV() {
-  const rows = [
-    'address,quantity,color,label',
-    '0001,5,GREEN,SKU-A001',
-    '0002,3,YELLOW,SKU-B002',
-    '0003,10,RED,SKU-C003',
-    '0004,1,BLUE,SKU-D004',
+  // Generate sample with actual device labels from database for easier mapping
+  const deviceLabels = Object.entries(state.devices)
+    .slice(0, 4)
+    .map(([addr, dev]) => ({ addr, label: dev.label || `Device-${addr}` }))
+    .filter(d => d.label);
+  
+  // Create label-based format (NEW - recommended)
+  // Format: label,quantity,color,led_mode,buzzer
+  const ledModes = ['ON', 'FLASH', 'HIGH_FLASH'];
+  const labelFormatRows = [
+    'label,quantity,color,led_mode,buzzer',
+    ...(deviceLabels.length > 0 
+      ? deviceLabels.map((d, i) => `${d.label},${i + 1},${COLORS[i % COLORS.length]},${ledModes[i % ledModes.length]},${i % 2 === 0 ? 'yes' : 'no'}`)
+      : [
+          'Shelf-A1,5,GREEN,ON,yes',
+          'Shelf-A2,3,YELLOW,FLASH,yes',
+          'Shelf-B1,10,RED,HIGH_FLASH,no',
+          'Shelf-B2,1,BLUE,ON,no'
+        ]),
   ];
-  const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+  
+  const blob = new Blob([labelFormatRows.join('\n')], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = el('a');
   a.href = url;
   a.download = 'batch_sample.csv';
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ── Label to Address Mapping ──────────────────────────────────────────────────
+// Lookup light label in devices database and return corresponding address
+function mapLabelToAddress(label) {
+  if (!label) return null;
+  const labelLower = label.toLowerCase();
+  for (const [addr, device] of Object.entries(state.devices)) {
+    if (device.label && device.label.toLowerCase() === labelLower) {
+      return addr;
+    }
+  }
+  return null;
 }
 
 // ── CSV Import ────────────────────────────────────────────────────────────
@@ -979,22 +1009,83 @@ function importCSV() {
     reader.onload = evt => {
       const lines = evt.target.result.split('\n').filter(l => l.trim());
       let importedCount = 0;
-      lines.forEach(line => {
+      let skippedCount = 0;
+      const unmappedLabels = [];
+      
+      lines.forEach((line, idx) => {
         const parts = line.split(',').map(p => p.trim());
-        if (parts.length < 2) return;
-        const [addr, qty, color = 'GREEN', label = ''] = parts;
-        if (!addr || !/^\d+$/.test(addr)) return;  // skip header / non-numeric rows
+        if (parts.length < 1) return;
+        
+        // Skip header rows (label,quantity,color OR address,quantity,color,label OR new format with led_mode,buzzer)
+        if (idx === 0 && (
+          (parts[0].toLowerCase() === 'label' && parts[1]?.toLowerCase() === 'quantity') ||
+          (parts[0].toLowerCase() === 'address' && parts[1]?.toLowerCase() === 'quantity')
+        )) {
+          return;
+        }
+        
+        // Parse CSV: Can be (label, qty, color) or (address, qty, color, label) or new format with led_mode,buzzer
+        let address = null;
+        let quantity = 1;
+        let color = 'GREEN';
+        let led_mode = 'ON';
+        let buzzer = true;  // Default buzzer on
+        let label = '';
+        
+        // Try to detect format: if first column is numeric, treat as address; otherwise as label
+        const firstCol = parts[0];
+        const isNumeric = /^\d+$/.test(firstCol);
+        
+        if (isNumeric) {
+          // Format: address, qty, color, [label, led_mode, buzzer] (backward compatible)
+          address = firstCol.padStart(4, '0').slice(-4);
+          quantity = parseInt(parts[1]) || 1;
+          color = parts[2] ? parts[2].toUpperCase() : 'GREEN';
+          label = parts[3] || '';
+          led_mode = parts[4] ? parts[4].toUpperCase() : 'ON';
+          buzzer = parts[5] ? /^(yes|true|1|on)$/i.test(parts[5]) : true;
+        } else {
+          // Format: label, qty, color, [led_mode, buzzer] (NEW - map label to address from database)
+          label = firstCol;
+          quantity = parseInt(parts[1]) || 1;
+          color = parts[2] ? parts[2].toUpperCase() : 'GREEN';
+          led_mode = parts[3] ? parts[3].toUpperCase() : 'ON';
+          buzzer = parts[4] ? /^(yes|true|1|on)$/i.test(parts[4]) : true;
+          
+          // Auto-map label to address from devices database
+          address = mapLabelToAddress(label);
+          if (!address) {
+            unmappedLabels.push(label);
+            skippedCount++;
+            return;
+          }
+        }
+        
+        // Validate address, color, and led_mode
+        if (!address || !/^\d{4}$/.test(address)) return;
+        if (!COLORS.includes(color)) color = 'GREEN';
+        if (!LED_MODES.includes(led_mode)) led_mode = 'ON';
+        
         state.batchItems.push({
-          address: addr.padStart(4, '0').slice(-4),
-          quantity: parseInt(qty) || 1,
-          color: COLORS.includes(color.toUpperCase()) ? color.toUpperCase() : 'GREEN',
-          led_mode: 'ON',
+          address,
+          quantity: Math.max(1, Math.min(quantity, 99999)),
+          color,
+          led_mode,
+          buzzer,
           label,
         });
         importedCount++;
       });
+      
       renderBatchBuilder();
-      toast(`Imported ${importedCount} item(s)`, 'success');
+      
+      let msg = `Imported ${importedCount} item(s)`;
+      if (skippedCount > 0) {
+        msg += ` • ${skippedCount} skipped (unmapped: ${unmappedLabels.join(', ')})`;
+        toast(msg, 'warning');
+      } else {
+        toast(msg, 'success');
+      }
     };
     reader.readAsText(file);
   };

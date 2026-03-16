@@ -189,7 +189,7 @@
 
           <div class="flex-gap">
             <button id="btn-add-batch-item" class="btn btn-primary">+ Add Item</button>
-            <button id="btn-import-csv" class="btn btn-ghost" title="CSV format: address,qty,color,label">Import CSV</button>
+            <button id="btn-import-csv" class="btn btn-ghost" title="CSV: label,qty,color,led_mode,buzzer OR address,qty,color,label,led_mode,buzzer">Import CSV</button>
             <button id="btn-download-sample-csv" class="btn btn-ghost" title="Download sample CSV template">⬇ Sample CSV</button>
           </div>
 
@@ -198,11 +198,11 @@
             <table class="batch-table">
               <thead>
                 <tr>
-                  <th>Address</th><th>Qty</th><th>Color</th><th>Mode</th><th>Label</th><th></th>
+                  <th>Address</th><th>Qty</th><th>Color</th><th>Mode</th><th>Buzz</th><th>Label</th><th></th>
                 </tr>
               </thead>
               <tbody id="batch-builder-body">
-                <tr><td colspan="6" class="text-muted" style="text-align:center;padding:1rem">No items added yet</td></tr>
+                <tr><td colspan="7" class="text-muted" style="text-align:center;padding:1rem">No items added yet</td></tr>
               </tbody>
             </table>
           </div>
