@@ -109,6 +109,7 @@ class MqttClient:
         self._cfg: MqttConfig = config
         self._publish_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=128)
         self._is_connected = False
+        self._connected_event: asyncio.Event = asyncio.Event()
         self._on_event: Optional[EventCallback] = None
         self._on_state: Optional[StateCallback] = None
         self._stop = asyncio.Event()
@@ -139,6 +140,17 @@ class MqttClient:
             except asyncio.CancelledError:
                 pass
         self._is_connected = False
+        self._connected_event.clear()
+
+    async def wait_connected(self, timeout: float = 15.0) -> None:
+        """Wait until the MQTT broker is connected, or raise RuntimeError on timeout."""
+        try:
+            await asyncio.wait_for(self._connected_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"Timed out waiting for MQTT broker connection "
+                f"({self._cfg.host}:{self._cfg.port})"
+            )
 
     async def publish_command(self, command: dict) -> None:
         """Enqueue a command dict to be published on p2l/commands."""
@@ -169,6 +181,7 @@ class MqttClient:
                 async with aiomqtt.Client(**kwargs) as client:
                     logger.info("MQTT connected to %s:%d", self._cfg.host, self._cfg.port)
                     self._is_connected = True
+                    self._connected_event.set()
                     self._notify_state(True)
                     delay = 1.0  # reset backoff on success
 
@@ -210,6 +223,7 @@ class MqttClient:
 
             if not self._stop.is_set():
                 self._is_connected = False
+                self._connected_event.clear()
                 self._notify_state(False)
                 logger.info("MQTT reconnecting in %.1fs …", delay)
                 try:

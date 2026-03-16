@@ -176,7 +176,6 @@ async def get_status(request: Request):
     reg = _registry(request)
     cfg = _config(request)
     binary = cfg.service.binary_path
-    print(binary)
     service_running = svc.is_running(binary) if binary else False
     return {
         "connected": service_running,
@@ -399,7 +398,7 @@ async def batch_status(request: Request):
     return {
         "active":   len(active) > 0,
         "pending":  pending,
-        "complete": len(active) > 0 and len(pending) == 0,
+        "complete": len(active) == 0 and len(pending) == 0,
     }
 
 

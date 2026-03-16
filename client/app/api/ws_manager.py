@@ -25,23 +25,24 @@ class WebSocketManager:
         logger.debug("WebSocket disconnected; total=%d", len(self._connections))
 
     async def broadcast(self, message: dict[str, Any]) -> None:
-        """Send a JSON message to all connected clients."""
+        """Send a JSON message to all connected clients in parallel."""
         if not self._connections:
             return
         text = json.dumps(message, default=str)
-        dead: list[WebSocket] = []
-        for ws in list(self._connections):
-            try:
-                await ws.send_text(text)
-            except Exception:
-                dead.append(ws)
+
+        results = await asyncio.gather(
+            *[ws.send_text(text) for ws in list(self._connections)],
+            return_exceptions=True,
+        )
+        dead = [ws for ws, result in zip(list(self._connections), results)
+                if isinstance(result, Exception)]
         for ws in dead:
             self._connections.discard(ws)
 
     async def broadcast_sync(self, message: dict[str, Any]) -> None:
-        """Thread-safe broadcast — schedules on the current event loop."""
+        """Thread-safe broadcast — schedules on the running event loop."""
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             asyncio.run_coroutine_threadsafe(self.broadcast(message), loop)
         except Exception as exc:
             logger.error("broadcast_sync error: %s", exc)

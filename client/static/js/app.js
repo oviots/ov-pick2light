@@ -128,6 +128,7 @@ function handleWsMessage(msg) {
     case 'state_update':
       msg.data.forEach(d => {
         upsertAddressRow(d);
+        pushOperatingRow(d);
         pushEvent('light_changed', d);
         state.devices[d.address] = d;
       });
@@ -919,11 +920,25 @@ function exportDevicesCSV() {
     return oa !== ob ? oa - ob : a.address.localeCompare(b.address);
   });
   if (devices.length === 0) { toast('No devices to export', 'warning'); return; }
+
+  function csvStr(v) {
+    const s = String(v ?? '').replace(/"/g, '""');
+    return `"${s}"`;
+  }
+
   const rows = ['order_no,address,label,status,color,qty'];
   devices.forEach(d => {
     const qty = (d.adjusted_quantity || d.display_data || '00000').trim().replace(/^0+/, '') || '0';
-    rows.push([d.order_no ?? 0, d.address, `"${(d.label || '').replace(/"/g, '""')}"`, d.status, d.color, qty].join(','));
+    rows.push([
+      d.order_no ?? 0,
+      csvStr(d.address),        // quoted → preserves leading zeros (e.g. "0042")
+      csvStr(d.label),          // quoted → safe against commas in label
+      d.status,
+      d.color,
+      qty,
+    ].join(','));
   });
+
   const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = el('a');
@@ -963,6 +978,7 @@ function importCSV() {
     const reader = new FileReader();
     reader.onload = evt => {
       const lines = evt.target.result.split('\n').filter(l => l.trim());
+      let importedCount = 0;
       lines.forEach(line => {
         const parts = line.split(',').map(p => p.trim());
         if (parts.length < 2) return;
@@ -975,9 +991,10 @@ function importCSV() {
           led_mode: 'ON',
           label,
         });
+        importedCount++;
       });
       renderBatchBuilder();
-      toast(`Imported ${lines.length} item(s)`, 'success');
+      toast(`Imported ${importedCount} item(s)`, 'success');
     };
     reader.readAsText(file);
   };

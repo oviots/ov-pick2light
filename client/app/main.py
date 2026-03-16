@@ -17,7 +17,6 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from .api.routes import router
 from .api.ws_manager import WebSocketManager
@@ -104,7 +103,7 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
         from .protocol.models import LightModuleState
         addr = payload.get("address", "0000")
         module = registry.get(addr) or LightModuleState(address=addr)
-        stored = insert_if_new(registry._normalize(addr))
+        stored = insert_if_new(LightModuleRegistry.normalize_address(addr))
         if not module.label and stored["label"]:
             module.label = stored["label"]
         if not module.order_no:
@@ -128,8 +127,7 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
                 )
             except ValueError:
                 pass
-        registry._modules[registry._normalize(addr)] = module
-        registry._notify()
+        registry.update_module_state(module)
 
     elif evt_type == "batch_completed":
         await ws_manager.broadcast({"type": "batch_completed", "data": {}})
@@ -157,12 +155,7 @@ async def _do_connect() -> None:
     _setup_mqtt_client(mc)
     await mc.start()
     mqtt_client = mc
-    # Wait up to 15 s for the MQTT handshake to complete
-    for _ in range(150):
-        if mc.is_connected:
-            return
-        await asyncio.sleep(0.1)
-    raise RuntimeError("Timed out waiting for MQTT broker connection")
+    await mc.wait_connected(timeout=15.0)
 
 
 async def _do_disconnect() -> None:
@@ -206,7 +199,6 @@ app.state.do_connect    = _do_connect
 app.state.do_disconnect = _do_disconnect
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-Jinja2Templates(directory=TEMPLATES_DIR)
 
 app.include_router(router)
 

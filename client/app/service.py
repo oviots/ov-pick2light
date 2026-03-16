@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Tracked subprocess spawned by this process
 _proc: Optional[asyncio.subprocess.Process] = None
+_log_file: Optional[object] = None
 
 
 def _find_pid(binary_path: str) -> Optional[int]:
@@ -48,7 +49,7 @@ async def start(binary_path: str, args: list[str], working_dir: str) -> None:
 
     Raises RuntimeError if the binary is not found or the process fails to launch.
     """
-    global _proc
+    global _proc, _log_file
 
     if is_running(binary_path):
         logger.info("P2L service already running — skipping start")
@@ -63,13 +64,13 @@ async def start(binary_path: str, args: list[str], working_dir: str) -> None:
     logger.info("Starting P2L service: %s (cwd=%s)", " ".join(cmd), wdir)
 
     log_path = Path(wdir) / "p2l_webclient.log"
-    log_file = open(log_path, "a")  # noqa: WPS515 — intentional long-lived handle
+    _log_file = open(log_path, "a")  # noqa: WPS515 — closed in stop()
 
     _proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=wdir,
-        stdout=log_file,
-        stderr=log_file,
+        stdout=_log_file,
+        stderr=_log_file,
         stdin=asyncio.subprocess.DEVNULL,
     )
     logger.info("P2L service started (pid=%d)", _proc.pid)
@@ -79,6 +80,9 @@ async def start(binary_path: str, args: list[str], working_dir: str) -> None:
         await asyncio.wait_for(_proc.wait(), timeout=1.5)
         code = _proc.returncode
         _proc = None
+        if _log_file:
+            _log_file.close()
+            _log_file = None
         raise RuntimeError(f"P2L service exited immediately (code {code})")
     except asyncio.TimeoutError:
         pass  # Still running — good
@@ -86,7 +90,7 @@ async def start(binary_path: str, args: list[str], working_dir: str) -> None:
 
 async def stop() -> None:
     """Terminate the service subprocess started by this manager (if any)."""
-    global _proc
+    global _proc, _log_file
     if _proc is None or _proc.returncode is not None:
         _proc = None
         return
@@ -97,3 +101,6 @@ async def stop() -> None:
     except asyncio.TimeoutError:
         _proc.kill()
     _proc = None
+    if _log_file:
+        _log_file.close()
+        _log_file = None

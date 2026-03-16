@@ -25,6 +25,11 @@ class LightModuleRegistry:
     def _normalize(address: str) -> str:
         return address.zfill(4)[-4:]
 
+    @staticmethod
+    def normalize_address(address: str) -> str:
+        """Public alias for address normalization (zero-pad to 4 digits)."""
+        return address.zfill(4)[-4:]
+
     # ─── Mutations ────────────────────────────────────────────────────────────
 
     def set_instructed(self, instruction: PickingInstruction) -> None:
@@ -78,6 +83,13 @@ class LightModuleRegistry:
             self._modules[addr] = module
         self._notify()
 
+    def update_module_state(self, module: LightModuleState) -> None:
+        """Thread-safe upsert of a module state received from an external source (e.g. MQTT)."""
+        addr = self._normalize(module.address)
+        with self._lock:
+            self._modules[addr] = module
+        self._notify()
+
     def add_device(self, address: str, label: str = "", order_no: int = 0) -> LightModuleState:
         """Register a new device in standby state."""
         addr = self._normalize(address)
@@ -106,7 +118,8 @@ class LightModuleRegistry:
             return sorted(self._modules.values(), key=lambda m: (m.order_no, m.address))
 
     def get(self, address: str) -> Optional[LightModuleState]:
-        return self._modules.get(self._normalize(address))
+        with self._lock:
+            return self._modules.get(self._normalize(address))
 
     @property
     def active_count(self) -> int:
