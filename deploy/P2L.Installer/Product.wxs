@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Pick2Light (P2L) Warehouse Control System"
+           Language="1033"
+           Version="1.0.0.0"
+           Manufacturer="Pick2Light"
+           UpgradeCode="87654321-4321-4321-4321-210987654321">
+
+    <!-- Metadata -->
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Platform="$(var.Platform)"
+             Description="Pick2Light - Native AOT warehouse control system for Aioi light modules"
+             Manufacturer="Pick2Light" />
+
+    <!-- Media for installation source -->
+    <Media Id="1" Cabinet="p2l.cab" EmbedCab="yes" />
+
+    <!-- Installation directory structure -->
+    <StandardDirectory Id="ProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="Pick2Light">
+        <Directory Id="BinFolder" Name="bin" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Add to PATH -->
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="ProgramDataFolder" Name="Pick2Light">
+        <Directory Id="ConfigFolder" Name="config" />
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Start Menu -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuDir" Name="Pick2Light" />
+    </StandardDirectory>
+
+    <!-- File references (harvested from binary directory) -->
+    <Feature Id="ProductFeature"
+             Title="Pick2Light"
+             Description="Native AOT warehouse control system"
+             Level="1"
+             Absent="disallow">
+
+      <ComponentRef Id="P2LBinary" />
+      <ComponentRef Id="PathEnvironment" />
+      <ComponentRef Id="UninstallRegistry" />
+      <ComponentGroupRef Id="StartMenuShortcuts" />
+    </Feature>
+
+    <!-- Upgrade information -->
+    <Upgrade Id="87654321-4321-4321-4321-210987654321">
+      <UpgradeVersion Minimum="1.0.0.0" Maximum="99.99.99.99" Property="PREVIOUSVERSIONS" IncludeMinimum="yes" IncludeMaximum="no" />
+    </Upgrade>
+
+    <InstallExecuteSequence>
+      <RemoveExistingProducts After="InstallValidate" />
+    </InstallExecuteSequence>
+  </Product>
+</Wix>

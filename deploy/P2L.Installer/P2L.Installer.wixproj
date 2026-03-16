@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" InitialTargets="ValidateBinaries" xmlns="http://schemas.microsoft.com/wix/2006/wi" ToolsVersion="Current">
+  <PropertyGroup>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <ProductVersion>1.0.0.0</ProductVersion>
+    <ProjectGuid>12345678-1234-1234-1234-123456789ABC</ProjectGuid>
+    <SchemaVersion>2.0</SchemaVersion>
+    <OutputName>P2L-1.0.0</OutputName>
+    <OutputType>Bundle</OutputType>
+    <WixTargetVersion>4.0</WixTargetVersion>
+    <SuppressIces>ICE61</SuppressIces>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
+    <DefineConstants>$(DefineConstants);Platform=x64;BinaryPath=$(MSBuildProjectDirectory)\..\..\artifacts\win-x64</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|arm64'">
+    <DefineConstants>$(DefineConstants);Platform=arm64;BinaryPath=$(MSBuildProjectDirectory)\..\..\artifacts\win-arm64</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="4.0.*" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="4.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Product.wxs" />
+    <Compile Include="Features.wxs" />
+    <Compile Include="UI.wxs" />
+  </ItemGroup>
+
+  <Target Name="ValidateBinaries">
+    <Error Text="Binary not found at $(BinaryPath)\p2l.exe. Please build the project first." Condition="!Exists('$(BinaryPath)\p2l.exe')" />
+  </Target>
+</Project>
