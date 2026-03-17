@@ -107,6 +107,36 @@ class BridgeStatus:
     gateway_connected: bool
 
 
+@dataclass
+class TaskEvent:
+    """
+    Fired for each CSV pick-task lifecycle step.
+
+    ``event_type`` is one of:
+      - ``"task_started"``    – a row was instructed (light turned on)
+      - ``"task_confirmed"``  – operator pressed CONFIRM on that module
+      - ``"task_error"``      – a row could not be processed
+      - ``"csv_completed"``   – every row in the CSV has been confirmed
+    """
+    event_type: str
+    address:    str
+    quantity:   int
+    color:      str
+    label:      Optional[str] = None
+    timestamp:  Optional[str] = None
+
+    @staticmethod
+    def from_dict(d: dict) -> "TaskEvent":
+        return TaskEvent(
+            event_type=d["type"],
+            address=d.get("address", ""),
+            quantity=d.get("quantity", 0),
+            color=d.get("color", ""),
+            label=d.get("label"),
+            timestamp=d.get("timestamp"),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Batch item helper
 # ---------------------------------------------------------------------------
@@ -179,17 +209,29 @@ class P2LClient:
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected = asyncio.Event()
+        # Resolved (None) on successful connect; raises ConnectionError on failure.
+        # Only live during the connect() call; None the rest of the time.
+        self._connect_done: Optional[asyncio.Future[None]] = None
 
         # Callbacks registered by the user
-        self._on_confirm:       Optional[Callable[[ConfirmEvent], None]] = None
+        self._on_confirm:        Optional[Callable[[ConfirmEvent], None]] = None
         self._on_batch_complete: Optional[Callable[[], None]] = None
-        self._on_state:         Optional[Callable[[ModuleState], None]] = None
-        self._on_bridge_status: Optional[Callable[[BridgeStatus], None]] = None
+        self._on_state:          Optional[Callable[[ModuleState], None]] = None
+        self._on_bridge_status:  Optional[Callable[[BridgeStatus], None]] = None
+
+        # Task-event (data-processing) callbacks
+        self._on_task_event:    Optional[Callable[[TaskEvent], None]] = None
+        self._on_task_started:  Optional[Callable[[TaskEvent], None]] = None
+        self._on_task_confirmed: Optional[Callable[[TaskEvent], None]] = None
+        self._on_task_error:    Optional[Callable[[TaskEvent], None]] = None
+        self._on_csv_complete:  Optional[Callable[[], None]] = None
 
         # Pending waiters: address -> Future[ConfirmEvent]
         self._confirm_waiters: dict[str, asyncio.Future[ConfirmEvent]] = {}
         # Batch-complete waiter
         self._batch_complete_waiter: Optional[asyncio.Future[None]] = None
+        # CSV-complete waiter
+        self._csv_complete_waiter: Optional[asyncio.Future[None]] = None
 
         # paho client
         self._mqtt = mqtt.Client(
@@ -199,6 +241,11 @@ class P2LClient:
         )
         if username:
             self._mqtt.username_pw_set(username, password)
+
+        # Port 8883 is the standard MQTTS port — auto-enable TLS with system CAs
+        # when no explicit TLS config is provided (same convention as HTTPS on 443).
+        if tls is None and port == 8883:
+            tls = TLSConfig()
 
         if tls:
             ctx = ssl.create_default_context()
@@ -234,13 +281,22 @@ class P2LClient:
         """Connect to the MQTT broker and wait until ready."""
         self._loop = asyncio.get_running_loop()
         self._connected.clear()
+        self._connect_done = self._loop.create_future()
         self._mqtt.connect_async(self._host, self._port, keepalive=60)
         self._mqtt.loop_start()
         try:
-            await asyncio.wait_for(self._connected.wait(), timeout)
+            await asyncio.wait_for(asyncio.shield(self._connect_done), timeout)
         except asyncio.TimeoutError:
             self._mqtt.loop_stop()
-            raise TimeoutError(f"Could not connect to broker at {self._host}:{self._port}")
+            raise ConnectionError(
+                f"Timed out connecting to broker at {self._host}:{self._port} "
+                f"(no response within {timeout}s)"
+            )
+        except ConnectionError:
+            self._mqtt.loop_stop()
+            raise
+        finally:
+            self._connect_done = None
 
     async def disconnect(self) -> None:
         self._mqtt.disconnect()
@@ -258,15 +314,40 @@ class P2LClient:
                 (self.STATUS_TOPIC,  0),
             ])
             if self._loop:
-                self._loop.call_soon_threadsafe(self._connected.set)
+                def _resolve():
+                    self._connected.set()
+                    if self._connect_done and not self._connect_done.done():
+                        self._connect_done.set_result(None)
+                self._loop.call_soon_threadsafe(_resolve)
         else:
-            logger.error("MQTT connect failed: %s", reason_code)
+            logger.error("MQTT connect rejected by broker: %s", reason_code)
+            if self._loop:
+                def _reject():
+                    if self._connect_done and not self._connect_done.done():
+                        self._connect_done.set_exception(
+                            ConnectionError(f"Broker rejected connection: {reason_code}")
+                        )
+                self._loop.call_soon_threadsafe(_reject)
 
     def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
-        if reason_code != 0:
-            logger.warning("MQTT disconnected unexpectedly: %s", reason_code)
         if self._loop:
-            self._loop.call_soon_threadsafe(self._connected.clear)
+            def _handle():
+                # During connect phase: treat any disconnect as a connect failure.
+                if self._connect_done and not self._connect_done.done():
+                    self._connect_done.set_exception(
+                        ConnectionError(
+                            f"Could not connect to {self._host}:{self._port} — "
+                            f"{reason_code} (check host, port, TLS, credentials)"
+                        )
+                    )
+                    self._connected.clear()
+                    return
+                # After a successful connection: log and clear.
+                was_connected = self._connected.is_set()
+                self._connected.clear()
+                if was_connected and reason_code != 0:
+                    logger.warning("MQTT disconnected unexpectedly: %s", reason_code)
+            self._loop.call_soon_threadsafe(_handle)
 
     def _on_message(self, client, userdata, msg: mqtt.MQTTMessage):
         if self._loop:
@@ -293,6 +374,22 @@ class P2LClient:
                 self._batch_complete_waiter.set_result(None)
             if self._on_batch_complete:
                 self._on_batch_complete()
+
+        elif kind in ("task_started", "task_confirmed", "task_error", "csv_completed"):
+            ev = TaskEvent.from_dict(data)
+            if self._on_task_event:
+                self._on_task_event(ev)
+            if kind == "task_started" and self._on_task_started:
+                self._on_task_started(ev)
+            elif kind == "task_confirmed" and self._on_task_confirmed:
+                self._on_task_confirmed(ev)
+            elif kind == "task_error" and self._on_task_error:
+                self._on_task_error(ev)
+            elif kind == "csv_completed":
+                if self._csv_complete_waiter and not self._csv_complete_waiter.done():
+                    self._csv_complete_waiter.set_result(None)
+                if self._on_csv_complete:
+                    self._on_csv_complete()
 
         elif kind == "light_changed":
             state = ModuleState.from_dict(data)
@@ -328,6 +425,30 @@ class P2LClient:
         self._on_bridge_status = fn
 
     # ------------------------------------------------------------------
+    # Data-processing (task_event) subscriptions
+    # ------------------------------------------------------------------
+
+    def on_task_event(self, fn: Callable[[TaskEvent], None]) -> None:
+        """Register callback: called for every task lifecycle event (all types)."""
+        self._on_task_event = fn
+
+    def on_task_started(self, fn: Callable[[TaskEvent], None]) -> None:
+        """Register callback: called when a CSV row is instructed (light turned on)."""
+        self._on_task_started = fn
+
+    def on_task_confirmed(self, fn: Callable[[TaskEvent], None]) -> None:
+        """Register callback: called when an operator confirms a CSV task row."""
+        self._on_task_confirmed = fn
+
+    def on_task_error(self, fn: Callable[[TaskEvent], None]) -> None:
+        """Register callback: called when a CSV task row cannot be processed."""
+        self._on_task_error = fn
+
+    def on_csv_complete(self, fn: Callable[[], None]) -> None:
+        """Register callback: called when every row in the CSV has been confirmed."""
+        self._on_csv_complete = fn
+
+    # ------------------------------------------------------------------
     # Wait helpers (one-shot async)
     # ------------------------------------------------------------------
 
@@ -354,6 +475,19 @@ class P2LClient:
             raise TimeoutError(f"Batch not completed within {timeout}s")
         finally:
             self._batch_complete_waiter = None
+
+    async def wait_csv_complete(self, timeout: float = 300.0) -> None:
+        """Wait until every row in the running CSV pick task has been confirmed."""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[None] = loop.create_future()
+        self._csv_complete_waiter = fut
+        try:
+            await asyncio.wait_for(fut, timeout)
+        except asyncio.TimeoutError:
+            self._csv_complete_waiter = None
+            raise TimeoutError(f"CSV pick task not completed within {timeout}s")
+        finally:
+            self._csv_complete_waiter = None
 
     # ------------------------------------------------------------------
     # Commands

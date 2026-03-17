@@ -78,7 +78,9 @@ class P2LClient {
       clientId:    this._clientId,
       username:    opts.username,
       password:    opts.password,
-      protocol:    opts.tls ? 'mqtts' : 'mqtt',
+      // Port 8883 = standard MQTTS: auto-enable TLS unless caller explicitly
+      // passes tls: false to opt out (same convention as HTTPS on 443).
+      protocol:    (opts.tls !== false && port === 8883) || opts.tls ? 'mqtts' : 'mqtt',
       rejectUnauthorized: opts.tls?.rejectUnauthorized ?? true,
       ...opts.tls,
     };
@@ -89,12 +91,21 @@ class P2LClient {
     this._confirmWaiters = new Map();
     /** @type {{resolve: Function, reject: Function, timer: NodeJS.Timeout} | null} */
     this._batchWaiter = null;
+    /** @type {{resolve: Function, reject: Function, timer: NodeJS.Timeout} | null} */
+    this._csvCompleteWaiter = null;
 
     // User callbacks
     this._onConfirm       = null;
     this._onBatchComplete = null;
     this._onStateChange   = null;
     this._onBridgeStatus  = null;
+
+    // Task-event (data-processing) callbacks
+    this._onTaskEvent     = null;
+    this._onTaskStarted   = null;
+    this._onTaskConfirmed = null;
+    this._onTaskError     = null;
+    this._onCsvComplete   = null;
   }
 
   // -------------------------------------------------------------------------
@@ -183,6 +194,29 @@ class P2LClient {
       }
       this._onBatchComplete?.();
 
+    } else if (kind === 'task_started' || kind === 'task_confirmed' ||
+               kind === 'task_error'   || kind === 'csv_completed') {
+      const ev = {
+        eventType: kind,
+        address:   data.address   ?? '',
+        quantity:  data.quantity  ?? 0,
+        color:     data.color     ?? '',
+        label:     data.label     ?? null,
+        timestamp: data.timestamp ?? null,
+      };
+      this._onTaskEvent?.(ev);
+      if (kind === 'task_started')   this._onTaskStarted?.(ev);
+      if (kind === 'task_confirmed') this._onTaskConfirmed?.(ev);
+      if (kind === 'task_error')     this._onTaskError?.(ev);
+      if (kind === 'csv_completed') {
+        if (this._csvCompleteWaiter) {
+          clearTimeout(this._csvCompleteWaiter.timer);
+          this._csvCompleteWaiter.resolve();
+          this._csvCompleteWaiter = null;
+        }
+        this._onCsvComplete?.();
+      }
+
     } else if (kind === 'light_changed') {
       const state = {
         address:      data.address,
@@ -220,6 +254,25 @@ class P2LClient {
   onBridgeStatus(fn)  { this._onBridgeStatus = fn; }
 
   // -------------------------------------------------------------------------
+  // Data-processing (task_event) subscriptions
+  // -------------------------------------------------------------------------
+
+  /** @param {(ev: {eventType, address, quantity, color, label, timestamp}) => void} fn */
+  onTaskEvent(fn)     { this._onTaskEvent = fn; }
+
+  /** @param {(ev: {eventType, address, quantity, color, label, timestamp}) => void} fn */
+  onTaskStarted(fn)   { this._onTaskStarted = fn; }
+
+  /** @param {(ev: {eventType, address, quantity, color, label, timestamp}) => void} fn */
+  onTaskConfirmed(fn) { this._onTaskConfirmed = fn; }
+
+  /** @param {(ev: {eventType, address, quantity, color, label, timestamp}) => void} fn */
+  onTaskError(fn)     { this._onTaskError = fn; }
+
+  /** @param {() => void} fn */
+  onCsvComplete(fn)   { this._onCsvComplete = fn; }
+
+  // -------------------------------------------------------------------------
   // Wait helpers
   // -------------------------------------------------------------------------
 
@@ -251,6 +304,21 @@ class P2LClient {
         reject(new Error(`Batch not completed within ${timeoutMs}ms`));
       }, timeoutMs);
       this._batchWaiter = { resolve, reject, timer };
+    });
+  }
+
+  /**
+   * Wait until every row in the running CSV pick task has been confirmed.
+   * @param {number} [timeoutMs=300000]
+   * @returns {Promise<void>}
+   */
+  waitCsvComplete(timeoutMs = 300_000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._csvCompleteWaiter = null;
+        reject(new Error(`CSV pick task not completed within ${timeoutMs}ms`));
+      }, timeoutMs);
+      this._csvCompleteWaiter = { resolve, reject, timer };
     });
   }
 
