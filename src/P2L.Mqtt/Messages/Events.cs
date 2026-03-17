@@ -40,6 +40,11 @@ public sealed record LightChangedEvt : MqttEvent
     public int?             AdjustedQuantity  { get; init; }
     public DateTime?        LastInstructionAt { get; init; }
     public DateTime?        LastConfirmedAt   { get; init; }
+    /// <summary>
+    /// Human-readable label for the device, looked up from the client device database.
+    /// Empty string when no label is configured.
+    /// </summary>
+    public string           Label             { get; init; } = "";
 }
 
 // ─── batch_completed ───────────────────────────────────────────────────────

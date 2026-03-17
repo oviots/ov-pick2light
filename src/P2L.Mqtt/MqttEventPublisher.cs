@@ -30,6 +30,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
     private readonly MqttSettings         _settings;
     private readonly PickingEngine        _engine;
     private readonly LightModuleRegistry  _registry;
+    private readonly DeviceLabelStore     _labels;
     private readonly ILogger              _log;
     private readonly string?              _bufferPath;
 
@@ -46,12 +47,14 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
 
     public MqttEventPublisher(IMqttClient client, MqttSettings settings,
                                PickingEngine engine, LightModuleRegistry registry,
+                               DeviceLabelStore labels,
                                ILogger<MqttEventPublisher> log)
     {
         _client     = client;
         _settings   = settings;
         _engine     = engine;
         _registry   = registry;
+        _labels     = labels;
         _log        = log;
         _bufferPath = string.IsNullOrWhiteSpace(settings.OfflineBufferPath)
                       ? null
@@ -62,6 +65,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
 
     public void Start()
     {
+        _labels.Load();
         _registry.StateChanged += OnStateChanged;
         _engine.ItemConfirmed  += OnItemConfirmed;
         _engine.BatchCompleted += OnBatchCompleted;
@@ -130,7 +134,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
 
     // ─── Helpers ──────────────────────────────────────────────────────────
 
-    private static LightChangedEvt StateToEvt(LightModuleState s) => new()
+    private LightChangedEvt StateToEvt(LightModuleState s) => new()
     {
         Type              = "light_changed",
         Address           = s.Address,
@@ -144,6 +148,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
         AdjustedQuantity  = s.AdjustedQuantity,
         LastInstructionAt = s.LastInstructionAt,
         LastConfirmedAt   = s.LastConfirmedAt,
+        Label             = _labels.GetLabel(s.Address),
     };
 
     /// <summary>

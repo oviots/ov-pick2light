@@ -40,6 +40,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     public MqttBridgeService(MqttSettings settings, AioiGateway gateway,
                               PickingEngine engine, LightModuleRegistry registry,
                               PreemptionGate gate, CsvPickTaskRunner? csvRunner,
+                              DeviceLabelStore labelStore,
                               ILoggerFactory loggerFactory)
     {
         _settings   = settings;
@@ -49,6 +50,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
         _log        = loggerFactory.CreateLogger<MqttBridgeService>();
         _client     = new MqttClientFactory().CreateMqttClient();
         _publisher  = new MqttEventPublisher(_client, settings, engine, registry,
+                          labelStore,
                           loggerFactory.CreateLogger<MqttEventPublisher>());
         _dispatcher = new MqttCommandDispatcher(engine, _publisher, gate, csvRunner,
                           loggerFactory.CreateLogger<MqttCommandDispatcher>());

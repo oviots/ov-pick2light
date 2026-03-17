@@ -52,6 +52,7 @@ var appSettings = new AppSettings
         DevicesTopic      = Cfg_String(config, "Mqtt:DevicesTopic",      "p2l/devices"),
         StatusTopic       = Cfg_String(config, "Mqtt:StatusTopic",       "p2l/status"),
         OfflineBufferPath = Cfg_String(config, "Mqtt:OfflineBufferPath", "mqtt_offline_buffer.jsonl"),
+        ClientDbPath      = config["Mqtt:ClientDbPath"],
         Tls = new MqttTlsSettings
         {
             Enabled             = Cfg_Bool  (config, "Mqtt:Tls:Enabled",             true),
@@ -144,6 +145,10 @@ if (appSettings.EnableStatePersistence)
 if (appSettings.Mqtt.Enabled)
 {
     services.AddSingleton(appSettings.Mqtt);
+    services.AddSingleton(sp =>
+        new DeviceLabelStore(
+            appSettings.Mqtt.ClientDbPath,
+            sp.GetRequiredService<ILogger<DeviceLabelStore>>()));
     services.AddSingleton<MqttBridgeService>();
 }
 // Offline buffer-only mode: MQTT disabled but OfflineBufferPath is configured.

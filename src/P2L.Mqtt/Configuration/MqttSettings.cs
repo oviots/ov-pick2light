@@ -27,6 +27,14 @@ public sealed class MqttSettings
     /// </summary>
     public string OfflineBufferPath { get; init; } = "mqtt_offline_buffer.jsonl";
 
+    /// <summary>
+    /// Optional path to the Python web-client device database (p2l_devices.db).
+    /// When set, every <c>light_changed</c> event published to <c>p2l/devices/#</c>
+    /// is enriched with the <c>label</c> field from this SQLite file.
+    /// Leave null or empty to omit the label.
+    /// </summary>
+    public string? ClientDbPath { get; init; }
+
     public MqttTlsSettings Tls  { get; init; } = new();
 }
 
