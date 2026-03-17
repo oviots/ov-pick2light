@@ -22,6 +22,10 @@ public sealed record ConfirmedEvt : MqttEvent
     /// <summary>Raw 5-char display string from the t-interrupt packet (e.g. "00002" or "    2").</summary>
     public string?           AdjustedDisplay  { get; init; }
     public string?           CorrelationId    { get; init; }
+    /// <summary>Current display value on the module at the time of confirmation.</summary>
+    public string?           DisplayData      { get; init; }
+    /// <summary>Human-readable label for the device, resolved from the client device database.</summary>
+    public string?           Label            { get; init; }
 }
 
 // ─── light_changed ─────────────────────────────────────────────────────────

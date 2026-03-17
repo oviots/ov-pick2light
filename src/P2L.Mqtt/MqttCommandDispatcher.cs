@@ -101,13 +101,15 @@ internal sealed class MqttCommandDispatcher
                                 continue;
                             }
                         }
+                        var itemLedMode = i.LedMode ?? cmd.LedMode;
+                        var itemBuzMode = i.BuzMode ?? (i.LedMode.HasValue ? i.LedMode.Value : batchBuzMode);
                         instructions.Add(new PickingInstruction
                         {
                             Address  = addr,
                             Quantity = i.Quantity,
                             Color    = i.Color ?? cmd.Color,
-                            LedMode  = cmd.LedMode,
-                            BuzMode  = batchBuzMode,
+                            LedMode  = itemLedMode,
+                            BuzMode  = itemBuzMode,
                             Label    = i.Label,
                         });
                     }

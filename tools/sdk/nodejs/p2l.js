@@ -106,6 +106,9 @@ class P2LClient {
     this._onTaskConfirmed = null;
     this._onTaskError     = null;
     this._onCsvComplete   = null;
+
+    /** @type {Map<string, object>} device state cache: address -> state */
+    this._states = new Map();
   }
 
   // -------------------------------------------------------------------------
@@ -177,6 +180,8 @@ class P2LClient {
         address:         data.address,
         status:          data.status ?? 'Normal',
         adjustedDisplay: data.adjustedDisplay ?? null,
+        label:           data.label ?? null,
+        displayData:     data.displayData ?? null,
       };
       const waiter = this._confirmWaiters.get(ev.address);
       if (waiter) {
@@ -227,6 +232,7 @@ class P2LClient {
         blockNo:      data.blockNo,
         label:        data.label ?? null,
       };
+      this._states.set(state.address, state);
       this._onStateChange?.(state);
 
     } else if (kind === 'bridge_status') {
@@ -250,6 +256,19 @@ class P2LClient {
 
   /** @param {(state: object) => void} fn */
   onStateChange(fn)   { this._onStateChange = fn; }
+
+  /**
+   * Return a `{label: address}` map built from device states received since connect.
+   * Devices without a label are excluded.
+   * @returns {Object.<string, string>}
+   */
+  labelMap() {
+    const result = {};
+    for (const state of this._states.values()) {
+      if (state.label) result[state.label] = state.address;
+    }
+    return result;
+  }
 
   /** @param {(status: {online, gatewayConnected}) => void} fn */
   onBridgeStatus(fn)  { this._onBridgeStatus = fn; }
@@ -368,7 +387,7 @@ class P2LClient {
    * Each item may have ``address`` (hardware address) **or** ``label`` (position label).
    * If ``address`` is omitted, the P2L bridge resolves it from ``label`` via the
    * client device database.  Items that cannot be resolved are skipped by the bridge.
-   * @param {Array<{address?, quantity, color?, label?}>} items
+   * @param {Array<{address?, quantity, color?, label?, ledMode?, buzMode?}>} items
    * @param {object} [opts]
    * @param {string} [opts.ledMode=LightMode.ON]
    * @param {string} [opts.buzMode]  - omit to mirror ledMode
@@ -381,9 +400,11 @@ class P2LClient {
         const item = {
           quantity: i.quantity,
           color:    i.color ?? LightColor.GREEN,
+          ledMode:  i.ledMode ?? LightMode.ON,
         };
-        if (i.address) item.address = i.address;
-        if (i.label)   item.label   = i.label;
+        if (i.address)             item.address = i.address;
+        if (i.label)               item.label   = i.label;
+        if (i.buzMode !== undefined) item.buzMode = i.buzMode;
         return item;
       }),
     };
@@ -576,45 +597,19 @@ class WaveDispatcher {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a `{label: address}` map by collecting retained `light_changed`
- * messages from `p2l/devices/#`.
- *
- * The broker pushes retained messages immediately after subscription, so the
- * default timeout of 2 000 ms is sufficient even for large installations.
- * Devices without a label are excluded.
- *
- * @param {P2LClient} client
- * @param {number} [timeoutMs=2000]
- * @returns {Promise<Object.<string, string>>}  e.g. `{"CH.001": "0001", ...}`
- */
-function discoverLabelMap(client, timeoutMs = 2_000) {
-  return new Promise((resolve) => {
-    const result = {};
-    const prev   = client._onStateChange;
-
-    client._onStateChange = (state) => {
-      if (state.label) result[state.label] = state.address;
-      prev?.(state);
-    };
-
-    setTimeout(() => {
-      client._onStateChange = prev;
-      resolve(result);
-    }, timeoutMs);
-  });
-}
-
-/**
  * Dispatches a batch where every item targets a specific position by *label*.
  *
  * Items sharing the same label are queued and processed **one at a time** at
  * that position. All positions run in **parallel**.
  *
+ * The label→address mapping is resolved automatically from device states
+ * already cached by the client (populated from retained `light_changed`
+ * messages received after `connect()`).
+ *
  * @example
- * const payload = JSON.parse(rawJson);
- * const batch   = BatchDispatch.fromDict(payload);
- * const labelMap = await discoverLabelMap(p2l);
- * const dispatcher = new BatchDispatcher(p2l, batch, { labelMap });
+ * const payload    = JSON.parse(rawJson);
+ * const batch      = BatchDispatch.fromDict(payload);
+ * const dispatcher = new BatchDispatcher(p2l, batch);
  *
  * dispatcher.onItemSent      = (addr, item) => console.log(`→ [${item.label}] ${item.sku}`);
  * dispatcher.onItemConfirmed = (addr, item, evt) => console.log(`✓ [${item.label}] ${item.sku}`);
@@ -627,13 +622,13 @@ class BatchDispatcher {
   /**
    * @param {P2LClient}  client
    * @param {BatchDispatch} batch
-   * @param {object}     opts
-   * @param {Object.<string,string>} opts.labelMap  - `{label: address}` mapping
+   * @param {object}     [opts]  - reserved for future use
    */
-  constructor(client, batch, { labelMap, ledMode = LightMode.ON }) {
+  constructor(client, batch, opts = {}) {
     this._client   = client;
     this._batchId  = batch.batchId;
-    this._ledMode  = ledMode;
+
+    const labelMap = client.labelMap();
 
     // Group items by address, preserving order per position
     /** @type {Object.<string, Array>} */
@@ -650,7 +645,7 @@ class BatchDispatcher {
     }
     if (unknown.length > 0) {
       throw new Error(
-        `BatchDispatcher: label(s) not found in labelMap: ${unknown.join(', ')}. ` +
+        `BatchDispatcher: label(s) not found in device states: ${unknown.join(', ')}. ` +
         `Available: ${Object.keys(labelMap).join(', ')}`
       );
     }
@@ -701,12 +696,14 @@ class BatchDispatcher {
         quantity: item.quantity,
         color:    item.color   ?? LightColor.GREEN,
         label:    item.sku,
+        ledMode:  item.ledMode ?? LightMode.ON,
+        ...(item.buzMode !== undefined ? { buzMode: item.buzMode } : {}),
       });
       this.onItemSent?.(addr, item);
     }
 
     if (initial.length > 0) {
-      this._client.batchStart(initial, { ledMode: this._ledMode });
+      this._client.batchStart(initial);
     }
   }
 
@@ -820,6 +817,6 @@ class BatchDispatch {
 
 module.exports = {
   P2LClient, LightColor, LightMode, CompletionStatus,
-  WaveDispatcher, BatchDispatch, BatchDispatcher, discoverLabelMap,
+  WaveDispatcher, BatchDispatch, BatchDispatcher,
 };
 

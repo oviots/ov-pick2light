@@ -5,7 +5,7 @@ import signal
 from p2l import (
     P2LClient, LightColor, LightMode, BatchItem, TLSConfig,
     DispatchItem, WaveDispatcher,
-    BatchDispatch, BatchDispatcher, discover_label_map,
+    BatchDispatch, BatchDispatcher,
 )
 
 # EMQX broker (from appsettings.json / note.txt)
@@ -21,7 +21,7 @@ PASSWORD = "P2l123456"
 async def example_single_pick():
     async with P2LClient(BROKER, PORT, username=USERNAME, password=PASSWORD) as p2l:
         print("Lighting up module 0001 — qty 5, green flash")
-        p2l.light_on("0011", quantity=5, color=LightColor.GREEN, led_mode=LightMode.FLASH)
+        p2l.light_on("0011", quantity=5, color=LightColor.GREEN, led_mode=LightMode.FLASH, buz_mode=LightMode.OFF)
 
         print("Waiting for operator confirmation…")
         event = await p2l.wait_confirm("0011", timeout=30)
@@ -182,6 +182,7 @@ async def example_batch_dispatch():
 
     Input:  each item carries a 'label' (position name) instead of a raw address.
             The P2L bridge resolves label → address via the client device database.
+            Optional per-item fields: color, ledMode, buzMode.
 
     Approach A — Direct batch_start (one-shot, no queue tracking):
         All items sent simultaneously. No sequential queuing per position.
@@ -192,19 +193,20 @@ async def example_batch_dispatch():
         When a position confirms, the next item for that position fires immediately.
         Use when positions have multiple items to process in order.
 
-        CH.001 queue: SKU-001 (qty 10) → SKU-003 (qty 15)   [sequential]
-        CH.002 queue: SKU-002 (qty  5) → SKU-004 (qty  1)   [sequential]
+        CH.001 queue: SKU-001 (qty 10, FLASH) → SKU-003 (qty 15, ON)   [sequential]
+        CH.002 queue: SKU-002 (qty  5, ON)    → SKU-004 (qty  1, ON)   [sequential]
         CH.001 and CH.002 run in parallel.
     """
     import json
 
+    # Full item options: sku, label, quantity, color, ledMode, buzMode
     raw_json = """{
         "batch_id": "jklklkj1212",
         "items": [
-            {"sku": "SKU-001", "label": "CH.001", "quantity": 10},
-            {"sku": "SKU-002", "label": "CH.002", "quantity": 5},
-            {"sku": "SKU-003", "label": "CH.001", "quantity": 15},
-            {"sku": "SKU-004", "label": "CH.002", "quantity": 1}
+            {"sku": "SKU-001", "label": "CH.XXX", "quantity": 10, "color": "Green",  "ledMode": "Flash","buzMode": "Off"},
+            {"sku": "SKU-002", "label": "CH.002", "quantity": 5,  "color": "Yellow", "ledMode": "Flash", "buzMode": "Off"},
+            {"sku": "SKU-003", "label": "CH.XXX", "quantity": 15, "color": "Green",  "ledMode": "Flash", "buzMode": "Off"},
+            {"sku": "SKU-004", "label": "CH.002", "quantity": 1,  "color": "Red",    "ledMode": "Flash", "buzMode": "Off"}
         ]
     }"""
 
@@ -214,38 +216,48 @@ async def example_batch_dispatch():
 
         # ── Approach A: direct batch_start with label-only BatchItems ──────────
         # No address needed — the bridge resolves label → address automatically.
-        # Suitable for simple one-shot batches (one item per position).
-        print("── Approach A: direct batch_start (label-only) ──")
+        # Per-item color, led_mode and buz_mode are fully supported.
+        print("── Approach A: direct batch_start (label-only, full options) ──")
         items_a = [
-            BatchItem(None, quantity=i["quantity"], label=i["label"])
+            BatchItem(
+                address=None,
+                quantity=i["quantity"],
+                color=LightColor(i["color"]),
+                label=i["label"],
+                led_mode=LightMode(i.get("ledMode", "On")),
+                buz_mode=LightMode(i["buzMode"]) if "buzMode" in i else None,
+            )
             for i in payload["items"][:2]   # first two items only
         ]
-        p2l.on_confirm(lambda ev: print(f"  ✓ {ev.address} confirmed"))
+        p2l.on_confirm(lambda ev: print(f"  ✓ {ev.address} [{ev.label}] confirmed (display={ev.display_data})"))
         p2l.batch_start(items_a)
-        print(f"  Sent {len(items_a)} items via batch_start (no address needed)\n")
+        print(f"  Sent {len(items_a)} items via batch_start\n")
 
         await asyncio.sleep(1)   # brief pause before approach B
 
-        # ── Approach B: BatchDispatcher for queued, per-position tracking ──────
-        # discover_label_map collects retained p2l/devices/# messages to build
-        # the label → address map needed to track per-position confirmations.
-        print("── Approach B: BatchDispatcher (queued) ──")
-        print("Discovering label map…")
-        label_map = await discover_label_map(p2l, timeout=2.0)
-        print(f"  {label_map}\n")
+        # ── Approach B: BatchDispatcher (queued, per-position tracking) ─────────
+        # label_map() reads device states already cached from retained
+        # light_changed messages received after connect().
+        # Per-item color/ledMode/buzMode from JSON are preserved and used.
+        print("── Approach B: BatchDispatcher (queued, full options) ──")
+        label_map = p2l.label_map()
+        print(f"  label_map: {label_map}\n")
 
         if not label_map:
             print("No devices found — ensure the P2L bridge is running with labels set.")
             return
 
         batch      = BatchDispatch.from_dict(payload)
-        dispatcher = BatchDispatcher(p2l, batch, label_map=label_map)
+        dispatcher = BatchDispatcher(p2l, batch)
 
         dispatcher.on_item_sent = lambda addr, item: \
-            print(f"  → [{item.label}] {item.sku} x{item.quantity}  (addr={addr})")
+            print(f"  → [{item.label}] {item.sku} x{item.quantity} "
+                  f"color={item.color.value} led={item.led_mode.value} "
+                  f"buz={item.buz_mode.value if item.buz_mode else '-'}  (addr={addr})")
 
         dispatcher.on_item_confirmed = lambda addr, item, evt: \
-            print(f"  ✓ [{item.label}] {item.sku} confirmed (status={evt.status.value})")
+            print(f"  ✓ [{item.label}] {item.sku} confirmed "
+                  f"(status={evt.status.value} label={evt.label} display={evt.display_data})")
 
         dispatcher.on_batch_complete = lambda stats: \
             print(f"\n★ Batch {stats['batch_id']} complete — "
@@ -257,6 +269,5 @@ async def example_batch_dispatch():
         stats = await dispatcher.wait()
         print(f"Final: {stats}")
 
-
 if __name__ == "__main__":
-    asyncio.run(example_single_pick())
+    asyncio.run(example_batch_dispatch())

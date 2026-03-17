@@ -54,6 +54,7 @@ class BatchItem(BaseModel):
     quantity: int = Field(ge=0, le=99999)
     color: str = Field(default="GREEN")
     led_mode: str = Field(default="ON")
+    buz_mode: Optional[str] = Field(default=None)
     label: str = Field(default="")
 
 
@@ -357,23 +358,26 @@ async def light_off(request: Request, address: str):
 async def start_batch(request: Request, body: BatchRequest):
     if not body.items:
         raise HTTPException(status_code=400, detail="No items in batch")
-    first_mode = _parse_led_mode(body.items[0].led_mode)
-    items = [
-        {
+    items = []
+    for item in body.items:
+        led = _parse_led_mode(item.led_mode)
+        entry: dict = {
             "address":  item.address.zfill(4)[-4:],
             "quantity": item.quantity,
             "color":    _COLOR_TO_MQTT.get(_parse_color(item.color), "Green"),
+            "ledMode":  _STATE_TO_MQTT.get(led, "On"),
             "label":    item.label or None,
         }
-        for item in body.items
-    ]
+        if item.buz_mode:
+            buz = _parse_led_mode(item.buz_mode)
+            entry["buzMode"] = _STATE_TO_MQTT.get(buz, "On")
+        elif not body.buzz:
+            entry["buzMode"] = "Off"
+        items.append(entry)
     payload: dict = {
-        "type":    "batch_start",
-        "ledMode": _STATE_TO_MQTT.get(first_mode, "On"),
-        "items":   items,
+        "type":  "batch_start",
+        "items": items,
     }
-    if not body.buzz:
-        payload["buzMode"] = "Off"
     await _publish(request, payload)
     return {"status": "sent", "count": len(items)}
 

@@ -94,6 +94,8 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
             adjusted_display=payload.get("adjustedDisplay"),
             received_at=datetime.now(timezone.utc),
             seq_no=0,
+            label=payload.get("label"),
+            display_data=payload.get("displayData"),
         )
         registry.set_confirmed(event)
         await ws_manager.broadcast({"type": "confirmation", "data": event.to_dict()})
@@ -104,7 +106,11 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
         addr = payload.get("address", "0000")
         module = registry.get(addr) or LightModuleState(address=addr)
         stored = insert_if_new(LightModuleRegistry.normalize_address(addr))
-        if not module.label and stored["label"]:
+        # Prefer label from MQTT event (enriched by .NET bridge) over DB fallback
+        mqtt_label = payload.get("label")
+        if mqtt_label:
+            module.label = mqtt_label
+        elif not module.label and stored["label"]:
             module.label = stored["label"]
         if not module.order_no:
             module.order_no = stored["order_no"]

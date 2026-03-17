@@ -72,6 +72,8 @@ class ConfirmEvent:
     address:          str
     status:           CompletionStatus
     adjusted_display: Optional[str] = None
+    label:            Optional[str] = None
+    display_data:     Optional[str] = None
 
     @staticmethod
     def from_dict(d: dict) -> "ConfirmEvent":
@@ -79,6 +81,8 @@ class ConfirmEvent:
             address=d["address"],
             status=CompletionStatus(d.get("status", "Normal")),
             adjusted_display=d.get("adjustedDisplay"),
+            label=d.get("label"),
+            display_data=d.get("displayData"),
         )
 
 
@@ -158,13 +162,21 @@ class BatchItem:
     quantity: int
     color:    LightColor         = LightColor.GREEN
     label:    Optional[str]      = None
+    led_mode: LightMode          = LightMode.ON
+    buz_mode: Optional[LightMode] = None
 
     def to_dict(self) -> dict:
-        d: dict = {"quantity": self.quantity, "color": self.color.value}
+        d: dict = {
+            "quantity": self.quantity,
+            "color":    self.color.value,
+            "ledMode":  self.led_mode.value,
+        }
         if self.address:
             d["address"] = self.address
         if self.label:
             d["label"] = self.label
+        if self.buz_mode is not None:
+            d["buzMode"] = self.buz_mode.value
         return d
 
 
@@ -408,45 +420,12 @@ class BatchDispatch:
                     quantity=i["quantity"],
                     color=LightColor(i["color"]) if "color" in i else LightColor.GREEN,
                     led_mode=LightMode(i["ledMode"]) if "ledMode" in i else LightMode.ON,
+                    buz_mode=LightMode(i["buzMode"]) if "buzMode" in i else None,
                 )
                 for i in d["items"]
             ],
         )
 
-
-async def discover_label_map(
-    client: "P2LClient",
-    timeout: float = 2.0,
-) -> dict[str, str]:
-    """
-    Build a ``{label: address}`` map by collecting retained ``light_changed``
-    messages from ``p2l/devices/#``.
-
-    The broker pushes retained messages immediately after subscription, so the
-    default *timeout* of 2 seconds is sufficient even for large installations.
-    Devices that have no label set are excluded from the result.
-
-    Example::
-
-        label_map = await discover_label_map(p2l)
-        # {"CH.001": "0001", "CH.002": "0002", ...}
-    """
-    result: dict[str, str] = {}
-    prev = client._on_state
-
-    def _collect(state: ModuleState) -> None:
-        if state.label:
-            result[state.label] = state.address
-        if prev:
-            prev(state)
-
-    client._on_state = _collect
-    try:
-        await asyncio.sleep(timeout)
-    finally:
-        client._on_state = prev
-
-    return result
 
 
 class BatchDispatcher:
@@ -457,18 +436,17 @@ class BatchDispatcher:
     Items sharing the same label are queued and processed **one at a time** at
     that position.  All positions work in **parallel**.
 
-    Requires a ``label_map`` dict ``{label: address}`` to resolve position
-    labels to hardware addresses.  Use :func:`discover_label_map` to build
-    this automatically from the MQTT broker's retained device states.
+    The label-to-address mapping is resolved automatically from the device states
+    already cached by the client (populated from retained ``light_changed``
+    messages received after :meth:`~P2LClient.connect`).
 
     Example::
 
         import json
 
-        payload   = json.loads(raw_json)
-        batch     = BatchDispatch.from_dict(payload)
-        label_map = await discover_label_map(p2l)
-        dispatcher = BatchDispatcher(p2l, batch, label_map=label_map)
+        payload    = json.loads(raw_json)
+        batch      = BatchDispatch.from_dict(payload)
+        dispatcher = BatchDispatcher(p2l, batch)
 
         dispatcher.on_item_sent      = lambda addr, item: \\
             print(f"→ [{item.label}] {item.sku} x{item.quantity}")
@@ -485,13 +463,11 @@ class BatchDispatcher:
         self,
         client: "P2LClient",
         batch: BatchDispatch,
-        *,
-        label_map: dict[str, str],
-        led_mode: LightMode = LightMode.ON,
     ):
         self._client   = client
         self._batch_id = batch.batch_id
-        self._led_mode = led_mode
+
+        label_map = client.label_map()
 
         # Group items by address (preserving insertion order per position)
         addr_queues: dict[str, deque[BatchDispatchItem]] = {}
@@ -508,7 +484,7 @@ class BatchDispatcher:
 
         if unknown:
             raise ValueError(
-                f"BatchDispatcher: label(s) not found in label_map: {unknown}. "
+                f"BatchDispatcher: label(s) not found in device states: {unknown}. "
                 f"Available: {list(label_map.keys())}"
             )
 
@@ -556,12 +532,14 @@ class BatchDispatcher:
                 quantity=item.quantity,
                 color=item.color,
                 label=item.sku,
+                led_mode=item.led_mode,
+                buz_mode=item.buz_mode,
             ))
             if self.on_item_sent:
                 _call(self.on_item_sent, addr, item)
 
         if initial:
-            self._client.batch_start(initial, led_mode=self._led_mode)
+            self._client.batch_start(initial)
 
     async def wait(self, timeout: Optional[float] = None) -> dict:
         """Block until every item is confirmed (or *timeout* seconds elapse)."""
@@ -718,6 +696,9 @@ class P2LClient:
         self._on_task_confirmed: Optional[Callable[[TaskEvent], None]] = None
         self._on_task_error:    Optional[Callable[[TaskEvent], None]] = None
         self._on_csv_complete:  Optional[Callable[[], None]] = None
+
+        # Device state cache: address -> ModuleState (updated on every light_changed)
+        self._states: dict[str, ModuleState] = {}
 
         # Pending waiters: address -> Future[ConfirmEvent]
         self._confirm_waiters: dict[str, asyncio.Future[ConfirmEvent]] = {}
@@ -886,6 +867,7 @@ class P2LClient:
 
         elif kind == "light_changed":
             state = ModuleState.from_dict(data)
+            self._states[state.address] = state
             if self._on_state:
                 self._on_state(state)
 
@@ -912,6 +894,14 @@ class P2LClient:
     def on_state_change(self, fn: Callable[[ModuleState], None]) -> None:
         """Register callback: called when a module's state changes."""
         self._on_state = fn
+
+    def label_map(self) -> dict[str, str]:
+        """Return a ``{label: address}`` dict built from received device states.
+
+        Devices without a label are excluded. Populated from retained
+        ``light_changed`` messages received since :meth:`connect` was called.
+        """
+        return {s.label: s.address for s in self._states.values() if s.label}
 
     def on_bridge_status(self, fn: Callable[[BridgeStatus], None]) -> None:
         """Register callback: called when P2L bridge health changes."""

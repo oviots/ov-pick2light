@@ -56,6 +56,10 @@ public sealed record BatchItemDto
     public required int Quantity { get; init; }
     public LightColor?  Color    { get; init; }   // null → use batch-level color
     public string?      Label    { get; init; }
+    /// <summary>Per-item LED mode. Null = fall back to batch-level LedMode.</summary>
+    public LightState?  LedMode  { get; init; }
+    /// <summary>Per-item buzzer mode. Null = fall back to batch-level BuzMode (or mirrors LedMode).</summary>
+    public LightState?  BuzMode  { get; init; }
 }
 
 // ─── batch_finish ──────────────────────────────────────────────────────────

@@ -101,6 +101,8 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
             Status           = evt.Status,
             AdjustedQuantity = state?.AdjustedQuantity,
             AdjustedDisplay  = evt.AdjustedDisplay,
+            DisplayData      = state?.DisplayData,
+            Label            = _labels.GetLabel(evt.Address) is { Length: > 0 } l ? l : null,
         });
 
     private void OnBatchCompleted()

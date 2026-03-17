@@ -63,11 +63,15 @@ class ConfirmationEvent:
     adjusted_display: Optional[str]
     received_at: datetime
     seq_no: int
+    label: Optional[str] = None
+    display_data: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
-            "address": self.address,
-            "status": self.status.name,
+            "address":          self.address,
+            "status":           self.status.name,
             "adjusted_display": self.adjusted_display,
-            "received_at": self.received_at.isoformat(),
+            "received_at":      self.received_at.isoformat(),
+            "label":            self.label,
+            "display_data":     self.display_data,
         }

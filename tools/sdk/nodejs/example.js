@@ -4,7 +4,7 @@
  * Run: node example.js
  */
 
-const { P2LClient, LightColor, LightMode, WaveDispatcher, BatchDispatch, BatchDispatcher, discoverLabelMap } = require('./p2l');
+const { P2LClient, LightColor, LightMode, WaveDispatcher, BatchDispatch, BatchDispatcher } = require('./p2l');
 
 // EMQX broker (from appsettings.json)
 const BROKER   = 's28f7f16.ala.asia-southeast1.emqxsl.com';
@@ -207,6 +207,7 @@ async function exampleBatchDispatch() {
    *
    * Input:  each item carries a 'label' (position name) instead of a raw address.
    *         The P2L bridge resolves label → address via the client device database.
+   *         Optional per-item fields: color, ledMode, buzMode.
    *
    * Approach A — Direct batchStart (one-shot, no queue tracking):
    *   All items sent simultaneously. No sequential queuing per position.
@@ -216,17 +217,19 @@ async function exampleBatchDispatch() {
    *   Items at the same position queue up sequentially.
    *   When a position confirms, the next item for that position fires immediately.
    *
-   *   CH.001: SKU-001 (qty 10) → SKU-003 (qty 15)  [sequential]
-   *   CH.002: SKU-002 (qty  5) → SKU-004 (qty  1)  [sequential]
+   *   CH.001: SKU-001 (qty 10, Flash) → SKU-003 (qty 15, On)  [sequential]
+   *   CH.002: SKU-002 (qty  5, On)    → SKU-004 (qty  1, On)  [sequential]
    *   CH.001 and CH.002 run in parallel.
    */
+
+  // Full item options: sku, label, quantity, color, ledMode, buzMode
   const rawJson = `{
     "batch_id": "jklklkj1212",
     "items": [
-      {"sku": "SKU-001", "label": "CH.001", "quantity": 10},
-      {"sku": "SKU-002", "label": "CH.002", "quantity": 5},
-      {"sku": "SKU-003", "label": "CH.001", "quantity": 15},
-      {"sku": "SKU-004", "label": "CH.002", "quantity": 1}
+      {"sku": "SKU-001", "label": "CH.001", "quantity": 10, "color": "Green",  "ledMode": "Flash",  "buzMode": "Flash"},
+      {"sku": "SKU-002", "label": "CH.002", "quantity": 5,  "color": "Yellow", "ledMode": "On",     "buzMode": "Off"},
+      {"sku": "SKU-003", "label": "CH.001", "quantity": 15, "color": "Green",  "ledMode": "On"},
+      {"sku": "SKU-004", "label": "CH.002", "quantity": 1,  "color": "Red",    "ledMode": "On"}
     ]
   }`;
 
@@ -235,26 +238,30 @@ async function exampleBatchDispatch() {
   const p2l = new P2LClient(BROKER, PORT, { username: USERNAME, password: PASSWORD });
   await p2l.connect();
 
-  // ── Approach A: direct batchStart with label-only items ──────────────────
+  // ── Approach A: direct batchStart with label-only items (full options) ──────
   // No address needed — the bridge resolves label → address automatically.
-  // Suitable for simple one-shot batches (one item per position).
-  console.log('── Approach A: direct batchStart (label-only) ──');
+  // Per-item color, ledMode and buzMode are fully supported.
+  console.log('── Approach A: direct batchStart (label-only, full options) ──');
   const itemsA = payload.items.slice(0, 2).map(i => ({
+    label:   i.label,
     quantity: i.quantity,
-    label:    i.label,       // ← no address field; bridge resolves from DB
+    color:   i.color   ?? LightColor.GREEN,
+    ledMode: i.ledMode ?? LightMode.ON,
+    ...(i.buzMode !== undefined ? { buzMode: i.buzMode } : {}),
   }));
-  p2l.onConfirm(ev => console.log(`  ✓ ${ev.address} confirmed`));
+  p2l.onConfirm(ev =>
+    console.log(`  ✓ ${ev.address} [${ev.label}] confirmed (display=${ev.displayData})`));
   p2l.batchStart(itemsA);
-  console.log(`  Sent ${itemsA.length} items via batchStart (no address needed)\n`);
+  console.log(`  Sent ${itemsA.length} items via batchStart\n`);
 
   await new Promise(r => setTimeout(r, 1_000));   // brief pause
 
-  // ── Approach B: BatchDispatcher for queued, per-position tracking ─────────
-  // discoverLabelMap collects retained p2l/devices/# messages to build
-  // the label → address map needed to track per-position confirmations.
-  console.log('── Approach B: BatchDispatcher (queued) ──');
-  console.log('Discovering label map…');
-  const labelMap = await discoverLabelMap(p2l, 2_000);
+  // ── Approach B: BatchDispatcher (queued, per-position tracking) ─────────────
+  // labelMap() reads device states already cached from retained
+  // light_changed messages received after connect().
+  // Per-item color/ledMode/buzMode from JSON are preserved and used.
+  console.log('── Approach B: BatchDispatcher (queued, full options) ──');
+  const labelMap = p2l.labelMap();
   console.log('  labelMap:', labelMap, '\n');
 
   if (Object.keys(labelMap).length === 0) {
@@ -264,13 +271,15 @@ async function exampleBatchDispatch() {
   }
 
   const batch      = BatchDispatch.fromDict(payload);
-  const dispatcher = new BatchDispatcher(p2l, batch, { labelMap });
+  const dispatcher = new BatchDispatcher(p2l, batch);
 
   dispatcher.onItemSent = (addr, item) =>
-    console.log(`  → [${item.label}] ${item.sku} x${item.quantity}  (addr=${addr})`);
+    console.log(`  → [${item.label}] ${item.sku} x${item.quantity} ` +
+      `color=${item.color} led=${item.ledMode} buz=${item.buzMode ?? '-'}  (addr=${addr})`);
 
   dispatcher.onItemConfirmed = (addr, item, evt) =>
-    console.log(`  ✓ [${item.label}] ${item.sku} confirmed (status=${evt.status})`);
+    console.log(`  ✓ [${item.label}] ${item.sku} confirmed ` +
+      `(status=${evt.status} label=${evt.label} display=${evt.displayData})`);
 
   dispatcher.onBatchComplete = (stats) =>
     console.log(`\n★ Batch ${stats.batchId} complete — ${stats.confirmed}/${stats.total} items`);
