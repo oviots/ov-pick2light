@@ -2,7 +2,11 @@
 
 import asyncio
 import signal
-from p2l import P2LClient, LightColor, LightMode, BatchItem, TLSConfig
+from p2l import (
+    P2LClient, LightColor, LightMode, BatchItem, TLSConfig,
+    DispatchItem, WaveDispatcher,
+    BatchDispatch, BatchDispatcher, discover_label_map,
+)
 
 # EMQX broker (from appsettings.json / note.txt)
 BROKER   = "s28f7f16.ala.asia-southeast1.emqxsl.com"
@@ -17,10 +21,10 @@ PASSWORD = "P2l123456"
 async def example_single_pick():
     async with P2LClient(BROKER, PORT, username=USERNAME, password=PASSWORD) as p2l:
         print("Lighting up module 0001 — qty 5, green flash")
-        p2l.light_on("0001", quantity=5, color=LightColor.GREEN, led_mode=LightMode.FLASH)
+        p2l.light_on("0011", quantity=5, color=LightColor.GREEN, led_mode=LightMode.FLASH)
 
         print("Waiting for operator confirmation…")
-        event = await p2l.wait_confirm("0001", timeout=30)
+        event = await p2l.wait_confirm("0011", timeout=30)
         print(f"Confirmed: {event}")
 
 
@@ -126,5 +130,133 @@ async def example_wait_csv_complete():
         except TimeoutError as exc:
             print(f"Timed out: {exc}")
 
+
+# ---------------------------------------------------------------------------
+# Example 7: Wave dispatch — queue of SKUs across multiple positions
+# ---------------------------------------------------------------------------
+async def example_wave_dispatch():
+    """
+    Products to distribute and available picking positions.
+
+    The dispatcher fills all positions simultaneously.
+    When a position confirms, it immediately receives the next item.
+    Continues until every item has been dispatched and confirmed.
+    """
+    items = [
+        DispatchItem("SKU-001", quantity=5),
+        DispatchItem("SKU-002", quantity=3,  color=LightColor.BLUE),
+        DispatchItem("SKU-003", quantity=10),
+        DispatchItem("SKU-004", quantity=2,  color=LightColor.YELLOW),
+        DispatchItem("SKU-005", quantity=7,  color=LightColor.CYAN),
+        DispatchItem("SKU-006", quantity=1),
+    ]
+
+    # Addresses of available light positions
+    positions = ["0001", "0019", "0001"]
+
+    async with P2LClient(BROKER, PORT, username=USERNAME, password=PASSWORD) as p2l:
+        dispatcher = WaveDispatcher(p2l, items, positions=positions)
+
+        dispatcher.on_item_sent = lambda addr, item: \
+            print(f"  → [{addr}] Dispatched {item.sku} x{item.quantity}")
+
+        dispatcher.on_item_confirmed = lambda addr, item, evt: \
+            print(f"  ✓ [{addr}] {item.sku} confirmed (status={evt.status.value})")
+
+        dispatcher.on_wave_complete = lambda stats: \
+            print(f"\n★ Wave complete — {stats.confirmed}/{stats.total} items "
+                  f"confirmed across {stats.positions} position(s)")
+
+        print(f"Starting wave: {len(items)} items → {len(positions)} positions\n")
+        await dispatcher.start()
+        stats = await dispatcher.wait()
+        print(f"Final stats: {stats}")
+
+
+# ---------------------------------------------------------------------------
+# Example 8: Batch dispatch — items pre-assigned to specific positions by label
+# ---------------------------------------------------------------------------
+async def example_batch_dispatch():
+    """
+    Demonstrates two approaches using the JSON batch input format.
+
+    Input:  each item carries a 'label' (position name) instead of a raw address.
+            The P2L bridge resolves label → address via the client device database.
+
+    Approach A — Direct batch_start (one-shot, no queue tracking):
+        All items sent simultaneously. No sequential queuing per position.
+        Use when every position has exactly one item.
+
+    Approach B — BatchDispatcher (queued, tracked):
+        Items at the same position queue up sequentially.
+        When a position confirms, the next item for that position fires immediately.
+        Use when positions have multiple items to process in order.
+
+        CH.001 queue: SKU-001 (qty 10) → SKU-003 (qty 15)   [sequential]
+        CH.002 queue: SKU-002 (qty  5) → SKU-004 (qty  1)   [sequential]
+        CH.001 and CH.002 run in parallel.
+    """
+    import json
+
+    raw_json = """{
+        "batch_id": "jklklkj1212",
+        "items": [
+            {"sku": "SKU-001", "label": "CH.001", "quantity": 10},
+            {"sku": "SKU-002", "label": "CH.002", "quantity": 5},
+            {"sku": "SKU-003", "label": "CH.001", "quantity": 15},
+            {"sku": "SKU-004", "label": "CH.002", "quantity": 1}
+        ]
+    }"""
+
+    payload = json.loads(raw_json)
+
+    async with P2LClient(BROKER, PORT, username=USERNAME, password=PASSWORD) as p2l:
+
+        # ── Approach A: direct batch_start with label-only BatchItems ──────────
+        # No address needed — the bridge resolves label → address automatically.
+        # Suitable for simple one-shot batches (one item per position).
+        print("── Approach A: direct batch_start (label-only) ──")
+        items_a = [
+            BatchItem(None, quantity=i["quantity"], label=i["label"])
+            for i in payload["items"][:2]   # first two items only
+        ]
+        p2l.on_confirm(lambda ev: print(f"  ✓ {ev.address} confirmed"))
+        p2l.batch_start(items_a)
+        print(f"  Sent {len(items_a)} items via batch_start (no address needed)\n")
+
+        await asyncio.sleep(1)   # brief pause before approach B
+
+        # ── Approach B: BatchDispatcher for queued, per-position tracking ──────
+        # discover_label_map collects retained p2l/devices/# messages to build
+        # the label → address map needed to track per-position confirmations.
+        print("── Approach B: BatchDispatcher (queued) ──")
+        print("Discovering label map…")
+        label_map = await discover_label_map(p2l, timeout=2.0)
+        print(f"  {label_map}\n")
+
+        if not label_map:
+            print("No devices found — ensure the P2L bridge is running with labels set.")
+            return
+
+        batch      = BatchDispatch.from_dict(payload)
+        dispatcher = BatchDispatcher(p2l, batch, label_map=label_map)
+
+        dispatcher.on_item_sent = lambda addr, item: \
+            print(f"  → [{item.label}] {item.sku} x{item.quantity}  (addr={addr})")
+
+        dispatcher.on_item_confirmed = lambda addr, item, evt: \
+            print(f"  ✓ [{item.label}] {item.sku} confirmed (status={evt.status.value})")
+
+        dispatcher.on_batch_complete = lambda stats: \
+            print(f"\n★ Batch {stats['batch_id']} complete — "
+                  f"{stats['confirmed']}/{stats['total']} items")
+
+        print(f"Starting batch '{batch.batch_id}' "
+              f"({len(batch.items)} items, {len(label_map)} position(s))\n")
+        await dispatcher.start()
+        stats = await dispatcher.wait()
+        print(f"Final: {stats}")
+
+
 if __name__ == "__main__":
-    asyncio.run(example_event_stream())
+    asyncio.run(example_single_pick())

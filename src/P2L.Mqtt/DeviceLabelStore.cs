@@ -17,7 +17,8 @@ public sealed class DeviceLabelStore
     private readonly string?  _dbPath;
     private readonly ILogger  _log;
 
-    private FrozenDictionary<string, string> _labels = FrozenDictionary<string, string>.Empty;
+    private FrozenDictionary<string, string> _labels    = FrozenDictionary<string, string>.Empty;
+    private FrozenDictionary<string, string> _addresses = FrozenDictionary<string, string>.Empty;
 
     public DeviceLabelStore(string? dbPath, ILogger<DeviceLabelStore> log)
     {
@@ -30,6 +31,12 @@ public sealed class DeviceLabelStore
     /// </summary>
     public string GetLabel(string address)
         => _labels.TryGetValue(address, out var label) ? label : "";
+
+    /// <summary>
+    /// Returns the hardware address for <paramref name="label"/>, or <c>null</c> if not found.
+    /// </summary>
+    public string? GetAddress(string label)
+        => _addresses.TryGetValue(label, out var addr) ? addr : null;
 
     /// <summary>
     /// Loads (or reloads) all rows from <c>devices</c> table into memory.
@@ -49,7 +56,8 @@ public sealed class DeviceLabelStore
 
         try
         {
-            var builder = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var labelBuilder   = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var addressBuilder = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             using var conn = new SqliteConnection($"Data Source={path};Mode=ReadOnly;");
             conn.Open();
             using var cmd = conn.CreateCommand();
@@ -59,10 +67,13 @@ public sealed class DeviceLabelStore
             {
                 var addr  = reader.GetString(0);
                 var label = reader.IsDBNull(1) ? "" : reader.GetString(1);
-                builder[addr] = label;
+                labelBuilder[addr] = label;
+                if (!string.IsNullOrWhiteSpace(label))
+                    addressBuilder[label] = addr;
             }
 
-            _labels = builder.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+            _labels    = labelBuilder.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+            _addresses = addressBuilder.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
             _log.LogInformation("[Labels] Loaded {Count} device label(s) from {Path}",
                 _labels.Count, path);
         }

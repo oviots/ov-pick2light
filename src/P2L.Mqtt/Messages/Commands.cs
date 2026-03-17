@@ -46,10 +46,16 @@ public sealed record BatchStartCmd : MqttCommand
 
 public sealed record BatchItemDto
 {
-    public required string  Address  { get; init; }
-    public required int     Quantity { get; init; }
-    public LightColor?      Color    { get; init; }   // null → use batch-level color
-    public string?          Label    { get; init; }
+    /// <summary>
+    /// 4-digit hardware address of the target module.
+    /// If omitted, <see cref="Label"/> is used to resolve the address from the
+    /// client device database (<c>ClientDbPath</c>).  Items where neither field
+    /// resolves to a known address are silently skipped.
+    /// </summary>
+    public string?     Address  { get; init; }
+    public required int Quantity { get; init; }
+    public LightColor?  Color    { get; init; }   // null → use batch-level color
+    public string?      Label    { get; init; }
 }
 
 // ─── batch_finish ──────────────────────────────────────────────────────────

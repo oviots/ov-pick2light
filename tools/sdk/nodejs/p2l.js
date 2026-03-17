@@ -225,6 +225,7 @@ class P2LClient {
         ledMode:      data.ledMode,
         displayData:  data.displayData,
         blockNo:      data.blockNo,
+        label:        data.label ?? null,
       };
       this._onStateChange?.(state);
 
@@ -364,7 +365,10 @@ class P2LClient {
 
   /**
    * Start a picking batch.
-   * @param {Array<{address, quantity, color?, label?}>} items
+   * Each item may have ``address`` (hardware address) **or** ``label`` (position label).
+   * If ``address`` is omitted, the P2L bridge resolves it from ``label`` via the
+   * client device database.  Items that cannot be resolved are skipped by the bridge.
+   * @param {Array<{address?, quantity, color?, label?}>} items
    * @param {object} [opts]
    * @param {string} [opts.ledMode=LightMode.ON]
    * @param {string} [opts.buzMode]  - omit to mirror ledMode
@@ -373,12 +377,15 @@ class P2LClient {
     const cmd = {
       type:    'batch_start',
       ledMode: opts.ledMode ?? LightMode.ON,
-      items:   items.map(i => ({
-        address:  i.address,
-        quantity: i.quantity,
-        color:    i.color ?? LightColor.GREEN,
-        ...(i.label ? { label: i.label } : {}),
-      })),
+      items:   items.map(i => {
+        const item = {
+          quantity: i.quantity,
+          color:    i.color ?? LightColor.GREEN,
+        };
+        if (i.address) item.address = i.address;
+        if (i.label)   item.label   = i.label;
+        return item;
+      }),
     };
     if (opts.buzMode !== undefined) cmd.buzMode = opts.buzMode;
     this._publish(cmd);
@@ -398,4 +405,421 @@ class P2LClient {
   }
 }
 
-module.exports = { P2LClient, LightColor, LightMode, CompletionStatus };
+// ---------------------------------------------------------------------------
+// Wave dispatcher
+// ---------------------------------------------------------------------------
+
+/**
+ * One item in a wave dispatch queue.
+ *
+ * @typedef {Object} DispatchItem
+ * @property {string}  sku       - Displayed as label on the light module
+ * @property {number}  quantity  - Number shown on segment display
+ * @property {string}  [color]   - LED ring color (default GREEN)
+ * @property {string}  [ledMode] - LED mode (default ON)
+ * @property {string}  [buzMode] - Buzzer mode (optional)
+ */
+
+/**
+ * Distributes a queue of picking items across multiple light positions in parallel.
+ *
+ * Positions act as parallel workers: each is filled immediately when it becomes
+ * free (operator presses CONFIRM). The wave finishes when every item has been
+ * dispatched **and** confirmed.
+ *
+ * @example
+ * const items = [
+ *   { sku: 'SKU-001', quantity: 5 },
+ *   { sku: 'SKU-002', quantity: 3, color: LightColor.BLUE },
+ * ];
+ * const dispatcher = new WaveDispatcher(p2l, items, { positions: ['0001', '0002'] });
+ * dispatcher.onItemSent      = (addr, item) => console.log(`→ ${addr} ${item.sku}`);
+ * dispatcher.onItemConfirmed = (addr, item, evt) => console.log(`✓ ${addr} ${item.sku}`);
+ * dispatcher.onWaveComplete  = (stats) => console.log('Done', stats);
+ * dispatcher.start();
+ * await dispatcher.wait();
+ */
+class WaveDispatcher {
+  /**
+   * @param {P2LClient}     client
+   * @param {DispatchItem[]} items
+   * @param {object}         opts
+   * @param {string[]}       opts.positions - Array of device addresses
+   */
+  constructor(client, items, { positions }) {
+    this._client    = client;
+    this._queue     = [...items];          // treated as FIFO queue
+    this._positions = [...positions];
+    /** @type {Object.<string, DispatchItem|null>} address -> active item or null */
+    this._active    = Object.fromEntries(positions.map(p => [p, null]));
+    this._total     = items.length;
+    this._confirmed = 0;
+    this._cancelled = false;
+    this._prevHandler = null;
+
+    let _resolve;
+    /** @type {Promise<{total, confirmed, positions, cancelled}>} */
+    this._donePromise = new Promise(r => { _resolve = r; });
+    this._resolve = _resolve;
+
+    /** @type {((address: string, item: DispatchItem) => void) | null} */
+    this.onItemSent      = null;
+    /** @type {((address: string, item: DispatchItem, evt: object) => void) | null} */
+    this.onItemConfirmed = null;
+    /** @type {((stats: {total, confirmed, positions, cancelled}) => void) | null} */
+    this.onWaveComplete  = null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Lifecycle
+  // -------------------------------------------------------------------------
+
+  /** Begin the wave: fill all positions with items from the queue. */
+  start() {
+    if (this._total === 0) {
+      this._finish();
+      return;
+    }
+    this._prevHandler = this._client._onConfirm;
+    this._client._onConfirm = (evt) => this._handleConfirm(evt);
+    for (const addr of this._positions) {
+      this._tryDispatch(addr);
+    }
+  }
+
+  /**
+   * Wait until all items are confirmed (or timeout).
+   * @param {number} [timeoutMs]
+   * @returns {Promise<{total, confirmed, positions, cancelled}>}
+   */
+  wait(timeoutMs) {
+    if (!timeoutMs) return this._donePromise;
+    return Promise.race([
+      this._donePromise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(
+          `Wave did not complete within ${timeoutMs}ms ` +
+          `(${this._confirmed}/${this._total} confirmed)`
+        )), timeoutMs)
+      ),
+    ]);
+  }
+
+  /** Cancel the wave: turn off all active lights and stop dispatching. */
+  cancel() {
+    if (this._cancelled) return;
+    this._cancelled = true;
+    this._queue.length = 0;
+    for (const [addr, item] of Object.entries(this._active)) {
+      if (item !== null) {
+        this._client.lightOff(addr);
+        this._active[addr] = null;
+      }
+    }
+    this._client._onConfirm = this._prevHandler;
+    this._resolve({ total: this._total, confirmed: this._confirmed,
+                    positions: this._positions.length, cancelled: true });
+  }
+
+  // -------------------------------------------------------------------------
+  // Internal helpers
+  // -------------------------------------------------------------------------
+
+  _tryDispatch(address) {
+    if (this._cancelled) return;
+    if (this._queue.length === 0) {
+      this._active[address] = null;
+      if (Object.values(this._active).every(v => v === null)) {
+        this._finish();
+      }
+      return;
+    }
+    const item = this._queue.shift();
+    this._active[address] = item;
+    this._client.lightOn(address, {
+      quantity: item.quantity,
+      color:    item.color   ?? LightColor.GREEN,
+      ledMode:  item.ledMode ?? LightMode.ON,
+      ...(item.buzMode !== undefined ? { buzMode: item.buzMode } : {}),
+      label:    item.sku,
+    });
+    this.onItemSent?.(address, item);
+  }
+
+  _handleConfirm(evt) {
+    if (!(evt.address in this._active)) {
+      this._prevHandler?.(evt);
+      return;
+    }
+    const item = this._active[evt.address];
+    if (item === null) return;
+    this._confirmed++;
+    this.onItemConfirmed?.(evt.address, item, evt);
+    this._tryDispatch(evt.address);
+  }
+
+  _finish() {
+    this._client._onConfirm = this._prevHandler;
+    const stats = {
+      total:     this._total,
+      confirmed: this._confirmed,
+      positions: this._positions.length,
+      cancelled: false,
+    };
+    this.onWaveComplete?.(stats);
+    this._resolve(stats);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Batch dispatcher  (items pre-assigned to positions by label)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a `{label: address}` map by collecting retained `light_changed`
+ * messages from `p2l/devices/#`.
+ *
+ * The broker pushes retained messages immediately after subscription, so the
+ * default timeout of 2 000 ms is sufficient even for large installations.
+ * Devices without a label are excluded.
+ *
+ * @param {P2LClient} client
+ * @param {number} [timeoutMs=2000]
+ * @returns {Promise<Object.<string, string>>}  e.g. `{"CH.001": "0001", ...}`
+ */
+function discoverLabelMap(client, timeoutMs = 2_000) {
+  return new Promise((resolve) => {
+    const result = {};
+    const prev   = client._onStateChange;
+
+    client._onStateChange = (state) => {
+      if (state.label) result[state.label] = state.address;
+      prev?.(state);
+    };
+
+    setTimeout(() => {
+      client._onStateChange = prev;
+      resolve(result);
+    }, timeoutMs);
+  });
+}
+
+/**
+ * Dispatches a batch where every item targets a specific position by *label*.
+ *
+ * Items sharing the same label are queued and processed **one at a time** at
+ * that position. All positions run in **parallel**.
+ *
+ * @example
+ * const payload = JSON.parse(rawJson);
+ * const batch   = BatchDispatch.fromDict(payload);
+ * const labelMap = await discoverLabelMap(p2l);
+ * const dispatcher = new BatchDispatcher(p2l, batch, { labelMap });
+ *
+ * dispatcher.onItemSent      = (addr, item) => console.log(`→ [${item.label}] ${item.sku}`);
+ * dispatcher.onItemConfirmed = (addr, item, evt) => console.log(`✓ [${item.label}] ${item.sku}`);
+ * dispatcher.onBatchComplete = (stats) => console.log('Done', stats);
+ *
+ * dispatcher.start();
+ * const stats = await dispatcher.wait();
+ */
+class BatchDispatcher {
+  /**
+   * @param {P2LClient}  client
+   * @param {BatchDispatch} batch
+   * @param {object}     opts
+   * @param {Object.<string,string>} opts.labelMap  - `{label: address}` mapping
+   */
+  constructor(client, batch, { labelMap, ledMode = LightMode.ON }) {
+    this._client   = client;
+    this._batchId  = batch.batchId;
+    this._ledMode  = ledMode;
+
+    // Group items by address, preserving order per position
+    /** @type {Object.<string, Array>} */
+    this._queues = {};
+    const unknown = [];
+    for (const item of batch.items) {
+      const addr = labelMap[item.label];
+      if (addr === undefined) {
+        if (!unknown.includes(item.label)) unknown.push(item.label);
+        continue;
+      }
+      if (!this._queues[addr]) this._queues[addr] = [];
+      this._queues[addr].push(item);
+    }
+    if (unknown.length > 0) {
+      throw new Error(
+        `BatchDispatcher: label(s) not found in labelMap: ${unknown.join(', ')}. ` +
+        `Available: ${Object.keys(labelMap).join(', ')}`
+      );
+    }
+
+    /** @type {Object.<string, object|null>} */
+    this._active      = Object.fromEntries(Object.keys(this._queues).map(a => [a, null]));
+    this._total       = batch.items.length;
+    this._confirmed   = 0;
+    this._cancelled   = false;
+    this._prevHandler = null;
+
+    let _resolve;
+    this._donePromise = new Promise(r => { _resolve = r; });
+    this._resolve = _resolve;
+
+    /** @type {((address: string, item: object) => void) | null} */
+    this.onItemSent      = null;
+    /** @type {((address: string, item: object, evt: object) => void) | null} */
+    this.onItemConfirmed = null;
+    /** @type {((stats: {batchId, total, confirmed}) => void) | null} */
+    this.onBatchComplete = null;
+  }
+
+  /**
+   * Begin dispatching the batch.
+   *
+   * The **first** item for every position is sent in a single
+   * `batchStart` call so all lights turn on simultaneously.
+   * Subsequent items (after each confirm) are sent individually via `lightOn`.
+   */
+  start() {
+    if (this._total === 0 || Object.keys(this._queues).length === 0) {
+      this._finish();
+      return;
+    }
+    this._prevHandler = this._client._onConfirm;
+    this._client._onConfirm = (evt) => this._handleConfirm(evt);
+
+    // Pop the first item from each position and collect into one batchStart call
+    const initial = [];
+    for (const addr of Object.keys(this._queues)) {
+      const queue = this._queues[addr];
+      if (!queue || queue.length === 0) continue;
+      const item = queue.shift();
+      this._active[addr] = item;
+      initial.push({
+        address:  addr,
+        quantity: item.quantity,
+        color:    item.color   ?? LightColor.GREEN,
+        label:    item.sku,
+      });
+      this.onItemSent?.(addr, item);
+    }
+
+    if (initial.length > 0) {
+      this._client.batchStart(initial, { ledMode: this._ledMode });
+    }
+  }
+
+  /**
+   * Wait until all items are confirmed (or timeout).
+   * @param {number} [timeoutMs]
+   * @returns {Promise<{batchId, total, confirmed, cancelled}>}
+   */
+  wait(timeoutMs) {
+    if (!timeoutMs) return this._donePromise;
+    return Promise.race([
+      this._donePromise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(
+          `Batch '${this._batchId}' did not complete within ${timeoutMs}ms ` +
+          `(${this._confirmed}/${this._total} confirmed)`
+        )), timeoutMs)
+      ),
+    ]);
+  }
+
+  /** Cancel: turn off active lights and stop dispatching. */
+  cancel() {
+    if (this._cancelled) return;
+    this._cancelled = true;
+    for (const [addr, item] of Object.entries(this._active)) {
+      if (item !== null) {
+        this._client.lightOff(addr);
+        this._active[addr] = null;
+      }
+      if (this._queues[addr]) this._queues[addr].length = 0;
+    }
+    this._client._onConfirm = this._prevHandler;
+    this._resolve({ batchId: this._batchId, total: this._total,
+                    confirmed: this._confirmed, cancelled: true });
+  }
+
+  _dispatchNext(address) {
+    if (this._cancelled) return;
+    const queue = this._queues[address];
+    if (!queue || queue.length === 0) {
+      this._active[address] = null;
+      const done = Object.keys(this._queues).every(
+        a => (!this._queues[a] || this._queues[a].length === 0) && this._active[a] === null
+      );
+      if (done) this._finish();
+      return;
+    }
+    const item = queue.shift();
+    this._active[address] = item;
+    this._client.lightOn(address, {
+      quantity: item.quantity,
+      color:    item.color   ?? LightColor.GREEN,
+      ledMode:  item.ledMode ?? LightMode.ON,
+      ...(item.buzMode !== undefined ? { buzMode: item.buzMode } : {}),
+      label:    item.sku,
+    });
+    this.onItemSent?.(address, item);
+  }
+
+  _handleConfirm(evt) {
+    if (!(evt.address in this._active)) {
+      this._prevHandler?.(evt);
+      return;
+    }
+    const item = this._active[evt.address];
+    if (item === null) return;
+    this._confirmed++;
+    this.onItemConfirmed?.(evt.address, item, evt);
+    this._dispatchNext(evt.address);
+  }
+
+  _finish() {
+    this._client._onConfirm = this._prevHandler;
+    const stats = { batchId: this._batchId, total: this._total,
+                    confirmed: this._confirmed, cancelled: false };
+    this.onBatchComplete?.(stats);
+    this._resolve(stats);
+  }
+}
+
+/**
+ * Parsed batch from JSON input.
+ * @example
+ * const batch = BatchDispatch.fromDict(JSON.parse(rawJson));
+ */
+class BatchDispatch {
+  constructor(batchId, items) {
+    this.batchId = batchId;
+    this.items   = items;
+  }
+
+  /**
+   * @param {{batch_id: string, items: Array<{sku,label,quantity,color?,ledMode?}>}} d
+   * @returns {BatchDispatch}
+   */
+  static fromDict(d) {
+    return new BatchDispatch(
+      d.batch_id,
+      d.items.map(i => ({
+        sku:      i.sku,
+        label:    i.label,
+        quantity: i.quantity,
+        color:    i.color   ?? LightColor.GREEN,
+        ledMode:  i.ledMode ?? LightMode.ON,
+        buzMode:  i.buzMode,
+      }))
+    );
+  }
+}
+
+module.exports = {
+  P2LClient, LightColor, LightMode, CompletionStatus,
+  WaveDispatcher, BatchDispatch, BatchDispatcher, discoverLabelMap,
+};
+

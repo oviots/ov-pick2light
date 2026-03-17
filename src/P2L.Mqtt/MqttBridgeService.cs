@@ -53,6 +53,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                           labelStore,
                           loggerFactory.CreateLogger<MqttEventPublisher>());
         _dispatcher = new MqttCommandDispatcher(engine, _publisher, gate, csvRunner,
+                          labelStore,
                           loggerFactory.CreateLogger<MqttCommandDispatcher>());
         _options    = BuildOptions(settings);
 

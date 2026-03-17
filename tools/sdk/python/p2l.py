@@ -20,9 +20,11 @@ Quick start:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import ssl
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Optional
@@ -82,12 +84,13 @@ class ConfirmEvent:
 
 @dataclass
 class ModuleState:
-    address:      str
+    address:       str
     module_status: str
-    color:        Optional[str] = None
-    led_mode:     Optional[str] = None
-    display_data: Optional[str] = None
-    block_no:     Optional[str] = None
+    color:         Optional[str] = None
+    led_mode:      Optional[str] = None
+    display_data:  Optional[str] = None
+    block_no:      Optional[str] = None
+    label:         Optional[str] = None
 
     @staticmethod
     def from_dict(d: dict) -> "ModuleState":
@@ -98,6 +101,7 @@ class ModuleState:
             led_mode=d.get("ledMode"),
             display_data=d.get("displayData"),
             block_no=d.get("blockNo"),
+            label=d.get("label"),
         )
 
 
@@ -143,17 +147,506 @@ class TaskEvent:
 
 @dataclass
 class BatchItem:
-    address:  str
+    """
+    One item in a ``batch_start`` command.
+
+    ``address`` is optional: if omitted (``None``), the P2L bridge resolves the
+    hardware address from ``label`` using the client device database.
+    Items where neither field resolves to a known address are skipped by the bridge.
+    """
+    address:  Optional[str]           # None → bridge resolves from label
     quantity: int
-    color:    LightColor = LightColor.GREEN
-    label:    Optional[str] = None
+    color:    LightColor         = LightColor.GREEN
+    label:    Optional[str]      = None
 
     def to_dict(self) -> dict:
-        d: dict = {"address": self.address, "quantity": self.quantity,
-                   "color": self.color.value}
+        d: dict = {"quantity": self.quantity, "color": self.color.value}
+        if self.address:
+            d["address"] = self.address
         if self.label:
             d["label"] = self.label
         return d
+
+
+# ---------------------------------------------------------------------------
+# Wave dispatcher
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DispatchItem:
+    """
+    One item in a wave dispatch queue.
+
+    ``sku``      is shown on the light module segment display as the label.
+    ``quantity`` is the number displayed on the LED segment.
+    ``color``    controls the LED ring color (default GREEN).
+    """
+    sku:      str
+    quantity: int
+    color:    LightColor         = LightColor.GREEN
+    led_mode: LightMode          = LightMode.ON
+    buz_mode: Optional[LightMode] = None
+
+
+@dataclass
+class DispatchStats:
+    total:     int
+    confirmed: int
+    positions: int
+    cancelled: bool = False
+
+
+def _call(fn: Callable, *args) -> None:
+    """Invoke ``fn(*args)``, scheduling coroutines on the running loop."""
+    if inspect.iscoroutinefunction(fn):
+        asyncio.ensure_future(fn(*args))
+    else:
+        fn(*args)
+
+
+class WaveDispatcher:
+    """
+    Distributes a queue of picking items across multiple light positions in parallel.
+
+    Think of ``positions`` as parallel workers: each is filled with the next item
+    from the queue as soon as it becomes free (i.e. the operator presses CONFIRM).
+    The wave finishes when every item has been dispatched **and** confirmed.
+
+    Example::
+
+        items = [
+            DispatchItem("SKU-001", quantity=5),
+            DispatchItem("SKU-002", quantity=3, color=LightColor.BLUE),
+            DispatchItem("SKU-003", quantity=10),
+        ]
+        dispatcher = WaveDispatcher(p2l, items, positions=["0001", "0002", "0003"])
+
+        dispatcher.on_item_sent      = lambda addr, item: print(f"→ {addr} {item.sku}")
+        dispatcher.on_item_confirmed = lambda addr, item, evt: print(f"✓ {addr} {item.sku}")
+        dispatcher.on_wave_complete  = lambda stats: print(f"Done {stats.confirmed}/{stats.total}")
+
+        await dispatcher.start()
+        await dispatcher.wait()
+    """
+
+    def __init__(
+        self,
+        client: "P2LClient",
+        items: list[DispatchItem],
+        *,
+        positions: list[str],
+    ):
+        self._client    = client
+        self._queue:  deque[DispatchItem] = deque(items)
+        self._positions = list(positions)
+        # address -> currently dispatched item (None = idle)
+        self._active: dict[str, Optional[DispatchItem]] = {a: None for a in self._positions}
+        self._total     = len(items)
+        self._confirmed = 0
+        self._cancelled = False
+        self._prev_handler: Optional[Callable] = None
+        self._done = asyncio.Event()
+
+        # Public callbacks
+        self.on_item_sent:      Optional[Callable] = None  # (address, item)
+        self.on_item_confirmed: Optional[Callable] = None  # (address, item, ConfirmEvent)
+        self.on_wave_complete:  Optional[Callable] = None  # (DispatchStats)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """Begin the wave: fill all positions with items from the queue."""
+        if self._total == 0:
+            self._finish()
+            return
+        # Hook into the client's confirm path
+        self._prev_handler = self._client._on_confirm
+        self._client._on_confirm = self._handle_confirm
+        # Initial fill — all positions in parallel
+        for addr in self._positions:
+            self._try_dispatch(addr)
+
+    async def wait(self, timeout: Optional[float] = None) -> DispatchStats:
+        """Block until all items are confirmed (or *timeout* seconds elapse)."""
+        if timeout is not None:
+            try:
+                await asyncio.wait_for(self._done.wait(), timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(
+                    f"Wave did not complete within {timeout}s "
+                    f"({self._confirmed}/{self._total} confirmed)"
+                )
+        else:
+            await self._done.wait()
+        return DispatchStats(
+            total=self._total,
+            confirmed=self._confirmed,
+            positions=len(self._positions),
+            cancelled=self._cancelled,
+        )
+
+    def cancel(self) -> None:
+        """Cancel the wave: turn off all active lights and stop dispatching."""
+        if self._done.is_set():
+            return
+        self._cancelled = True
+        self._queue.clear()
+        for addr, item in self._active.items():
+            if item is not None:
+                self._client.light_off(addr)
+                self._active[addr] = None
+        self._client._on_confirm = self._prev_handler
+        self._done.set()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _try_dispatch(self, address: str) -> None:
+        """Pop the next item and send it to *address*, or mark it idle."""
+        if self._cancelled:
+            return
+        if not self._queue:
+            self._active[address] = None
+            # All positions idle with empty queue → wave complete
+            if all(v is None for v in self._active.values()):
+                self._finish()
+            return
+        item = self._queue.popleft()
+        self._active[address] = item
+        self._client.light_on(
+            address,
+            quantity=item.quantity,
+            color=item.color,
+            led_mode=item.led_mode,
+            buz_mode=item.buz_mode,
+            label=item.sku,
+        )
+        if self.on_item_sent:
+            _call(self.on_item_sent, address, item)
+
+    def _handle_confirm(self, evt: "ConfirmEvent") -> None:
+        if evt.address not in self._active:
+            # Not a managed position — pass through to previous handler
+            if self._prev_handler:
+                self._prev_handler(evt)
+            return
+        item = self._active.get(evt.address)
+        if item is None:
+            return
+        self._confirmed += 1
+        if self.on_item_confirmed:
+            _call(self.on_item_confirmed, evt.address, item, evt)
+        self._try_dispatch(evt.address)
+
+    def _finish(self) -> None:
+        self._client._on_confirm = self._prev_handler
+        self._done.set()
+        if self.on_wave_complete:
+            stats = DispatchStats(
+                total=self._total,
+                confirmed=self._confirmed,
+                positions=len(self._positions),
+            )
+            _call(self.on_wave_complete, stats)
+
+
+# ---------------------------------------------------------------------------
+# Batch dispatcher  (items pre-assigned to positions by label)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BatchDispatchItem:
+    """
+    One item in a batch, pre-assigned to a specific position identified by *label*.
+
+    ``label``    – position label as stored in the device database, e.g. ``"CH.001"``
+    ``sku``      – product code; shown on the light module as a label
+    ``quantity`` – number displayed on the segment display
+    """
+    sku:      str
+    label:    str
+    quantity: int
+    color:    LightColor          = LightColor.GREEN
+    led_mode: LightMode           = LightMode.ON
+    buz_mode: Optional[LightMode] = None
+
+
+@dataclass
+class BatchDispatch:
+    """
+    A batch of items to dispatch, each pre-assigned to a position label.
+
+    Parsed directly from the JSON input format::
+
+        {
+            "batch_id": "abc123",
+            "items": [
+                {"sku": "SKU-001", "label": "CH.001", "quantity": 10},
+                {"sku": "SKU-002", "label": "CH.002", "quantity": 5},
+                {"sku": "SKU-003", "label": "CH.001", "quantity": 15},
+                {"sku": "SKU-004", "label": "CH.002", "quantity": 1}
+            ]
+        }
+
+    Items sharing the same ``label`` are processed **sequentially** at that
+    position; items at different positions run in **parallel**.
+    """
+    batch_id: str
+    items:    list[BatchDispatchItem]
+
+    @staticmethod
+    def from_dict(d: dict) -> "BatchDispatch":
+        return BatchDispatch(
+            batch_id=d["batch_id"],
+            items=[
+                BatchDispatchItem(
+                    sku=i["sku"],
+                    label=i["label"],
+                    quantity=i["quantity"],
+                    color=LightColor(i["color"]) if "color" in i else LightColor.GREEN,
+                    led_mode=LightMode(i["ledMode"]) if "ledMode" in i else LightMode.ON,
+                )
+                for i in d["items"]
+            ],
+        )
+
+
+async def discover_label_map(
+    client: "P2LClient",
+    timeout: float = 2.0,
+) -> dict[str, str]:
+    """
+    Build a ``{label: address}`` map by collecting retained ``light_changed``
+    messages from ``p2l/devices/#``.
+
+    The broker pushes retained messages immediately after subscription, so the
+    default *timeout* of 2 seconds is sufficient even for large installations.
+    Devices that have no label set are excluded from the result.
+
+    Example::
+
+        label_map = await discover_label_map(p2l)
+        # {"CH.001": "0001", "CH.002": "0002", ...}
+    """
+    result: dict[str, str] = {}
+    prev = client._on_state
+
+    def _collect(state: ModuleState) -> None:
+        if state.label:
+            result[state.label] = state.address
+        if prev:
+            prev(state)
+
+    client._on_state = _collect
+    try:
+        await asyncio.sleep(timeout)
+    finally:
+        client._on_state = prev
+
+    return result
+
+
+class BatchDispatcher:
+    """
+    Dispatches a :class:`BatchDispatch` where every item targets a specific
+    position identified by its *label* (e.g. ``"CH.001"``).
+
+    Items sharing the same label are queued and processed **one at a time** at
+    that position.  All positions work in **parallel**.
+
+    Requires a ``label_map`` dict ``{label: address}`` to resolve position
+    labels to hardware addresses.  Use :func:`discover_label_map` to build
+    this automatically from the MQTT broker's retained device states.
+
+    Example::
+
+        import json
+
+        payload   = json.loads(raw_json)
+        batch     = BatchDispatch.from_dict(payload)
+        label_map = await discover_label_map(p2l)
+        dispatcher = BatchDispatcher(p2l, batch, label_map=label_map)
+
+        dispatcher.on_item_sent      = lambda addr, item: \\
+            print(f"→ [{item.label}] {item.sku} x{item.quantity}")
+        dispatcher.on_item_confirmed = lambda addr, item, evt: \\
+            print(f"✓ [{item.label}] {item.sku}")
+        dispatcher.on_batch_complete = lambda stats: \\
+            print(f"Batch {stats['batch_id']} done ({stats['confirmed']}/{stats['total']})")
+
+        await dispatcher.start()
+        await dispatcher.wait()
+    """
+
+    def __init__(
+        self,
+        client: "P2LClient",
+        batch: BatchDispatch,
+        *,
+        label_map: dict[str, str],
+        led_mode: LightMode = LightMode.ON,
+    ):
+        self._client   = client
+        self._batch_id = batch.batch_id
+        self._led_mode = led_mode
+
+        # Group items by address (preserving insertion order per position)
+        addr_queues: dict[str, deque[BatchDispatchItem]] = {}
+        unknown: list[str] = []
+        for item in batch.items:
+            addr = label_map.get(item.label)
+            if addr is None:
+                if item.label not in unknown:
+                    unknown.append(item.label)
+                continue
+            if addr not in addr_queues:
+                addr_queues[addr] = deque()
+            addr_queues[addr].append(item)
+
+        if unknown:
+            raise ValueError(
+                f"BatchDispatcher: label(s) not found in label_map: {unknown}. "
+                f"Available: {list(label_map.keys())}"
+            )
+
+        self._queues: dict[str, deque[BatchDispatchItem]] = addr_queues
+        self._active: dict[str, Optional[BatchDispatchItem]] = {a: None for a in addr_queues}
+        self._total     = len(batch.items)
+        self._confirmed = 0
+        self._cancelled = False
+        self._done      = asyncio.Event()
+        self._prev_handler: Optional[Callable] = None
+
+        # Public callbacks
+        self.on_item_sent:      Optional[Callable] = None  # (address, item)
+        self.on_item_confirmed: Optional[Callable] = None  # (address, item, ConfirmEvent)
+        self.on_batch_complete: Optional[Callable] = None  # (stats dict)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> None:
+        """
+        Begin dispatching the batch.
+
+        The **first** item for every position is sent in a single
+        :meth:`~P2LClient.batch_start` call so all lights turn on
+        simultaneously.  Subsequent items (after each confirm) are sent
+        individually via :meth:`~P2LClient.light_on`.
+        """
+        if self._total == 0 or not self._queues:
+            self._finish()
+            return
+        self._prev_handler = self._client._on_confirm
+        self._client._on_confirm = self._handle_confirm
+
+        # Pop the first item from each position queue and collect into one batch
+        initial: list[BatchItem] = []
+        for addr, queue in self._queues.items():
+            if not queue:
+                continue
+            item = queue.popleft()
+            self._active[addr] = item
+            initial.append(BatchItem(
+                address=addr,
+                quantity=item.quantity,
+                color=item.color,
+                label=item.sku,
+            ))
+            if self.on_item_sent:
+                _call(self.on_item_sent, addr, item)
+
+        if initial:
+            self._client.batch_start(initial, led_mode=self._led_mode)
+
+    async def wait(self, timeout: Optional[float] = None) -> dict:
+        """Block until every item is confirmed (or *timeout* seconds elapse)."""
+        if timeout is not None:
+            try:
+                await asyncio.wait_for(self._done.wait(), timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(
+                    f"Batch '{self._batch_id}' did not complete within {timeout}s "
+                    f"({self._confirmed}/{self._total} confirmed)"
+                )
+        else:
+            await self._done.wait()
+        return {
+            "batch_id":  self._batch_id,
+            "total":     self._total,
+            "confirmed": self._confirmed,
+            "cancelled": self._cancelled,
+        }
+
+    def cancel(self) -> None:
+        """Turn off all active lights and stop dispatching."""
+        if self._done.is_set():
+            return
+        self._cancelled = True
+        for addr, item in self._active.items():
+            if item is not None:
+                self._client.light_off(addr)
+                self._active[addr] = None
+            self._queues.get(addr, deque()).clear()
+        self._client._on_confirm = self._prev_handler
+        self._done.set()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _dispatch_next(self, address: str) -> None:
+        if self._cancelled:
+            return
+        queue = self._queues.get(address)
+        if not queue:
+            self._active[address] = None
+            # Done when every position's queue is empty and no light is active
+            if all(
+                not self._queues[a] and self._active[a] is None
+                for a in self._queues
+            ):
+                self._finish()
+            return
+        item = queue.popleft()
+        self._active[address] = item
+        self._client.light_on(
+            address,
+            quantity=item.quantity,
+            color=item.color,
+            led_mode=item.led_mode,
+            buz_mode=item.buz_mode,
+            label=item.sku,
+        )
+        if self.on_item_sent:
+            _call(self.on_item_sent, address, item)
+
+    def _handle_confirm(self, evt: "ConfirmEvent") -> None:
+        if evt.address not in self._active:
+            if self._prev_handler:
+                self._prev_handler(evt)
+            return
+        item = self._active.get(evt.address)
+        if item is None:
+            return
+        self._confirmed += 1
+        if self.on_item_confirmed:
+            _call(self.on_item_confirmed, evt.address, item, evt)
+        self._dispatch_next(evt.address)
+
+    def _finish(self) -> None:
+        self._client._on_confirm = self._prev_handler
+        self._done.set()
+        if self.on_batch_complete:
+            _call(self.on_batch_complete, {
+                "batch_id":  self._batch_id,
+                "total":     self._total,
+                "confirmed": self._confirmed,
+            })
 
 
 # ---------------------------------------------------------------------------

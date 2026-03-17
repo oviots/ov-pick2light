@@ -4,7 +4,7 @@
  * Run: node example.js
  */
 
-const { P2LClient, LightColor, LightMode } = require('./p2l');
+const { P2LClient, LightColor, LightMode, WaveDispatcher, BatchDispatch, BatchDispatcher, discoverLabelMap } = require('./p2l');
 
 // EMQX broker (from appsettings.json)
 const BROKER   = 's28f7f16.ala.asia-southeast1.emqxsl.com';
@@ -149,6 +149,136 @@ async function exampleWaitCsvComplete() {
   } catch (err) {
     console.error('Timed out:', err.message);
   }
+
+  await p2l.disconnect();
+}
+
+// ---------------------------------------------------------------------------
+// Example 7: Wave dispatch — queue of SKUs across multiple positions
+// ---------------------------------------------------------------------------
+async function exampleWaveDispatch() {
+  /**
+   * Products to distribute and available picking positions.
+   *
+   * The dispatcher fills all positions simultaneously.
+   * When a position confirms, it immediately receives the next item.
+   * Continues until every item has been dispatched and confirmed.
+   */
+  const items = [
+    { sku: 'SKU-001', quantity: 5 },
+    { sku: 'SKU-002', quantity: 3,  color: LightColor.BLUE },
+    { sku: 'SKU-003', quantity: 10 },
+    { sku: 'SKU-004', quantity: 2,  color: LightColor.YELLOW },
+    { sku: 'SKU-005', quantity: 7,  color: LightColor.CYAN },
+    { sku: 'SKU-006', quantity: 1 },
+  ];
+
+  // Addresses of available light positions
+  const positions = ['0001', '0002', '0003'];
+
+  const p2l = new P2LClient(BROKER, PORT, { username: USERNAME, password: PASSWORD });
+  await p2l.connect();
+
+  const dispatcher = new WaveDispatcher(p2l, items, { positions });
+
+  dispatcher.onItemSent = (addr, item) =>
+    console.log(`  → [${addr}] Dispatched ${item.sku} x${item.quantity}`);
+
+  dispatcher.onItemConfirmed = (addr, item, evt) =>
+    console.log(`  ✓ [${addr}] ${item.sku} confirmed (status=${evt.status})`);
+
+  dispatcher.onWaveComplete = (stats) =>
+    console.log(`\n★ Wave complete — ${stats.confirmed}/${stats.total} items confirmed across ${stats.positions} position(s)`);
+
+  console.log(`Starting wave: ${items.length} items → ${positions.length} positions\n`);
+  dispatcher.start();
+  const stats = await dispatcher.wait();
+  console.log('Final stats:', stats);
+
+  await p2l.disconnect();
+}
+
+// ---------------------------------------------------------------------------
+// Example 8: Batch dispatch — items pre-assigned to positions by label
+// ---------------------------------------------------------------------------
+async function exampleBatchDispatch() {
+  /**
+   * Demonstrates two approaches using the JSON batch input format.
+   *
+   * Input:  each item carries a 'label' (position name) instead of a raw address.
+   *         The P2L bridge resolves label → address via the client device database.
+   *
+   * Approach A — Direct batchStart (one-shot, no queue tracking):
+   *   All items sent simultaneously. No sequential queuing per position.
+   *   Use when every position has exactly one item.
+   *
+   * Approach B — BatchDispatcher (queued, tracked):
+   *   Items at the same position queue up sequentially.
+   *   When a position confirms, the next item for that position fires immediately.
+   *
+   *   CH.001: SKU-001 (qty 10) → SKU-003 (qty 15)  [sequential]
+   *   CH.002: SKU-002 (qty  5) → SKU-004 (qty  1)  [sequential]
+   *   CH.001 and CH.002 run in parallel.
+   */
+  const rawJson = `{
+    "batch_id": "jklklkj1212",
+    "items": [
+      {"sku": "SKU-001", "label": "CH.001", "quantity": 10},
+      {"sku": "SKU-002", "label": "CH.002", "quantity": 5},
+      {"sku": "SKU-003", "label": "CH.001", "quantity": 15},
+      {"sku": "SKU-004", "label": "CH.002", "quantity": 1}
+    ]
+  }`;
+
+  const payload = JSON.parse(rawJson);
+
+  const p2l = new P2LClient(BROKER, PORT, { username: USERNAME, password: PASSWORD });
+  await p2l.connect();
+
+  // ── Approach A: direct batchStart with label-only items ──────────────────
+  // No address needed — the bridge resolves label → address automatically.
+  // Suitable for simple one-shot batches (one item per position).
+  console.log('── Approach A: direct batchStart (label-only) ──');
+  const itemsA = payload.items.slice(0, 2).map(i => ({
+    quantity: i.quantity,
+    label:    i.label,       // ← no address field; bridge resolves from DB
+  }));
+  p2l.onConfirm(ev => console.log(`  ✓ ${ev.address} confirmed`));
+  p2l.batchStart(itemsA);
+  console.log(`  Sent ${itemsA.length} items via batchStart (no address needed)\n`);
+
+  await new Promise(r => setTimeout(r, 1_000));   // brief pause
+
+  // ── Approach B: BatchDispatcher for queued, per-position tracking ─────────
+  // discoverLabelMap collects retained p2l/devices/# messages to build
+  // the label → address map needed to track per-position confirmations.
+  console.log('── Approach B: BatchDispatcher (queued) ──');
+  console.log('Discovering label map…');
+  const labelMap = await discoverLabelMap(p2l, 2_000);
+  console.log('  labelMap:', labelMap, '\n');
+
+  if (Object.keys(labelMap).length === 0) {
+    console.log('No devices found — ensure the P2L bridge is running with labels configured.');
+    await p2l.disconnect();
+    return;
+  }
+
+  const batch      = BatchDispatch.fromDict(payload);
+  const dispatcher = new BatchDispatcher(p2l, batch, { labelMap });
+
+  dispatcher.onItemSent = (addr, item) =>
+    console.log(`  → [${item.label}] ${item.sku} x${item.quantity}  (addr=${addr})`);
+
+  dispatcher.onItemConfirmed = (addr, item, evt) =>
+    console.log(`  ✓ [${item.label}] ${item.sku} confirmed (status=${evt.status})`);
+
+  dispatcher.onBatchComplete = (stats) =>
+    console.log(`\n★ Batch ${stats.batchId} complete — ${stats.confirmed}/${stats.total} items`);
+
+  console.log(`Starting batch '${batch.batchId}' (${batch.items.length} items, ${Object.keys(labelMap).length} position(s))\n`);
+  dispatcher.start();
+  const stats = await dispatcher.wait();
+  console.log('Final:', stats);
 
   await p2l.disconnect();
 }

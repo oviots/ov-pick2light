@@ -19,15 +19,18 @@ internal sealed class MqttCommandDispatcher
     private readonly ILogger             _log;
     private readonly PreemptionGate      _gate;
     private readonly CsvPickTaskRunner?  _csvRunner;
+    private readonly DeviceLabelStore    _labels;
 
     public MqttCommandDispatcher(PickingEngine engine, MqttEventPublisher publisher,
                                   PreemptionGate gate, CsvPickTaskRunner? csvRunner,
+                                  DeviceLabelStore labels,
                                   ILogger<MqttCommandDispatcher> log)
     {
         _engine    = engine;
         _publisher = publisher;
         _gate      = gate;
         _csvRunner = csvRunner;
+        _labels    = labels;
         _log       = log;
     }
 
@@ -81,15 +84,38 @@ internal sealed class MqttCommandDispatcher
                         P2LMqttJsonContext.Default.BatchStartCmd);
                     if (cmd is null) break;
                     var batchBuzMode = cmd.BuzMode ?? cmd.LedMode;
-                    var instructions = cmd.Items.Select(i => new PickingInstruction
+                    var instructions = new List<PickingInstruction>(cmd.Items.Count);
+                    foreach (var i in cmd.Items)
                     {
-                        Address  = i.Address,
-                        Quantity = i.Quantity,
-                        Color    = i.Color ?? cmd.Color,   // per-item color, falls back to batch default
-                        LedMode  = cmd.LedMode,
-                        BuzMode  = batchBuzMode,
-                        Label    = i.Label,
-                    }).ToList();
+                        // Resolve address: use explicit address, or look up by label.
+                        var addr = i.Address;
+                        if (string.IsNullOrWhiteSpace(addr))
+                        {
+                            if (string.IsNullOrWhiteSpace(i.Label)) continue;
+                            addr = _labels.GetAddress(i.Label);
+                            if (addr is null)
+                            {
+                                _log.LogWarning(
+                                    "[MQTT] batch_start: label '{L}' not found in device database — item skipped",
+                                    i.Label);
+                                continue;
+                            }
+                        }
+                        instructions.Add(new PickingInstruction
+                        {
+                            Address  = addr,
+                            Quantity = i.Quantity,
+                            Color    = i.Color ?? cmd.Color,
+                            LedMode  = cmd.LedMode,
+                            BuzMode  = batchBuzMode,
+                            Label    = i.Label,
+                        });
+                    }
+                    if (instructions.Count == 0)
+                    {
+                        _log.LogWarning("[MQTT] batch_start: no valid items after address resolution — command ignored");
+                        break;
+                    }
                     await _engine.StartBatchAsync(instructions, ct);
                     _log.LogInformation("[MQTT] batch_start count={C}", instructions.Count);
                     break;
