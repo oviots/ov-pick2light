@@ -1,0 +1,32 @@
+[Unit]
+Description=Pick2Light Web Dashboard (P2L Client)
+Documentation=https://github.com/your-org/p2l
+After=network-online.target p2l.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=p2l
+Group=p2l
+WorkingDirectory=/opt/p2l/client
+ExecStart=/opt/p2l/client/venv/bin/python run.py
+Environment=P2L_CLIENT_HOST=0.0.0.0
+Environment=P2L_CLIENT_PORT=8765
+
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+Restart=always
+RestartSec=5s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=p2l-client
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/p2l/client /opt/p2l/client/logs
+
+[Install]
+WantedBy=multi-user.target
