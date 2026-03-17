@@ -234,6 +234,22 @@
     <!-- ── Settings Tab ───────────────────────────────────────────────────── -->
     <div id="pane-settings" class="tab-pane">
       <div style="max-width:520px">
+
+        <!-- Sub-tab bar -->
+        <div class="sub-tab-bar">
+          <button class="sub-tab-btn active" data-subtab="client">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-.15em"><path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h7A2.5 2.5 0 0 1 14 2.5v11a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 2 13.5v-11zM4.5 1.5A1 1 0 0 0 3.5 2.5v11a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1v-11a1 1 0 0 0-1-1h-7z"/></svg>
+            Client Settings
+          </button>
+          <button class="sub-tab-btn" data-subtab="bridge">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-.15em"><path d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 1 1 0-5.86 2.929 2.929 0 0 1 0 5.858z"/></svg>
+            Bridge Config
+          </button>
+        </div>
+
+        <!-- ── Sub-pane: Client Settings ─────────────────────────────── -->
+        <div id="sub-pane-client" class="sub-tab-pane active">
+
         <!-- MQTT -->
         <div class="card mb-2">
           <div class="card-title" style="display:flex;align-items:center;gap:.75rem">
@@ -350,6 +366,161 @@
 
         <button id="btn-save-config" class="btn btn-primary">Save Settings</button>
 
+        </div><!-- /sub-pane-client -->
+
+        <!-- ── Sub-pane: Bridge Config ───────────────────────────────── -->
+        <div id="sub-pane-bridge" class="sub-tab-pane" style="display:none">
+
+        <!-- P2L Bridge Configuration (appsettings.json) -->
+        <div class="card mb-2">
+          <div class="card-title" style="display:flex;align-items:center;gap:.75rem">
+            P2L Bridge Configuration
+            <span style="font-size:.72rem;font-weight:400;color:var(--text-muted);background:var(--bg-card);border:1px solid var(--border);border-radius:4px;padding:2px 7px">appsettings.json</span>
+          </div>
+          <p style="font-size:.8rem;color:var(--text-muted);margin-bottom:.75rem">
+            Configure the P2L .NET bridge service. <strong>Restart the service</strong> to apply changes.
+            <br>File: <code id="appsettings-path" style="font-size:.75rem">—</code>
+          </p>
+
+          <!-- Gateway -->
+          <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:.5rem">Gateway (Aioi Hardware)</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Host / IP</label>
+              <input id="as-gw-host" class="form-input" placeholder="192.168.1.254">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Port</label>
+              <input id="as-gw-port" class="form-input" type="number" placeholder="5003">
+            </div>
+            <div class="form-group" style="max-width:90px">
+              <label class="form-label">Block No</label>
+              <input id="as-gw-block" class="form-input" maxlength="2" placeholder="00">
+            </div>
+          </div>
+
+          <!-- MQTT (bridge) -->
+          <div style="border-top:1px solid var(--border);padding-top:.75rem;margin-top:.5rem">
+            <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:.5rem">
+              MQTT (Bridge → Broker)
+              <span style="font-weight:400;text-transform:none;letter-spacing:0">— used by the .NET service</span>
+            </div>
+            <div class="form-group" style="display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem">
+              <input id="as-mqtt-enabled" type="checkbox" style="width:16px;height:16px">
+              <label class="form-label" style="margin:0" for="as-mqtt-enabled">Enable MQTT</label>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Broker Host</label>
+                <input id="as-mqtt-host" class="form-input" placeholder="localhost">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Port</label>
+                <input id="as-mqtt-port" class="form-input" type="number" placeholder="8883">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Client ID</label>
+                <input id="as-mqtt-client-id" class="form-input" placeholder="p2l-warehouse-01">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Username</label>
+                <input id="as-mqtt-username" class="form-input" placeholder="(optional)">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Password</label>
+                <input id="as-mqtt-password" class="form-input" type="password" placeholder="(optional)">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Client DB Path</label>
+                <input id="as-mqtt-db-path" class="form-input" placeholder="client/p2l_devices.db">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Command Topic</label>
+                <input id="as-mqtt-cmd-topic" class="form-input" placeholder="p2l/commands">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Event Topic</label>
+                <input id="as-mqtt-event-topic" class="form-input" placeholder="p2l/events">
+              </div>
+            </div>
+            <!-- TLS -->
+            <div style="border-top:1px solid var(--border);padding-top:.6rem;margin-top:.25rem">
+              <div style="font-size:.75rem;font-weight:600;margin-bottom:.4rem;color:var(--text-muted)">TLS</div>
+              <div class="form-row" style="align-items:center">
+                <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+                  <input id="as-mqtt-tls" type="checkbox" style="width:16px;height:16px">
+                  <label class="form-label" style="margin:0" for="as-mqtt-tls">Enable TLS</label>
+                </div>
+                <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+                  <input id="as-mqtt-tls-untrusted" type="checkbox" style="width:16px;height:16px">
+                  <label class="form-label" style="margin:0" for="as-mqtt-tls-untrusted">Allow untrusted certs</label>
+                </div>
+              </div>
+              <div class="form-group">
+                <label class="form-label">CA Certificate Path (optional)</label>
+                <input id="as-mqtt-ca-cert" class="form-input" placeholder="/path/to/ca.crt">
+              </div>
+            </div>
+          </div>
+
+          <!-- Self-Heal -->
+          <div style="border-top:1px solid var(--border);padding-top:.75rem;margin-top:.5rem">
+            <div style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:.5rem">Self-Heal</div>
+            <div class="form-row" style="align-items:center">
+              <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+                <input id="as-sh-enabled" type="checkbox" style="width:16px;height:16px">
+                <label class="form-label" style="margin:0" for="as-sh-enabled">Enabled</label>
+              </div>
+              <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+                <input id="as-state-persist" type="checkbox" style="width:16px;height:16px">
+                <label class="form-label" style="margin:0" for="as-state-persist">Enable State Persistence</label>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">Max Restarts</label>
+                <input id="as-sh-max-restarts" class="form-input" type="number" placeholder="5" style="max-width:90px">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Window (min)</label>
+                <input id="as-sh-window" class="form-input" type="number" placeholder="10" style="max-width:90px">
+              </div>
+              <div class="form-group">
+                <label class="form-label">Backoff (sec)</label>
+                <input id="as-sh-backoff" class="form-input" type="number" placeholder="3" style="max-width:90px">
+              </div>
+            </div>
+          </div>
+
+          <!-- Log level -->
+          <div style="border-top:1px solid var(--border);padding-top:.75rem;margin-top:.5rem">
+            <div class="form-group" style="max-width:200px">
+              <label class="form-label">Log Level</label>
+              <select id="as-log-level" class="form-input">
+                <option value="Trace">Trace</option>
+                <option value="Debug">Debug</option>
+                <option value="Information">Information</option>
+                <option value="Warning">Warning</option>
+                <option value="Error">Error</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="margin-top:.75rem;display:flex;gap:.5rem;align-items:center">
+            <button id="btn-save-appsettings" class="btn btn-primary">Save Bridge Config</button>
+            <span id="appsettings-save-status" style="font-size:.8rem;color:var(--text-muted)"></span>
+          </div>
+        </div>
+
+        </div><!-- /sub-pane-bridge -->
+
+        <!-- About (always visible below sub-tabs) -->
         <div class="card" style="margin-top:1rem">
           <div class="card-title">About</div>
           <p style="font-size:.8rem;color:var(--text-muted);line-height:1.8">

@@ -54,6 +54,26 @@ function initTabs() {
   });
 }
 
+function initSubTabs() {
+  document.querySelectorAll('.sub-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const subtab = btn.dataset.subtab;
+      const bar = btn.closest('.sub-tab-bar');
+      const container = bar.parentElement;
+      // Toggle button active state
+      bar.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      // Show/hide sub-panes via inline style (avoids CSS cache issues)
+      container.querySelectorAll(':scope > .sub-tab-pane').forEach(p => {
+        p.style.display = 'none';
+      });
+      const pane = document.getElementById('sub-pane-' + subtab);
+      if (pane) pane.style.display = 'block';
+      if (subtab === 'bridge') loadAppsettings();
+    });
+  });
+}
+
 // ── WebSocket ─────────────────────────────────────────────────────────────
 function connectWs() {
   const wsUrl = `ws://${location.host}/ws`;
@@ -916,6 +936,85 @@ async function saveConfig() {
   }
 }
 
+// ── Bridge Appsettings ─────────────────────────────────────────────────────
+async function loadAppsettings() {
+  try {
+    const d = await api('GET', '/api/appsettings');
+    $('appsettings-path').textContent = d.path || '—';
+
+    const gw = d.gateway || {};
+    $('as-gw-host').value = gw.host || '';
+    $('as-gw-port').value = gw.port ?? '';
+    $('as-gw-block').value = gw.block_no || '';
+
+    const mq = d.mqtt || {};
+    $('as-mqtt-enabled').checked = mq.enabled ?? true;
+    $('as-mqtt-host').value = mq.host || '';
+    $('as-mqtt-port').value = mq.port ?? '';
+    $('as-mqtt-client-id').value = mq.client_id || '';
+    $('as-mqtt-username').value = mq.username || '';
+    $('as-mqtt-password').value = '';   // never pre-fill passwords
+    $('as-mqtt-db-path').value = mq.client_db_path || '';
+    $('as-mqtt-cmd-topic').value = mq.command_topic || '';
+    $('as-mqtt-event-topic').value = mq.event_topic || '';
+
+    const tls = mq.tls || {};
+    $('as-mqtt-tls').checked = tls.enabled ?? false;
+    $('as-mqtt-tls-untrusted').checked = tls.allow_untrusted ?? false;
+    $('as-mqtt-ca-cert').value = tls.ca_cert_path || '';
+
+    const sh = d.selfheal || {};
+    $('as-sh-enabled').checked = sh.enabled ?? true;
+    $('as-state-persist').checked = d.enable_state_persistence ?? false;
+    $('as-sh-max-restarts').value = sh.max_restarts ?? '';
+    $('as-sh-window').value = sh.restart_window_minutes ?? '';
+    $('as-sh-backoff').value = sh.backoff_seconds ?? '';
+
+    const lvlSel = $('as-log-level');
+    if (lvlSel) lvlSel.value = d.log_level || 'Information';
+
+    $('appsettings-save-status').textContent = '';
+  } catch (e) {
+    $('appsettings-save-status').textContent = 'Load failed: ' + e.message;
+  }
+}
+
+async function saveAppsettings() {
+  const body = {
+    gateway_host: $('as-gw-host').value || null,
+    gateway_port: parseInt($('as-gw-port').value) || null,
+    gateway_block_no: $('as-gw-block').value || null,
+    mqtt_enabled: $('as-mqtt-enabled').checked,
+    mqtt_host: $('as-mqtt-host').value || null,
+    mqtt_port: parseInt($('as-mqtt-port').value) || null,
+    mqtt_client_id: $('as-mqtt-client-id').value || null,
+    mqtt_username: $('as-mqtt-username').value || null,
+    mqtt_password: $('as-mqtt-password').value || null,
+    mqtt_client_db_path: $('as-mqtt-db-path').value || null,
+    mqtt_command_topic: $('as-mqtt-cmd-topic').value || null,
+    mqtt_event_topic: $('as-mqtt-event-topic').value || null,
+    mqtt_tls_enabled: $('as-mqtt-tls').checked,
+    mqtt_tls_allow_untrusted: $('as-mqtt-tls-untrusted').checked,
+    mqtt_tls_ca_cert_path: $('as-mqtt-ca-cert').value || null,
+    selfheal_enabled: $('as-sh-enabled').checked,
+    enable_state_persistence: $('as-state-persist').checked,
+    selfheal_max_restarts: parseInt($('as-sh-max-restarts').value) || null,
+    selfheal_restart_window_minutes: parseInt($('as-sh-window').value) || null,
+    selfheal_backoff_seconds: parseInt($('as-sh-backoff').value) || null,
+    log_level: $('as-log-level')?.value || null,
+  };
+  const status = $('appsettings-save-status');
+  try {
+    await api('PUT', '/api/appsettings', body);
+    status.style.color = 'var(--success)';
+    status.textContent = '✓ Saved';
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  } catch (e) {
+    status.style.color = 'var(--danger)';
+    status.textContent = 'Error: ' + e.message;
+  }
+}
+
 // ── Device Export ──────────────────────────────────────────────────────────
 function exportDevicesCSV() {
   const devices = Object.values(state.devices).sort((a, b) => {
@@ -1129,6 +1228,7 @@ function buildColorPickers() {
 
 async function init() {
   initTabs();
+  initSubTabs();
   buildColorPickers();
 
   // Wire up header buttons
@@ -1171,6 +1271,7 @@ async function init() {
 
   // Wire up settings
   $('btn-save-config')?.addEventListener('click', saveConfig);
+  $('btn-save-appsettings')?.addEventListener('click', saveAppsettings);
 
   // Wire up data processing tab
   $('btn-clear-address-table')?.addEventListener('click', () => {

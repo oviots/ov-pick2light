@@ -136,6 +136,33 @@ html, body {
 .tab-pane { display: none; }
 .tab-pane.active { display: block; }
 
+/* ── Sub-tabs (inside Settings) ──────────────────────────────────────────── */
+.sub-tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.25rem;
+  gap: .25rem;
+}
+.sub-tab-btn {
+  padding: .45rem .9rem;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: .82rem;
+  font-weight: 500;
+  transition: all .15s;
+  margin-bottom: -1px;
+}
+.sub-tab-btn:hover { color: var(--text); }
+.sub-tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.sub-tab-pane { display: none; }
+.sub-tab-pane.active { display: block; }
+
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 .btn {
   display: inline-flex;

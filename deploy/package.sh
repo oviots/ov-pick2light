@@ -97,32 +97,43 @@ build_dotnet() {
     echo "$BIN"
 }
 
-# ── Build Python client wheel ─────────────────────────────────────────────────
-check_python_client() {
-    [[ -d "$CLIENT_DIR/app" ]]     || error "client/app/ not found — is client/ present?"
-    [[ -f "$CLIENT_DIR/run.py" ]]  || error "client/run.py not found"
-    [[ -f "$CLIENT_DIR/requirements.txt" ]] || error "client/requirements.txt not found"
-    ok "Python client source verified"
+# ── Build Python client binary (PyInstaller) ─────────────────────────────────
+build_client() {
+    local RID="$1"
+    local CLIENT_BIN_DIR="$ARTIFACTS_DIR/client/$RID"
+    info "Building P2L client (PyInstaller) for $RID ..."
+    # build-client.sh echoes the binary path to stdout; all logs go to stderr
+    local BIN
+    BIN="$(bash "$DEPLOY_DIR/build-client.sh" "$CLIENT_BIN_DIR")"
+    [[ -f "$BIN" ]] || error "Client binary not found: $BIN"
+    ok "Client binary: $BIN ($(du -sh "$BIN" | cut -f1))"
+    echo "$BIN"
 }
 
 # ── Stage package ─────────────────────────────────────────────────────────────
 stage_package() {
     local RID="$1"
-    local BIN_PATH="$2"
+    local P2L_BIN="$2"
+    local CLIENT_BIN="$3"
     local PKG_NAME="p2l-${VERSION}-${RID}"
     local STAGE="$DIST_DIR/staging/$PKG_NAME"
 
     info "Staging package: $PKG_NAME ..."
     rm -rf "$STAGE"
-    mkdir -p "$STAGE/bin" "$STAGE/client" "$STAGE/config" "$STAGE/deploy"
+    mkdir -p "$STAGE/bin" "$STAGE/config" "$STAGE/deploy"
 
-    # ── P2L binary ──────────────────────────────────────────────────────────
+    # ── P2L bridge binary ────────────────────────────────────────────────────
     local BIN_NAME="p2l"; [[ "$RID" == win-* ]] && BIN_NAME="p2l.exe"
-    cp "$BIN_PATH" "$STAGE/bin/$BIN_NAME"
+    cp "$P2L_BIN" "$STAGE/bin/$BIN_NAME"
     chmod +x "$STAGE/bin/$BIN_NAME"
 
+    # ── P2L client binary ────────────────────────────────────────────────────
+    local CLIENT_NAME="p2l-client"; [[ "$RID" == win-* ]] && CLIENT_NAME="p2l-client.exe"
+    cp "$CLIENT_BIN" "$STAGE/bin/$CLIENT_NAME"
+    chmod +x "$STAGE/bin/$CLIENT_NAME"
+
     # ── appsettings.json ─────────────────────────────────────────────────────
-    local SETTINGS_SRC="$(dirname "$BIN_PATH")/appsettings.json"
+    local SETTINGS_SRC="$(dirname "$P2L_BIN")/appsettings.json"
     [[ ! -f "$SETTINGS_SRC" ]] && SETTINGS_SRC="$ROOT/appsettings.json"
     if [[ -f "$SETTINGS_SRC" ]]; then
         cp "$SETTINGS_SRC" "$STAGE/config/appsettings.json"
@@ -131,30 +142,11 @@ stage_package() {
         warn "appsettings.json not found — using compiled-in defaults"
     fi
 
-    # ── Python client ────────────────────────────────────────────────────────
-    rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='venv' \
-        --exclude='*.db-shm' --exclude='*.db-wal' --exclude='logs' \
-        "$CLIENT_DIR/app"           "$STAGE/client/"
-    rsync -a --exclude='__pycache__' --exclude='*.pyc' \
-        "$CLIENT_DIR/static"        "$STAGE/client/"
-    rsync -a "$CLIENT_DIR/templates" "$STAGE/client/"
-    cp "$CLIENT_DIR/requirements.txt" "$STAGE/client/"
-    cp "$CLIENT_DIR/run.py"           "$STAGE/client/"
-    [[ -f "$CLIENT_DIR/p2l_config.json" ]] && \
-        cp "$CLIENT_DIR/p2l_config.json" "$STAGE/client/"
-    # Seed empty DB if present
-    [[ -f "$CLIENT_DIR/p2l_devices.db" ]] && \
-        cp "$CLIENT_DIR/p2l_devices.db" "$STAGE/client/"
-
     # ── Deploy scripts ────────────────────────────────────────────────────────
     cp "$DEPLOY_DIR/p2l.service"         "$STAGE/deploy/"
     cp "$DEPLOY_DIR/p2l-client.service"  "$STAGE/deploy/"
-
-    # Write unified install.sh (Linux/macOS) into the package
     _write_install_sh "$STAGE/deploy/install.sh" "$RID"
     chmod +x "$STAGE/deploy/install.sh"
-
-    # Windows install script
     if [[ "$RID" == win-* ]]; then
         cp "$DEPLOY_DIR/install-windows.ps1" "$STAGE/deploy/install.ps1" 2>/dev/null || true
     fi
@@ -170,9 +162,11 @@ _write_install_sh() {
     local OUT="$1"; local RID="$2"
     cat > "$OUT" <<'INSTALL_EOF'
 #!/usr/bin/env bash
-# install.sh — Install P2L service + Web Client on Linux or macOS.
-# Run with: sudo ./deploy/install.sh  (Linux)
-#           ./deploy/install.sh        (macOS — uses launchd, no sudo needed for user agents)
+# install.sh — Install P2L service + Web Client binaries on Linux or macOS.
+# No Python runtime required on the target machine.
+#
+# Linux  : sudo ./deploy/install.sh
+# macOS  : ./deploy/install.sh
 
 set -euo pipefail
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -184,20 +178,14 @@ error() { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PKG_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OS="$(uname -s)"
-
 INSTALL_DIR="/opt/p2l"
-CLIENT_DIR="$INSTALL_DIR/client"
 P2L_USER="p2l"
 
 # ── Pre-flight ────────────────────────────────────────────────────────────────
-BIN_SRC="$PKG_ROOT/bin/p2l"
-[[ -f "$BIN_SRC" ]] || error "Binary not found: $BIN_SRC"
-
-python3 --version &>/dev/null || error "python3 not found. Install Python 3.10+ first."
-pip3 --version   &>/dev/null || error "pip3 not found. Install pip first."
+[[ -f "$PKG_ROOT/bin/p2l" ]]        || error "Binary not found: $PKG_ROOT/bin/p2l"
+[[ -f "$PKG_ROOT/bin/p2l-client" ]] || error "Client binary not found: $PKG_ROOT/bin/p2l-client"
 
 info "Installing to: $INSTALL_DIR"
-info "Client at:     $CLIENT_DIR"
 
 # ── Create system user (Linux only) ──────────────────────────────────────────
 if [[ "$OS" == "Linux" ]]; then
@@ -208,26 +196,14 @@ if [[ "$OS" == "Linux" ]]; then
     fi
 fi
 
-# ── Install P2L binary ────────────────────────────────────────────────────────
-info "Installing P2L binary ..."
-mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/config"
-install -m 0755 "$BIN_SRC" "$INSTALL_DIR/p2l"
+# ── Install binaries ──────────────────────────────────────────────────────────
+info "Installing binaries ..."
+mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/data"
+install -m 0755 "$PKG_ROOT/bin/p2l"        "$INSTALL_DIR/p2l"
+install -m 0755 "$PKG_ROOT/bin/p2l-client" "$INSTALL_DIR/p2l-client"
 [[ -f "$PKG_ROOT/config/appsettings.json" ]] && \
     install -m 0640 "$PKG_ROOT/config/appsettings.json" "$INSTALL_DIR/appsettings.json"
-ok "P2L binary installed"
-
-# ── Install Python client ─────────────────────────────────────────────────────
-info "Installing Python web client ..."
-mkdir -p "$CLIENT_DIR"
-rsync -a --delete \
-    --exclude='__pycache__' --exclude='*.pyc' --exclude='venv' \
-    "$PKG_ROOT/client/" "$CLIENT_DIR/"
-
-info "Creating Python virtual environment ..."
-python3 -m venv "$CLIENT_DIR/venv"
-"$CLIENT_DIR/venv/bin/pip" install --quiet --upgrade pip
-"$CLIENT_DIR/venv/bin/pip" install --quiet -r "$CLIENT_DIR/requirements.txt"
-ok "Python client installed (venv: $CLIENT_DIR/venv)"
+ok "Binaries installed"
 
 # ── Fix permissions ───────────────────────────────────────────────────────────
 if [[ "$OS" == "Linux" ]]; then
@@ -244,7 +220,6 @@ fi
 
 echo ""
 ok "=== Installation complete ==="
-echo ""
 if [[ "$OS" == "Linux" ]]; then
     echo "  P2L bridge  : sudo systemctl start p2l"
     echo "  Web client  : sudo systemctl start p2l-client"
@@ -255,94 +230,75 @@ elif [[ "$OS" == "Darwin" ]]; then
     echo "  P2L bridge  : launchctl start com.p2l.service"
     echo "  Web client  : launchctl start com.p2l.client"
     echo "  Dashboard   : http://localhost:8765"
-    echo "  Logs bridge : tail -f /var/log/p2l.log"
-    echo "  Logs client : tail -f /var/log/p2l-client.log"
+    echo "  Logs        : ~/Library/Logs/P2L/"
 fi
 
-# ── systemd installer ─────────────────────────────────────────────────────────
 _install_systemd() {
     info "Installing systemd units ..."
-    local SVCDIR="$SCRIPT_DIR"
-
-    # Patch WorkingDirectory into service files
     sed "s|WorkingDirectory=.*|WorkingDirectory=$INSTALL_DIR|" \
-        "$SVCDIR/p2l.service" | \
+        "$SCRIPT_DIR/p2l.service" | \
     sed "s|ExecStart=.*p2l run.*|ExecStart=$INSTALL_DIR/p2l run $INSTALL_DIR/tasks.csv|" \
         > /etc/systemd/system/p2l.service
 
-    sed "s|WorkingDirectory=.*|WorkingDirectory=$CLIENT_DIR|" \
-        "$SVCDIR/p2l-client.service" | \
-    sed "s|ExecStart=.*python.*|ExecStart=$CLIENT_DIR/venv/bin/python $CLIENT_DIR/run.py|" \
+    sed "s|WorkingDirectory=.*|WorkingDirectory=$INSTALL_DIR|" \
+        "$SCRIPT_DIR/p2l-client.service" | \
+    sed "s|ExecStart=.*|ExecStart=$INSTALL_DIR/p2l-client|" \
         > /etc/systemd/system/p2l-client.service
 
     systemctl daemon-reload
     systemctl enable p2l p2l-client
-    ok "systemd units installed and enabled"
+    ok "systemd units enabled"
 
     read -r -p "Start services now? [y/N] " START
     if [[ "${START,,}" == "y" ]]; then
-        systemctl start p2l
-        sleep 1
-        systemctl start p2l-client
+        systemctl start p2l; sleep 1
+        systemctl start p2l-client; sleep 1
         systemctl status p2l --no-pager
         systemctl status p2l-client --no-pager
     fi
 }
 
-# ── launchd installer (macOS) ─────────────────────────────────────────────────
 _install_launchd() {
     info "Installing launchd plists (macOS) ..."
+    local LOG_DIR="$HOME/Library/Logs/P2L"
     local LAUNCH_DIR="$HOME/Library/LaunchAgents"
-    mkdir -p "$LAUNCH_DIR"
+    mkdir -p "$LOG_DIR" "$LAUNCH_DIR"
 
     cat > "$LAUNCH_DIR/com.p2l.service.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
+<plist version="1.0"><dict>
     <key>Label</key>             <string>com.p2l.service</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$INSTALL_DIR/p2l</string>
-        <string>run</string>
-        <string>$INSTALL_DIR/tasks.csv</string>
-    </array>
+    <key>ProgramArguments</key>  <array><string>$INSTALL_DIR/p2l</string><string>run</string><string>$INSTALL_DIR/tasks.csv</string></array>
     <key>WorkingDirectory</key>  <string>$INSTALL_DIR</string>
     <key>RunAtLoad</key>         <true/>
-    <key>KeepAlive</key>         <true/>
-    <key>StandardOutPath</key>   <string>/var/log/p2l.log</string>
-    <key>StandardErrorPath</key> <string>/var/log/p2l.log</string>
-</dict>
-</plist>
+    <key>KeepAlive</key>         <dict><key>SuccessfulExit</key><false/></dict>
+    <key>ThrottleInterval</key>  <integer>5</integer>
+    <key>StandardOutPath</key>   <string>$LOG_DIR/p2l.log</string>
+    <key>StandardErrorPath</key> <string>$LOG_DIR/p2l.log</string>
+</dict></plist>
 PLIST
 
     cat > "$LAUNCH_DIR/com.p2l.client.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
+<plist version="1.0"><dict>
     <key>Label</key>             <string>com.p2l.client</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$CLIENT_DIR/venv/bin/python</string>
-        <string>$CLIENT_DIR/run.py</string>
-    </array>
-    <key>WorkingDirectory</key>  <string>$CLIENT_DIR</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>P2L_CLIENT_HOST</key> <string>0.0.0.0</string>
-        <key>P2L_CLIENT_PORT</key> <string>8765</string>
-    </dict>
+    <key>ProgramArguments</key>  <array><string>$INSTALL_DIR/p2l-client</string></array>
+    <key>WorkingDirectory</key>  <string>$INSTALL_DIR</string>
+    <key>EnvironmentVariables</key><dict><key>P2L_CLIENT_HOST</key><string>0.0.0.0</string><key>P2L_CLIENT_PORT</key><string>8765</string></dict>
     <key>RunAtLoad</key>         <true/>
-    <key>KeepAlive</key>         <true/>
-    <key>StandardOutPath</key>   <string>/var/log/p2l-client.log</string>
-    <key>StandardErrorPath</key> <string>/var/log/p2l-client.log</string>
-</dict>
-</plist>
+    <key>KeepAlive</key>         <dict><key>SuccessfulExit</key><false/></dict>
+    <key>ThrottleInterval</key>  <integer>5</integer>
+    <key>StandardOutPath</key>   <string>$LOG_DIR/p2l-client.log</string>
+    <key>StandardErrorPath</key> <string>$LOG_DIR/p2l-client.log</string>
+</dict></plist>
 PLIST
 
-    launchctl load "$LAUNCH_DIR/com.p2l.service.plist" 2>/dev/null || true
-    launchctl load "$LAUNCH_DIR/com.p2l.client.plist"  2>/dev/null || true
+    launchctl unload "$LAUNCH_DIR/com.p2l.service.plist" 2>/dev/null || true
+    launchctl unload "$LAUNCH_DIR/com.p2l.client.plist"  2>/dev/null || true
+    launchctl load   "$LAUNCH_DIR/com.p2l.service.plist"
+    launchctl load   "$LAUNCH_DIR/com.p2l.client.plist"
     ok "launchd agents installed"
 }
 INSTALL_EOF
@@ -357,12 +313,12 @@ Pick2Light (P2L) — $PKG_NAME
 
 CONTENTS
   bin/p2l                 P2L .NET bridge service (Aioi gateway ↔ MQTT)
-  client/                 Python web dashboard (FastAPI)
+  bin/p2l-client          P2L web dashboard — standalone binary (no Python required)
   config/appsettings.json P2L bridge configuration
   deploy/                 Installation scripts & systemd units
 
 REQUIREMENTS
-  Python 3.10+  (for web client)
+  No Python runtime required — p2l-client is self-contained.
   MQTT broker   (e.g. EMQX)
 
 INSTALL — Linux / macOS
@@ -381,7 +337,7 @@ CONFIGURATION
     P2L_MQTT__USERNAME=user
     P2L_MQTT__PASSWORD=pass
 
-  Edit client/p2l_config.json for web dashboard settings.
+  p2l_config.json is created next to p2l-client on first run.
 
 DASHBOARD
   http://localhost:8765  (after services are running)
@@ -427,16 +383,17 @@ main() {
     echo "╚══════════════════════════════════════════╝"
     echo ""
 
-    # Verify client source
-    check_python_client
-
     # Build .NET binary
-    local BIN_PATH
-    BIN_PATH="$(build_dotnet "$RID")"
+    local P2L_BIN
+    P2L_BIN="$(build_dotnet "$RID")"
+
+    # Build client binary (PyInstaller)
+    local CLIENT_BIN
+    CLIENT_BIN="$(build_client "$RID")"
 
     # Stage
     local STAGE
-    STAGE="$(stage_package "$RID" "$BIN_PATH")"
+    STAGE="$(stage_package "$RID" "$P2L_BIN" "$CLIENT_BIN")"
     ok "Staged: $STAGE"
 
     # Archive

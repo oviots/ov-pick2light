@@ -3,8 +3,10 @@
 All commands are forwarded to the P2L service via MQTT.
 No direct Aioi hardware communication happens in this process.
 """
+import json
 import logging
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -469,6 +471,168 @@ async def update_config(request: Request, body: ConfigRequest):
     out = cfg.to_dict()
     out["mqtt"].pop("password", None)
     return out
+
+
+# ─── appsettings.json (P2L .NET bridge config) ───────────────────────────────
+
+def _appsettings_path(request: Request) -> Path:
+    """Locate appsettings.json: next to p2l binary, or next to p2l_config.json."""
+    from .._paths import app_data_dir
+    cfg = _config(request)
+    if cfg.service.binary_path:
+        candidate = Path(cfg.service.binary_path).parent / "appsettings.json"
+        if candidate.exists():
+            return candidate
+    return app_data_dir() / "appsettings.json"
+
+
+def _read_appsettings(path: Path) -> dict:
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    """Recursively merge overlay into base (modifies base in-place)."""
+    for k, v in overlay.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+class AppSettingsRequest(BaseModel):
+    # Gateway
+    gateway_host: Optional[str] = None
+    gateway_port: Optional[int] = None
+    gateway_block_no: Optional[str] = None
+    # MQTT (bridge)
+    mqtt_enabled: Optional[bool] = None
+    mqtt_host: Optional[str] = None
+    mqtt_port: Optional[int] = None
+    mqtt_client_id: Optional[str] = None
+    mqtt_username: Optional[str] = None
+    mqtt_password: Optional[str] = None
+    mqtt_command_topic: Optional[str] = None
+    mqtt_event_topic: Optional[str] = None
+    mqtt_devices_topic: Optional[str] = None
+    mqtt_status_topic: Optional[str] = None
+    mqtt_client_db_path: Optional[str] = None
+    mqtt_tls_enabled: Optional[bool] = None
+    mqtt_tls_allow_untrusted: Optional[bool] = None
+    mqtt_tls_ca_cert_path: Optional[str] = None
+    # SelfHeal
+    selfheal_enabled: Optional[bool] = None
+    selfheal_max_restarts: Optional[int] = None
+    selfheal_restart_window_minutes: Optional[int] = None
+    selfheal_backoff_seconds: Optional[int] = None
+    # Misc
+    enable_state_persistence: Optional[bool] = None
+    log_level: Optional[str] = None
+
+
+@router.get("/api/appsettings")
+async def get_appsettings(request: Request):
+    path = _appsettings_path(request)
+    data = _read_appsettings(path)
+    gw   = data.get("Gateway", {})
+    mq   = data.get("Mqtt", {})
+    tls  = mq.get("Tls", {})
+    sh   = data.get("SelfHeal", {})
+    log  = data.get("Logging", {}).get("LogLevel", {})
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "gateway": {
+            "host":     gw.get("Host", ""),
+            "port":     gw.get("Port", 5003),
+            "block_no": gw.get("BlockNo", "00"),
+        },
+        "mqtt": {
+            "enabled":        mq.get("Enabled", True),
+            "host":           mq.get("Host", ""),
+            "port":           mq.get("Port", 8883),
+            "client_id":      mq.get("ClientId", ""),
+            "username":       mq.get("Username", ""),
+            "command_topic":  mq.get("CommandTopic", "p2l/commands"),
+            "event_topic":    mq.get("EventTopic", "p2l/events"),
+            "devices_topic":  mq.get("DevicesTopic", "p2l/devices"),
+            "status_topic":   mq.get("StatusTopic", "p2l/status"),
+            "client_db_path": mq.get("ClientDbPath", ""),
+            "tls": {
+                "enabled":            tls.get("Enabled", True),
+                "allow_untrusted":    tls.get("AllowUntrustedCerts", False),
+                "ca_cert_path":       tls.get("CaCertPath") or "",
+            },
+        },
+        "selfheal": {
+            "enabled":                 sh.get("Enabled", True),
+            "max_restarts":            sh.get("MaxRestarts", 5),
+            "restart_window_minutes":  sh.get("RestartWindowMinutes", 10),
+            "backoff_seconds":         sh.get("BackOffSeconds", 3),
+        },
+        "enable_state_persistence": data.get("EnableStatePersistence", False),
+        "log_level": log.get("Default", "Information"),
+    }
+
+
+@router.put("/api/appsettings")
+async def update_appsettings(request: Request, body: AppSettingsRequest):
+    path = _appsettings_path(request)
+    data = _read_appsettings(path)
+
+    # Build overlay from non-None fields
+    overlay: dict[str, Any] = {}
+
+    gw_patch: dict = {}
+    if body.gateway_host       is not None: gw_patch["Host"]    = body.gateway_host
+    if body.gateway_port       is not None: gw_patch["Port"]    = body.gateway_port
+    if body.gateway_block_no   is not None: gw_patch["BlockNo"] = body.gateway_block_no
+    if gw_patch: overlay["Gateway"] = gw_patch
+
+    tls_patch: dict = {}
+    if body.mqtt_tls_enabled        is not None: tls_patch["Enabled"]           = body.mqtt_tls_enabled
+    if body.mqtt_tls_allow_untrusted is not None: tls_patch["AllowUntrustedCerts"] = body.mqtt_tls_allow_untrusted
+    if body.mqtt_tls_ca_cert_path   is not None: tls_patch["CaCertPath"]        = body.mqtt_tls_ca_cert_path or None
+
+    mq_patch: dict = {}
+    if body.mqtt_enabled        is not None: mq_patch["Enabled"]      = body.mqtt_enabled
+    if body.mqtt_host           is not None: mq_patch["Host"]          = body.mqtt_host
+    if body.mqtt_port           is not None: mq_patch["Port"]          = body.mqtt_port
+    if body.mqtt_client_id      is not None: mq_patch["ClientId"]      = body.mqtt_client_id
+    if body.mqtt_username       is not None: mq_patch["Username"]      = body.mqtt_username or None
+    if body.mqtt_password       is not None: mq_patch["Password"]      = body.mqtt_password or None
+    if body.mqtt_command_topic  is not None: mq_patch["CommandTopic"]  = body.mqtt_command_topic
+    if body.mqtt_event_topic    is not None: mq_patch["EventTopic"]    = body.mqtt_event_topic
+    if body.mqtt_devices_topic  is not None: mq_patch["DevicesTopic"]  = body.mqtt_devices_topic
+    if body.mqtt_status_topic   is not None: mq_patch["StatusTopic"]   = body.mqtt_status_topic
+    if body.mqtt_client_db_path is not None: mq_patch["ClientDbPath"]  = body.mqtt_client_db_path
+    if tls_patch:                            mq_patch["Tls"]           = tls_patch
+    if mq_patch: overlay["Mqtt"] = mq_patch
+
+    sh_patch: dict = {}
+    if body.selfheal_enabled                is not None: sh_patch["Enabled"]              = body.selfheal_enabled
+    if body.selfheal_max_restarts           is not None: sh_patch["MaxRestarts"]          = body.selfheal_max_restarts
+    if body.selfheal_restart_window_minutes is not None: sh_patch["RestartWindowMinutes"] = body.selfheal_restart_window_minutes
+    if body.selfheal_backoff_seconds        is not None: sh_patch["BackOffSeconds"]       = body.selfheal_backoff_seconds
+    if sh_patch: overlay["SelfHeal"] = sh_patch
+
+    if body.enable_state_persistence is not None:
+        overlay["EnableStatePersistence"] = body.enable_state_persistence
+    if body.log_level is not None:
+        overlay.setdefault("Logging", {}).setdefault("LogLevel", {})["Default"] = body.log_level
+
+    _deep_merge(data, overlay)
+    try:
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Cannot write {path}: {e}")
+
+    return {"status": "saved", "path": str(path)}
 
 
 # ─── Logs ─────────────────────────────────────────────────────────────────────

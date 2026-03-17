@@ -2,7 +2,9 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "p2l_devices.db"
+from ._paths import app_data_dir
+
+DB_PATH = app_data_dir() / "p2l_devices.db"
 
 
 def _conn() -> sqlite3.Connection:

@@ -18,6 +18,8 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from ._paths import bundle_dir
+
 from .api.routes import router
 from .api.ws_manager import WebSocketManager
 from .config import AppConfig
@@ -40,9 +42,9 @@ ws_manager: WebSocketManager = WebSocketManager()
 mqtt_client: Optional[MqttClient] = None
 logs: deque = deque(maxlen=500)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
-STATIC_DIR = os.path.join(BASE_DIR, "static")
+BASE_DIR = bundle_dir()
+TEMPLATES_DIR = str(BASE_DIR / "templates")
+STATIC_DIR = str(BASE_DIR / "static")
 
 
 # ─── Registry → WebSocket ──────────────────────────────────────────────────────

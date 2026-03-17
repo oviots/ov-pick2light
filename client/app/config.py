@@ -3,7 +3,9 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_PATH = Path(__file__).parent.parent / "p2l_config.json"
+from ._paths import app_data_dir
+
+CONFIG_PATH = app_data_dir() / "p2l_config.json"
 
 
 @dataclass
