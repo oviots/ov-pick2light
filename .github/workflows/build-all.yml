@@ -76,11 +76,9 @@ jobs:
         run: |
           python3 -m venv .venv
           .venv/bin/pip install -q pyinstaller -r client/requirements.txt
-          .venv/bin/pyinstaller --onefile --name p2l-client \
+          .venv/bin/pyinstaller client/p2l-client.spec \
             --distpath artifacts/linux-x64 \
-            --workpath .pyinstaller-work \
-            --specpath .pyinstaller-work \
-            client/run.py
+            --workpath .pyinstaller-work
 
       - name: Package tar.gz
         run: |
@@ -141,11 +139,9 @@ jobs:
         run: |
           python3 -m venv .venv
           .venv/bin/pip install -q pyinstaller -r client/requirements.txt
-          .venv/bin/pyinstaller --onefile --name p2l-client \
+          .venv/bin/pyinstaller client/p2l-client.spec \
             --distpath artifacts/linux-arm64 \
-            --workpath .pyinstaller-work \
-            --specpath .pyinstaller-work \
-            client/run.py
+            --workpath .pyinstaller-work
 
       - name: Package tar.gz
         run: |
@@ -206,11 +202,9 @@ jobs:
         run: |
           python3 -m venv .venv
           .venv/bin/pip install -q pyinstaller -r client/requirements.txt
-          .venv/bin/pyinstaller --onefile --name p2l-client \
+          .venv/bin/pyinstaller client/p2l-client.spec \
             --distpath artifacts/osx-arm64 \
-            --workpath .pyinstaller-work \
-            --specpath .pyinstaller-work \
-            client/run.py
+            --workpath .pyinstaller-work
 
       - name: Package tar.gz
         run: |
@@ -333,11 +327,9 @@ jobs:
 
       - name: Build p2l-client.exe (PyInstaller)
         run: |
-          pyinstaller --onefile --name p2l-client `
+          pyinstaller client/p2l-client.spec `
             --distpath artifacts/win-x64 `
-            --workpath .pyinstaller-work `
-            --specpath .pyinstaller-work `
-            client/run.py
+            --workpath .pyinstaller-work
 
       - name: Verify binaries
         run: |
