@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Net.NetworkInformation;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -38,6 +39,10 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     private          Task?                   _connectLoop;
     private          TaskCompletionSource    _disconnectedTcs = new();
     private          int                     _startupDone;   // Interlocked flag — 0=pending, 1=done
+
+    // Network-restore wake-up: cancelled when NetworkAvailabilityChanged fires IsAvailable=true.
+    private volatile CancellationTokenSource? _backoffCts;
+    private readonly object                   _backoffLock = new();
 
     public MqttBridgeService(MqttSettings settings, AioiGateway gateway,
                               PickingEngine engine, LightModuleRegistry registry,
@@ -120,33 +125,74 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     {
         var delay = TimeSpan.FromSeconds(0.5);
 
-        while (!ct.IsCancellationRequested)
+        NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+        try
         {
-            try
+            while (!ct.IsCancellationRequested)
             {
-                _disconnectedTcs = new TaskCompletionSource();
-                await _client.ConnectAsync(_options, ct);
-                delay = TimeSpan.FromSeconds(0.5); // reset back-off on success
+                try
+                {
+                    _disconnectedTcs = new TaskCompletionSource();
 
-                // Wait here until the broker disconnects us
-                await _disconnectedTcs.Task.WaitAsync(ct);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning("[MQTT] Connection failed: {Err}. Retrying in {D:F0}s",
-                    ex.Message, delay.TotalSeconds);
-                try { await Task.Delay(delay, ct); }
-                catch (OperationCanceledException) { break; }
+                    // Per-attempt connect timeout (prevents hanging TCP connect when DNS resolves
+                    // but the remote is unreachable). Linked to outer ct so service stop still works.
+                    using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    connectCts.CancelAfter(TimeSpan.FromSeconds(15));
 
-                delay = delay * 2 < TimeSpan.FromMinutes(2)
-                    ? delay * 2
-                    : TimeSpan.FromMinutes(2);
+                    await _client.ConnectAsync(_options, connectCts.Token);
+                    delay = TimeSpan.FromSeconds(0.5); // reset back-off on success
+
+                    // Wait here until the broker disconnects us
+                    await _disconnectedTcs.Task.WaitAsync(ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning("[MQTT] Connection failed: {Err}. Retrying in {D:F0}s",
+                        ex.Message, delay.TotalSeconds);
+
+                    // Back-off delay — cancelled immediately if network is restored.
+                    using var backoffCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    lock (_backoffLock) _backoffCts = backoffCts;
+                    try
+                    {
+                        await Task.Delay(delay, backoffCts.Token);
+
+                        // Advance back-off only after a normal delay (not a network-restore wake-up).
+                        delay = delay * 2 < TimeSpan.FromMinutes(2)
+                            ? delay * 2
+                            : TimeSpan.FromMinutes(2);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        // Network became available — reset back-off and retry immediately.
+                        delay = TimeSpan.FromSeconds(0.5);
+                        _log.LogInformation("[MQTT] Network restored — retrying immediately.");
+                    }
+                    catch (OperationCanceledException) { break; }
+                    finally
+                    {
+                        lock (_backoffLock) _backoffCts = null;
+                    }
+                }
             }
         }
+        finally
+        {
+            NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
+        }
+    }
+
+    private void OnNetworkAvailabilityChanged(object? sender, NetworkAvailabilityEventArgs e)
+    {
+        if (!e.IsAvailable) return;
+        _log.LogInformation("[MQTT] Network interface became available — waking reconnect loop.");
+        CancellationTokenSource? cts;
+        lock (_backoffLock) cts = _backoffCts;
+        try { cts?.Cancel(); } catch (ObjectDisposedException) { }
     }
 
     // ─── MQTTnet event handlers ───────────────────────────────────────────
