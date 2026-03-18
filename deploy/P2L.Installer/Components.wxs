@@ -3,7 +3,8 @@
   Components.wxs — File, config, shortcut, and registry components.
   BinaryPath variable must be set to the artifacts\win-<platform> folder.
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
   <!-- ── Binaries: p2l.exe, p2l-client.exe, e_sqlite3.dll ─────────────── -->
   <Fragment>

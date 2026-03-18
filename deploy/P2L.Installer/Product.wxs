@@ -57,7 +57,6 @@
              Title="Pick2Light Core"
              Description="P2L bridge service, web dashboard, and SQLite runtime."
              Level="1"
-             Absent="disallow"
              AllowAdvertise="no"
              Display="expand">
 

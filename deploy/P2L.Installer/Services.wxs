@@ -14,9 +14,13 @@
     <ComponentGroup Id="BridgeService" Directory="INSTALLFOLDER">
 
       <Component Id="BridgeServiceComp" Guid="B1C2D3E4-0001-0001-0001-000000000001">
-        <File Id="BridgeServiceExe"
-              Source="$(var.BinaryPath)\p2l.exe"
-              KeyPath="yes" />
+        <!-- KeyPath via registry — file is already installed by BinaryFiles -->
+        <RegistryValue Root="HKLM"
+                       Key="Software\P2L\Services"
+                       Name="BridgeInstalled"
+                       Value="1"
+                       Type="integer"
+                       KeyPath="yes" />
 
         <ServiceInstall Id="P2LServiceInstall"
                         Name="P2L"
@@ -28,12 +32,13 @@
                         Account="NT SERVICE\P2L"
                         Arguments='run "[APPDATAFOLDER]tasks.csv"' />
 
-        <!-- Failure actions: restart after 5s, 3 attempts, then wait 1 day -->
+        <!-- Failure actions: restart after 5s, reset counter after 1 day -->
         <util:ServiceConfig
             ServiceName="P2L"
-            OnFailure1="restart" Delay1="5000"
-            OnFailure2="restart" Delay2="5000"
-            OnFailure3="restart" Delay3="5000"
+            FirstFailureActionType="restart"
+            SecondFailureActionType="restart"
+            ThirdFailureActionType="restart"
+            RestartServiceDelayInSeconds="5"
             ResetPeriodInDays="1" />
 
         <ServiceControl Id="P2LServiceControl"
@@ -52,9 +57,13 @@
     <ComponentGroup Id="ClientService" Directory="INSTALLFOLDER">
 
       <Component Id="ClientServiceComp" Guid="B1C2D3E4-0002-0002-0002-000000000002">
-        <File Id="ClientServiceExe"
-              Source="$(var.BinaryPath)\p2l-client.exe"
-              KeyPath="yes" />
+        <!-- KeyPath via registry — file is already installed by BinaryFiles -->
+        <RegistryValue Root="HKLM"
+                       Key="Software\P2L\Services"
+                       Name="ClientInstalled"
+                       Value="1"
+                       Type="integer"
+                       KeyPath="yes" />
 
         <ServiceInstall Id="P2LClientServiceInstall"
                         Name="P2LClient"
@@ -63,15 +72,15 @@
                         Type="ownProcess"
                         Start="auto"
                         ErrorControl="normal"
-                        Account="NT SERVICE\P2LClient">
-          <!-- Environment variables passed to the service process -->
-          <util:ServiceConfig
-              ServiceName="P2LClient"
-              OnFailure1="restart" Delay1="5000"
-              OnFailure2="restart" Delay2="5000"
-              OnFailure3="restart" Delay3="5000"
-              ResetPeriodInDays="1" />
-        </ServiceInstall>
+                        Account="NT SERVICE\P2LClient" />
+
+        <util:ServiceConfig
+            ServiceName="P2LClient"
+            FirstFailureActionType="restart"
+            SecondFailureActionType="restart"
+            ThirdFailureActionType="restart"
+            RestartServiceDelayInSeconds="5"
+            ResetPeriodInDays="1" />
 
         <!-- Set environment variables for the service via registry -->
         <RegistryKey Root="HKLM"
