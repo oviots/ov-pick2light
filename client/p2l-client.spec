@@ -1,12 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for P2L web client.
+# PyInstaller spec for P2L web client (single-file binary, all platforms).
 #
 # Build with (from repo root):
 #   pyinstaller client/p2l-client.spec --distpath <out> --workpath .pyinstaller-work
 #
-# Output:
-#   Linux/macOS  → <out>/p2l-client      (single file)
-#   Windows      → <out>/p2l-client/     (onedir — avoids AV/DEP temp-extraction block)
+# Output: <out>/p2l-client  (or p2l-client.exe on Windows)
+#
+# Note: strip=False on Windows — the MSYS2 strip tool on GitHub Actions runners
+# corrupts Windows PE files, causing "Invalid access to memory location" at load time.
 
 import sys
 
@@ -87,52 +88,22 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-if IS_WINDOWS:
-    # Windows: onedir mode — no extraction to %TEMP%, avoids AV/DEP blocking
-    exe = EXE(
-        pyz,
-        a.scripts,
-        [],
-        name="p2l-client",
-        debug=False,
-        bootloader_ignore_signals=False,
-        strip=False,       # strip is Unix-only; on Windows it corrupts PE files
-        upx=False,
-        console=True,
-        disable_windowed_traceback=False,
-        argv_emulation=False,
-        target_arch=None,
-        codesign_identity=None,
-        entitlements_file=None,
-    )
-    coll = COLLECT(
-        exe,
-        a.binaries,
-        a.zipfiles,
-        a.datas,
-        strip=False,
-        upx=False,
-        upx_exclude=[],
-        name="p2l-client",
-    )
-else:
-    # Linux / macOS: single-file binary for easy distribution
-    exe = EXE(
-        pyz,
-        a.scripts,
-        a.binaries,
-        a.zipfiles,
-        a.datas,
-        [],
-        name="p2l-client",
-        debug=False,
-        bootloader_ignore_signals=False,
-        strip=True,
-        upx=False,
-        console=True,
-        disable_windowed_traceback=False,
-        argv_emulation=False,
-        target_arch=None,
-        codesign_identity=None,
-        entitlements_file=None,
-    )
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name="p2l-client",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=not IS_WINDOWS,  # strip is Unix-only; corrupts PE files on Windows
+    upx=False,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)

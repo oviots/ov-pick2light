@@ -333,15 +333,11 @@ jobs:
 
       - name: Verify binaries
         run: |
-          @('p2l.exe', 'e_sqlite3.dll') | ForEach-Object {
+          @('p2l.exe', 'p2l-client.exe', 'e_sqlite3.dll') | ForEach-Object {
             $p = "artifacts/win-x64/$_"
             if (-not (Test-Path $p)) { throw "Missing: $p" }
             "$_ — $([math]::Round((Get-Item $p).Length/1MB,1)) MB"
           }
-          # p2l-client is onedir — check the exe inside the subdirectory
-          $clientExe = "artifacts/win-x64/p2l-client/p2l-client.exe"
-          if (-not (Test-Path $clientExe)) { throw "Missing: $clientExe" }
-          "p2l-client/p2l-client.exe — $([math]::Round((Get-Item $clientExe).Length/1MB,1)) MB"
 
       - name: Build MSI (WiX 5)
         run: |
@@ -360,9 +356,8 @@ jobs:
           $staging = "dist/staging/p2l-$v-win-x64"
           New-Item -ItemType Directory -Force "$staging/bin","$staging/config" | Out-Null
           Copy-Item artifacts/win-x64/p2l.exe        "$staging/bin/"
+          Copy-Item artifacts/win-x64/p2l-client.exe "$staging/bin/"
           Copy-Item artifacts/win-x64/e_sqlite3.dll  "$staging/bin/"
-          # p2l-client is onedir — copy the entire directory
-          Copy-Item artifacts/win-x64/p2l-client     "$staging/bin/p2l-client" -Recurse
           Copy-Item appsettings.json                 "$staging/config/"
           Compress-Archive -Path $staging -DestinationPath "dist/p2l-$v-win-x64.zip" -Force
           Get-ChildItem dist -File | ForEach-Object { "$($_.Name) — $([math]::Round($_.Length/1MB,1)) MB" }
