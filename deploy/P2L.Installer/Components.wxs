@@ -47,26 +47,26 @@
     <ComponentGroup Id="ConfigFiles" Directory="APPDATAFOLDER">
 
       <!-- appsettings.json — only install if not already present -->
-      <Component Id="AppSettingsComp" Guid="A1B2C3D4-0004-0004-0004-000000000004">
+      <Component Id="AppSettingsComp" Guid="A1B2C3D4-0004-0004-0004-000000000004"
+                 NeverOverwrite="yes">
         <File Id="AppSettingsJson"
               Source="$(var.ConfigPath)\appsettings.json"
-              KeyPath="yes"
-              NeverOverwrite="yes" />
+              KeyPath="yes" />
         <!--
-          NeverOverwrite="yes" — upgrade does not clobber user's edited config.
-          If upgrading and config doesn't exist yet, it will be created fresh.
+          NeverOverwrite="yes" on Component — upgrade does not clobber user's edited config.
         -->
       </Component>
 
       <!-- logs\ directory placeholder (so the folder is created + removed on uninstall) -->
       <Component Id="LogsFolderComp" Guid="A1B2C3D4-0005-0005-0005-000000000005"
                  Directory="LOGSFOLDER">
-        <CreateFolder Directory="LOGSFOLDER" />
-        <!-- Grant LocalService write access to logs -->
-        <util:PermissionEx
-            User="NT SERVICE\P2L"
-            GenericAll="yes"
-            ChangePermission="no" />
+        <CreateFolder Directory="LOGSFOLDER">
+          <!-- Grant LocalService write access to logs -->
+          <util:PermissionEx
+              User="NT SERVICE\P2L"
+              GenericAll="yes"
+              ChangePermission="no" />
+        </CreateFolder>
       </Component>
 
     </ComponentGroup>
