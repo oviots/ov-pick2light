@@ -40,8 +40,7 @@
       ProductVersion=$(ProductVersion);
       BinaryPath=$(BinaryPath);
       ConfigPath=$(ConfigPath);
-      LicenseRtf=$(LicenseRtf);
-      Platform=$(Platform)
+      LicenseRtf=$(LicenseRtf)
     </DefineConstants>
   </PropertyGroup>
 
