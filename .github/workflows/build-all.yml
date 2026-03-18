@@ -232,66 +232,66 @@ jobs:
           retention-days: 30
 
   # ── macOS x64 (Intel) ──────────────────────────────────────────────────────
-  osx-x64:
-    name: macOS x64 (Intel)
-    runs-on: macos-13
-    if: |
-      github.event_name == 'push' ||
-      github.event.inputs.targets == 'all' ||
-      github.event.inputs.targets == 'macos'
-    steps:
-      - uses: actions/checkout@v4
+  # osx-x64:
+  #   name: macOS x64 (Intel)
+  #   runs-on: macos-13
+  #   if: |
+  #     github.event_name == 'push' ||
+  #     github.event.inputs.targets == 'all' ||
+  #     github.event.inputs.targets == 'macos'
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.x"
+  #     - uses: actions/setup-dotnet@v4
+  #       with:
+  #         dotnet-version: "10.x"
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.12"
 
-      - name: Install Homebrew deps
-        run: brew install openssl@3 brotli
+  #     - name: Install Homebrew deps
+  #       run: brew install openssl@3 brotli
 
-      - name: Build .NET AOT (osx-x64)
-        run: |
-          export LIBRARY_PATH="$(brew --prefix openssl@3)/lib:$(brew --prefix brotli)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
-          dotnet publish src/P2L.CLI \
-            -c Release -r osx-x64 \
-            --self-contained true \
-            -p:PublishAot=true \
-            -p:InvariantGlobalization=true \
-            -p:StripSymbols=true \
-            -o artifacts/osx-x64
+  #     - name: Build .NET AOT (osx-x64)
+  #       run: |
+  #         export LIBRARY_PATH="$(brew --prefix openssl@3)/lib:$(brew --prefix brotli)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+  #         dotnet publish src/P2L.CLI \
+  #           -c Release -r osx-x64 \
+  #           --self-contained true \
+  #           -p:PublishAot=true \
+  #           -p:InvariantGlobalization=true \
+  #           -p:StripSymbols=true \
+  #           -o artifacts/osx-x64
 
-      - name: Build p2l-client (PyInstaller)
-        run: |
-          python3 -m venv .venv
-          .venv/bin/pip install -q pyinstaller -r client/requirements.txt
-          .venv/bin/pyinstaller --onefile --name p2l-client \
-            --distpath artifacts/osx-x64 \
-            --workpath .pyinstaller-work \
-            --specpath .pyinstaller-work \
-            client/run.py
+  #     - name: Build p2l-client (PyInstaller)
+  #       run: |
+  #         python3 -m venv .venv
+  #         .venv/bin/pip install -q pyinstaller -r client/requirements.txt
+  #         .venv/bin/pyinstaller --onefile --name p2l-client \
+  #           --distpath artifacts/osx-x64 \
+  #           --workpath .pyinstaller-work \
+  #           --specpath .pyinstaller-work \
+  #           client/run.py
 
-      - name: Package tar.gz
-        run: |
-          VERSION=${{ env.VERSION }}
-          STAGING="dist/staging/p2l-${VERSION}-osx-x64"
-          mkdir -p "$STAGING/bin" "$STAGING/config"
-          cp artifacts/osx-x64/p2l              "$STAGING/bin/"
-          cp artifacts/osx-x64/p2l-client       "$STAGING/bin/"
-          cp artifacts/osx-x64/libe_sqlite3.dylib "$STAGING/bin/" 2>/dev/null || true
-          cp appsettings.json                    "$STAGING/config/"
-          mkdir -p dist
-          tar -czf "dist/p2l-${VERSION}-osx-x64.tar.gz" -C "dist/staging" "p2l-${VERSION}-osx-x64"
-          ls -lh dist/
+  #     - name: Package tar.gz
+  #       run: |
+  #         VERSION=${{ env.VERSION }}
+  #         STAGING="dist/staging/p2l-${VERSION}-osx-x64"
+  #         mkdir -p "$STAGING/bin" "$STAGING/config"
+  #         cp artifacts/osx-x64/p2l              "$STAGING/bin/"
+  #         cp artifacts/osx-x64/p2l-client       "$STAGING/bin/"
+  #         cp artifacts/osx-x64/libe_sqlite3.dylib "$STAGING/bin/" 2>/dev/null || true
+  #         cp appsettings.json                    "$STAGING/config/"
+  #         mkdir -p dist
+  #         tar -czf "dist/p2l-${VERSION}-osx-x64.tar.gz" -C "dist/staging" "p2l-${VERSION}-osx-x64"
+  #         ls -lh dist/
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: p2l-${{ env.VERSION }}-osx-x64
-          path: dist/p2l-*-osx-x64.tar.gz
-          retention-days: 30
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: p2l-${{ env.VERSION }}-osx-x64
+  #         path: dist/p2l-*-osx-x64.tar.gz
+  #         retention-days: 30
 
   # ── Windows x64 ────────────────────────────────────────────────────────────
   windows-x64:

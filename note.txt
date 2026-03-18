@@ -1,6 +1,0 @@
-mosquitto_pub \
-    -h s28f7f16.ala.asia-southeast1.emqxsl.com -p 8883 \
-    -u pick2light -P P2l123456 \
-    --tls-version tlsv1.2 \
-    -t "p2l/commands" \
-    -m '{"type": "terminate_all"}'
