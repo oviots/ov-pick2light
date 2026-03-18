@@ -22,12 +22,7 @@
     <PackageReference Include="WixToolset.Util.wixext" Version="5.*" />
   </ItemGroup>
 
-  <ItemGroup>
-    <!-- All WXS source files -->
-    <Compile Include="Product.wxs" />
-    <Compile Include="Components.wxs" />
-    <Compile Include="Services.wxs" />
-  </ItemGroup>
+  <!-- WiX 5 SDK auto-discovers all *.wxs files — no explicit <Compile> needed -->
 
   <!-- Preprocessor variables passed to every WXS file as $(var.Name) -->
   <ItemGroup>
