@@ -61,11 +61,16 @@
       <Component Id="LogsFolderComp" Guid="A1B2C3D4-0005-0005-0005-000000000005"
                  Directory="LOGSFOLDER">
         <CreateFolder Directory="LOGSFOLDER">
-          <!-- Grant LocalService write access to logs -->
+          <!--
+            Grant SYSTEM and Administrators full control.
+            NT SERVICE\P2L (virtual account) inherits SYSTEM rights automatically.
+          -->
           <util:PermissionEx
-              User="NT SERVICE\P2L"
-              GenericAll="yes"
-              ChangePermission="no" />
+              User="SYSTEM"
+              GenericAll="yes" />
+          <util:PermissionEx
+              User="Administrators"
+              GenericAll="yes" />
         </CreateFolder>
       </Component>
 

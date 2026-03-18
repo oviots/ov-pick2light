@@ -43,7 +43,6 @@
 
         <ServiceControl Id="P2LServiceControl"
                         Name="P2L"
-                        Start="install"
                         Stop="both"
                         Remove="uninstall"
                         Wait="yes" />
@@ -92,7 +91,6 @@
 
         <ServiceControl Id="P2LClientServiceControl"
                         Name="P2LClient"
-                        Start="install"
                         Stop="both"
                         Remove="uninstall"
                         Wait="yes" />
