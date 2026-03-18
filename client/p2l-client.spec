@@ -69,6 +69,8 @@ a = Analysis(
         "starlette.routing",
         "starlette.staticfiles",
         "starlette.templating",
+        # Windows service integration (conditional import in run.py — must be explicit)
+        "app.windows_service",
     ],
     hookspath=[],
     hooksconfig={},
