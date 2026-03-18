@@ -1,0 +1,1 @@
+Resume this session with copilot --resume=86ab2ff7-7d91-4404-a827-f2b066738840

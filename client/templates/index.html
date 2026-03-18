@@ -131,7 +131,6 @@
         <button id="btn-terminate-all-devices" class="btn btn-danger btn-sm">Terminate All</button>
         <button id="btn-export-devices" class="btn btn-ghost btn-sm">⬇ Export CSV</button>
         <button id="btn-add-device" class="btn btn-primary btn-sm">+ Add Device</button>
-        <button id="btn-clear-devices" class="btn btn-ghost btn-sm">Clear All</button>
       </div>
       <div id="device-grid" class="device-grid">
         <div class="empty-state" style="grid-column:1/-1">
@@ -329,8 +328,6 @@
                 <input id="cfg-block" class="form-input" maxlength="2" placeholder="00">
               </div>
               <div class="form-group" style="display:flex;align-items:flex-end;gap:.5rem;padding-bottom:.1rem">
-                <input id="cfg-autoconnect" type="checkbox" style="width:16px;height:16px">
-                <label class="form-label" style="margin:0" for="cfg-autoconnect">Auto-connect on startup</label>
               </div>
             </div>
           </div>
@@ -527,6 +524,9 @@
             <strong>Pick2Light Web Dashboard</strong> — Python/FastAPI<br>
             Commands → MQTT → P2L .NET bridge → Aioi hardware<br>
             Topics: <code>p2l/commands</code> · <code>p2l/events</code> · <code>p2l/devices/#</code>
+          </p>
+          <p style="font-size:.75rem;color:var(--text-muted);margin-top:.5rem">
+            © <script>document.write(new Date().getFullYear())</script> <strong>ThangLam</strong>. All rights reserved.
           </p>
         </div>
       </div>

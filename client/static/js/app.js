@@ -107,6 +107,10 @@ function handleWsMessage(msg) {
       state.mqttConnected = msg.data.mqtt_connected || false;
       state.host = msg.data.host;
       state.port = msg.data.port;
+      // Clear stale rows from previous session
+      Object.keys(_addrMap).forEach(k => delete _addrMap[k]);
+      Object.keys(state.devices).forEach(k => delete state.devices[k]);
+      { const tbody = $('address-tbody'); if (tbody) tbody.innerHTML = ''; }
       msg.data.devices.forEach(d => {
         state.devices[d.address] = d;
         upsertAddressRow(d);
@@ -145,16 +149,30 @@ function handleWsMessage(msg) {
       break;
     }
 
-    case 'state_update':
+    case 'state_update': {
+      const incoming = new Set(msg.data.map(d => d.address));
       msg.data.forEach(d => {
         upsertAddressRow(d);
         pushOperatingRow(d);
         pushEvent('light_changed', d);
         state.devices[d.address] = d;
       });
+      // Remove devices no longer in the full registry (e.g. stale DB entries cleared by server)
+      Object.keys(_addrMap).forEach(addr => {
+        if (!incoming.has(addr)) {
+          delete _addrMap[addr];
+          const tbody = $('address-tbody');
+          const row = tbody?.querySelector(`tr[data-addr="${addr}"]`);
+          if (row) row.remove();
+        }
+      });
+      Object.keys(state.devices).forEach(addr => {
+        if (!incoming.has(addr)) delete state.devices[addr];
+      });
       renderDevices();
       updateStats();
       break;
+    }
 
     case 'confirmation': {
       const evt = msg.data;
@@ -192,8 +210,8 @@ function updateConnectionUI() {
   else label = 'Disconnected';
   badge.innerHTML = `<span class="dot"></span>${label}`;
 
-  $('btn-connect').disabled = state.connected;
-  $('btn-disconnect').disabled = !state.connected;
+  $('btn-connect').disabled = state.mqttConnected;
+  $('btn-disconnect').disabled = !state.mqttConnected;
 
   // Update bridge status badge
   const mqttBadge = $('mqtt-status-badge');
@@ -883,7 +901,6 @@ async function loadConfig() {
   try {
     const cfg = await api('GET', '/api/config');
     $('cfg-block').value = cfg.block_no || '00';
-    $('cfg-autoconnect').checked = cfg.auto_connect || false;
 
     const mq = cfg.mqtt || {};
     $('cfg-mqtt-host').value = mq.host || '';
@@ -911,7 +928,7 @@ async function saveConfig() {
   const argsRaw = $('cfg-svc-args').value.trim();
   const body = {
     block_no: $('cfg-block').value,
-    auto_connect: $('cfg-autoconnect').checked,
+    auto_connect: false,
     mqtt_host: $('cfg-mqtt-host').value,
     mqtt_port: parseInt($('cfg-mqtt-port').value) || 8883,
     mqtt_client_id: $('cfg-mqtt-client-id').value,
@@ -1242,12 +1259,6 @@ async function init() {
   $('btn-terminate-all-devices')?.addEventListener('click', terminateAll);
   $('btn-export-devices')?.addEventListener('click', exportDevicesCSV);
   $('btn-add-device')?.addEventListener('click', openAddDeviceModal);
-  $('btn-clear-devices')?.addEventListener('click', async () => {
-    if (!confirm('Remove all devices from registry?')) return;
-    await api('DELETE', '/api/devices');
-    state.devices = {};
-    renderDevices();
-  });
 
   // Wire up add device modal
   $('btn-confirm-add-device')?.addEventListener('click', confirmAddDevice);
@@ -1346,3 +1357,10 @@ $('btn-clear-events')?.addEventListener('click', () => {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// Disconnect MQTT immediately when the browser tab/window closes.
+window.addEventListener('beforeunload', () => {
+  if (state.mqttConnected || state.connected) {
+    navigator.sendBeacon('/api/disconnect');
+  }
+});

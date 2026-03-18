@@ -42,6 +42,10 @@ ws_manager: WebSocketManager = WebSocketManager()
 mqtt_client: Optional[MqttClient] = None
 logs: deque = deque(maxlen=500)
 
+# Tracks device addresses confirmed via MQTT retained messages since last connect.
+# Used to reconcile the registry against stale SQLite-loaded entries.
+_mqtt_seen_addrs: set[str] = set()
+
 BASE_DIR = bundle_dir()
 TEMPLATES_DIR = str(BASE_DIR / "templates")
 STATIC_DIR = str(BASE_DIR / "static")
@@ -86,6 +90,7 @@ def _setup_mqtt_client(mc: MqttClient) -> None:
 
 async def _on_mqtt_event(topic: str, payload: dict) -> None:
     """Route an inbound MQTT message → registry + WebSocket broadcast."""
+    global _mqtt_seen_addrs
     evt_type = payload.get("type")
 
     if evt_type == "confirmed":
@@ -136,6 +141,7 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
             except ValueError:
                 pass
         registry.update_module_state(module)
+        _mqtt_seen_addrs.add(LightModuleRegistry.normalize_address(addr))
 
     elif evt_type == "batch_completed":
         await ws_manager.broadcast({"type": "batch_completed", "data": {}})
@@ -143,6 +149,15 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
     elif evt_type == "bridge_status":
         online = payload.get("online", False)
         gw_connected = payload.get("gatewayConnected", False)
+        if online and gw_connected and _mqtt_seen_addrs:
+            # The server has completed its startup scan. Reconcile the local
+            # registry: remove any entry that was loaded from the DB but was
+            # not confirmed by an MQTT retained message (stale hardware entry).
+            stale = [m.address for m in registry.all if m.address not in _mqtt_seen_addrs]
+            for addr in stale:
+                registry.remove_device(addr)
+                logger.info("Removed stale device %s (not found in MQTT retained)", addr)
+            _mqtt_seen_addrs.clear()
         await ws_manager.broadcast({
             "type": "bridge_status",
             "data": {"online": online, "gateway_connected": gw_connected},
@@ -167,10 +182,11 @@ async def _do_connect() -> None:
 
 
 async def _do_disconnect() -> None:
-    global mqtt_client
+    global mqtt_client, _mqtt_seen_addrs
     if mqtt_client:
         await mqtt_client.stop()
         mqtt_client = None
+    _mqtt_seen_addrs.clear()  # reset so next connect tracks fresh retained messages
 
 
 def _append_log(level: str, message: str) -> None:
@@ -189,11 +205,6 @@ async def lifespan(app: FastAPI):
         registry.add_device(dev["address"], dev["label"], dev.get("order_no", 0))
     _setup_registry_callbacks()
     logger.info("P2L Web Dashboard → http://127.0.0.1:8765")
-    if config.auto_connect:
-        try:
-            await _do_connect()
-        except Exception as exc:
-            logger.warning("Auto-connect failed: %s", exc)
     yield
     if mqtt_client:
         await mqtt_client.stop()
