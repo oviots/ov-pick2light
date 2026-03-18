@@ -97,8 +97,8 @@
 
     <InstallExecuteSequence>
       <!-- Run before standard StopServices — only on uninstall/upgrade -->
-      <Custom Action="StopP2LSvc"      Before="StopServices">REMOVE="ALL"</Custom>
-      <Custom Action="StopP2LClientSvc" Before="StopP2LSvc">REMOVE="ALL"</Custom>
+      <Custom Action="StopP2LSvc"       Before="StopServices" Condition='REMOVE="ALL"' />
+      <Custom Action="StopP2LClientSvc" Before="StopP2LSvc"   Condition='REMOVE="ALL"' />
     </InstallExecuteSequence>
 
     <!-- ── UI (WiX standard InstallDir dialog) ───────────────────────── -->
