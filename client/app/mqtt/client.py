@@ -114,6 +114,8 @@ class MqttClient:
         self._on_state: Optional[StateCallback] = None
         self._stop = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
+        # Set by _wake_reconnect(); cancels the backoff sleep when network is restored.
+        self._backoff_wake: Optional[asyncio.Future] = None
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -169,6 +171,13 @@ class MqttClient:
 
     # ── Connection loop ────────────────────────────────────────────────────
 
+    def wake_reconnect(self) -> None:
+        """Call from outside to cancel the backoff sleep and retry immediately.
+        Useful when a network-available event is received."""
+        fut = self._backoff_wake
+        if fut and not fut.done():
+            fut.get_loop().call_soon_threadsafe(fut.cancel)
+
     async def _connect_loop(self) -> None:
         import aiomqtt
 
@@ -196,9 +205,11 @@ class MqttClient:
                         self._pub_loop(client), name="p2l-mqtt-pub"
                     )
                     try:
+                        # FIRST_COMPLETED: reconnect when recv ends (clean broker
+                        # disconnect) OR when a task raises an exception.
                         done, pending = await asyncio.wait(
                             [recv_task, pub_task],
-                            return_when=asyncio.FIRST_EXCEPTION,
+                            return_when=asyncio.FIRST_COMPLETED,
                         )
                         for t in pending:
                             t.cancel()
@@ -226,11 +237,23 @@ class MqttClient:
                 self._connected_event.clear()
                 self._notify_state(False)
                 logger.info("MQTT reconnecting in %.1fs …", delay)
+
+                # Backoff sleep — can be cancelled early by wake_reconnect().
+                loop = asyncio.get_event_loop()
+                self._backoff_wake = loop.create_future()
                 try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=delay)
-                except asyncio.TimeoutError:
+                    await asyncio.wait_for(
+                        asyncio.shield(self._backoff_wake), timeout=delay
+                    )
+                    # Future was resolved (network restore) — retry immediately.
+                    delay = 1.0
+                except (asyncio.TimeoutError, asyncio.CancelledError):
                     pass
-                delay = min(delay * 2, 30.0)
+                finally:
+                    self._backoff_wake = None
+
+                if not self._stop.is_set():
+                    delay = min(delay * 2, 30.0)
 
         self._is_connected = False
 
@@ -272,8 +295,9 @@ class MqttClient:
 
     def _build_kwargs(self) -> dict:
         kwargs: dict = {
-            "hostname": self._cfg.host,
-            "port":     self._cfg.port,
+            "hostname":  self._cfg.host,
+            "port":      self._cfg.port,
+            "keepalive": 30,   # 30s PINGREQ interval — prevents cloud broker idle-timeout
         }
         if self._cfg.client_id:
             kwargs["identifier"] = self._cfg.client_id
