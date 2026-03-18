@@ -25,7 +25,45 @@
                      System="yes" />
       </Component>
 
-      <!-- p2l-client dir is fully harvested by P2LClientDirFiles below -->
+      <!-- p2l-client.exe — web dashboard (onedir PyInstaller, installed to P2LCLIENTFOLDER) -->
+      <Component Id="P2LClientExeComp" Guid="A1B2C3D4-0002-0002-0002-000000000002"
+                 Directory="P2LCLIENTFOLDER">
+        <File Id="P2LClientExe"
+              Source="$(var.BinaryPath)\p2l-client\p2l-client.exe"
+              KeyPath="yes" />
+
+        <!-- ServiceInstall derives ImagePath from the File sibling above -->
+        <ServiceInstall Id="P2LClientServiceInstall"
+                        Name="P2LClient"
+                        DisplayName="Pick2Light Web Dashboard"
+                        Description="Pick2Light web dashboard — accessible at http://localhost:8765"
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="NT SERVICE\P2LClient" />
+
+        <util:ServiceConfig
+            ServiceName="P2LClient"
+            FirstFailureActionType="restart"
+            SecondFailureActionType="restart"
+            ThirdFailureActionType="restart"
+            RestartServiceDelayInSeconds="5"
+            ResetPeriodInDays="1" />
+
+        <RegistryKey Root="HKLM"
+                     Key="SYSTEM\CurrentControlSet\Services\P2LClient">
+          <RegistryValue Name="Environment"
+                         Type="multiString"
+                         Value="P2L_CLIENT_HOST=0.0.0.0[~]P2L_CLIENT_PORT=8765" />
+        </RegistryKey>
+
+        <ServiceControl Id="P2LClientServiceControl"
+                        Name="P2LClient"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+      </Component>
 
       <!-- e_sqlite3.dll — SQLite native library required by p2l.exe -->
       <Component Id="SqliteDllComp" Guid="A1B2C3D4-0003-0003-0003-000000000003">
@@ -114,66 +152,17 @@
     </ComponentGroup>
   </Fragment>
 
-  <!-- ── P2L Client service registration ──────────────────────────────── -->
+  <!-- ── P2L Client onedir: all files except exe (handled in BinaryFiles) ─ -->
   <!--
-    ServiceInstall/@ImagePath (WiX 4+ feature) sets the service executable
-    path explicitly. This lets us harvest p2l-client/ with <Files> without
-    needing to manually define the exe component.
+    WiX 5 <Files Include="glob" Exclude="glob"> harvests PyInstaller onedir
+    dependencies (_internal\ and any root-level DLLs) into P2LCLIENTFOLDER.
+    p2l-client.exe is excluded — it is installed by P2LClientExeComp above
+    so that ServiceInstall can reference its File as the service image path.
   -->
   <Fragment>
-    <ComponentGroup Id="ClientService" Directory="INSTALLFOLDER">
-      <Component Id="ClientServiceComp" Guid="B1C2D3E4-0002-0002-0002-000000000002">
-        <RegistryValue Root="HKLM"
-                       Key="Software\P2L\Services"
-                       Name="ClientInstalled"
-                       Value="1"
-                       Type="integer"
-                       KeyPath="yes" />
-
-        <ServiceInstall Id="P2LClientServiceInstall"
-                        Name="P2LClient"
-                        DisplayName="Pick2Light Web Dashboard"
-                        Description="Pick2Light web dashboard — accessible at http://localhost:8765"
-                        Type="ownProcess"
-                        Start="auto"
-                        ErrorControl="normal"
-                        Account="NT SERVICE\P2LClient"
-                        ImagePath="&quot;[P2LCLIENTFOLDER]p2l-client.exe&quot;" />
-
-        <util:ServiceConfig
-            ServiceName="P2LClient"
-            FirstFailureActionType="restart"
-            SecondFailureActionType="restart"
-            ThirdFailureActionType="restart"
-            RestartServiceDelayInSeconds="5"
-            ResetPeriodInDays="1" />
-
-        <RegistryKey Root="HKLM"
-                     Key="SYSTEM\CurrentControlSet\Services\P2LClient">
-          <RegistryValue Name="Environment"
-                         Type="multiString"
-                         Value="P2L_CLIENT_HOST=0.0.0.0[~]P2L_CLIENT_PORT=8765" />
-        </RegistryKey>
-
-        <ServiceControl Id="P2LClientServiceControl"
-                        Name="P2LClient"
-                        Start="install"
-                        Stop="both"
-                        Remove="uninstall"
-                        Wait="yes" />
-      </Component>
-    </ComponentGroup>
-  </Fragment>
-
-  <!-- ── P2L Client onedir: all files harvested from p2l-client\ ──────── -->
-  <Fragment>
     <ComponentGroup Id="P2LClientDirFiles" Directory="P2LCLIENTFOLDER">
-      <!--
-        WiX 5 <Files Path="glob"> auto-harvests all files and subdirectories
-        from the PyInstaller onedir output (p2l-client.exe + _internal\).
-        Path uses ** to recurse into subdirectories.
-      -->
-      <Files Path="$(var.BinaryPath)\p2l-client\**" />
+      <Files Include="$(var.BinaryPath)\p2l-client\**"
+             Exclude="$(var.BinaryPath)\p2l-client\p2l-client.exe" />
     </ComponentGroup>
   </Fragment>
 
