@@ -27,6 +27,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     private readonly AioiGateway           _gateway;
     private readonly MqttCommandDispatcher _dispatcher;
     private readonly MqttEventPublisher    _publisher;
+    private readonly DeviceScanService     _scanService;
     private readonly ILogger               _log;
     private readonly IMqttClient           _client;
     private readonly MqttClientOptions     _options;
@@ -36,33 +37,41 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     private readonly CancellationTokenSource _cts = new();
     private          Task?                   _connectLoop;
     private          TaskCompletionSource    _disconnectedTcs = new();
+    private          int                     _startupDone;   // Interlocked flag — 0=pending, 1=done
 
     public MqttBridgeService(MqttSettings settings, AioiGateway gateway,
                               PickingEngine engine, LightModuleRegistry registry,
                               PreemptionGate gate, CsvPickTaskRunner? csvRunner,
-                              DeviceLabelStore labelStore,
+                              DeviceLabelStore labelStore, DeviceScanService scanService,
                               ILoggerFactory loggerFactory)
     {
-        _settings   = settings;
-        _gateway    = gateway;
-        _gate       = gate;
-        _csvRunner  = csvRunner;
-        _log        = loggerFactory.CreateLogger<MqttBridgeService>();
-        _client     = new MqttClientFactory().CreateMqttClient();
-        _publisher  = new MqttEventPublisher(_client, settings, engine, registry,
-                          labelStore,
-                          loggerFactory.CreateLogger<MqttEventPublisher>());
-        _dispatcher = new MqttCommandDispatcher(engine, _publisher, gate, csvRunner,
-                          labelStore,
-                          loggerFactory.CreateLogger<MqttCommandDispatcher>());
-        _options    = BuildOptions(settings);
+        _settings    = settings;
+        _gateway     = gateway;
+        _gate        = gate;
+        _csvRunner   = csvRunner;
+        _scanService = scanService;
+        _log         = loggerFactory.CreateLogger<MqttBridgeService>();
+        _client      = new MqttClientFactory().CreateMqttClient();
+        _publisher   = new MqttEventPublisher(_client, settings, engine, registry,
+                           labelStore,
+                           loggerFactory.CreateLogger<MqttEventPublisher>());
+        _dispatcher  = new MqttCommandDispatcher(engine, _publisher, gate, csvRunner,
+                           labelStore,
+                           loggerFactory.CreateLogger<MqttCommandDispatcher>());
+        _options     = BuildOptions(settings);
 
         _client.ApplicationMessageReceivedAsync += OnMessageReceivedAsync;
         _client.ConnectedAsync    += OnConnectedAsync;
         _client.DisconnectedAsync += OnDisconnectedAsync;
 
+        // On first gateway connection: clear retained MQTT state, then auto-scan devices.
+        // On subsequent reconnects: just update bridge status.
         _gateway.ConnectionChanged += connected =>
+        {
             _publisher.EnqueueStatus(online: true, gatewayConnected: connected);
+            if (connected && Interlocked.CompareExchange(ref _startupDone, 1, 0) == 0)
+                _ = Task.Run(() => RunStartupSequenceAsync(_cts.Token));
+        };
 
         if (_csvRunner is not null)
             _csvRunner.TaskEvent += e => _publisher.EnqueueTaskEvent(e);
@@ -141,6 +150,100 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     }
 
     // ─── MQTTnet event handlers ───────────────────────────────────────────
+
+    private async Task RunStartupSequenceAsync(CancellationToken ct)
+    {
+        try
+        {
+            _log.LogInformation("[Startup] Gateway connected — waiting for MQTT broker...");
+
+            // Wait up to 30 s for the MQTT client to finish connecting
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            while (!_client.IsConnected && !timeout.Token.IsCancellationRequested)
+                await Task.Delay(500, timeout.Token).ConfigureAwait(false);
+
+            if (!_client.IsConnected)
+            {
+                _log.LogWarning("[Startup] MQTT not available after 30 s — skipping startup sequence.");
+                return;
+            }
+
+            // ── Step 1: Collect existing retained device topics ───────────
+            var retainedTopics = new System.Collections.Generic.HashSet<string>();
+            var devicesWildcard = $"{_settings.DevicesTopic}/#";
+
+            Task CollectRetained(MqttApplicationMessageReceivedEventArgs args)
+            {
+                if (args.ApplicationMessage.Retain)
+                    lock (retainedTopics)
+                        retainedTopics.Add(args.ApplicationMessage.Topic);
+                return Task.CompletedTask;
+            }
+
+            _client.ApplicationMessageReceivedAsync += CollectRetained;
+
+            var subOptions = new MqttClientSubscribeOptionsBuilder()
+                .WithTopicFilter(f => f
+                    .WithTopic(devicesWildcard)
+                    .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtMostOnce))
+                .Build();
+            await _client.SubscribeAsync(subOptions, ct).ConfigureAwait(false);
+
+            _log.LogInformation("[Startup] Collecting retained device topics (2 s)...");
+            await Task.Delay(2_000, ct).ConfigureAwait(false);
+
+            _client.ApplicationMessageReceivedAsync -= CollectRetained;
+            await _client.UnsubscribeAsync(
+                new MqttClientUnsubscribeOptionsBuilder()
+                    .WithTopicFilter(devicesWildcard)
+                    .Build(), ct).ConfigureAwait(false);
+
+            // ── Step 2: Clear retained messages ───────────────────────────
+            var toClear = new System.Collections.Generic.List<string>(retainedTopics)
+            {
+                _settings.StatusTopic   // always clear bridge status too
+            };
+
+            _log.LogInformation("[Startup] Clearing {Count} retained topics...", toClear.Count);
+            foreach (var topic in toClear)
+            {
+                try
+                {
+                    await _client.PublishAsync(
+                        new MqttApplicationMessageBuilder()
+                            .WithTopic(topic)
+                            .WithPayload(Array.Empty<byte>())
+                            .WithRetainFlag(true)
+                            .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
+                            .Build(), ct).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "[Startup] Could not clear retained on {Topic}", topic);
+                }
+            }
+
+            // ── Step 3: Auto-scan all light modules ───────────────────────
+            // ScanAsync registers found devices in LightModuleRegistry, which triggers
+            // LightModuleRegistry.StateChanged → MqttEventPublisher.OnStateChanged
+            // → publishes fresh retained LightChangedEvt per device automatically.
+            _log.LogInformation("[Startup] Starting device scan...");
+            var found = await _scanService.ScanAsync(ct: ct).ConfigureAwait(false);
+            _log.LogInformation("[Startup] Scan complete — {Count} device(s) found.", found.Count);
+
+            // Publish fresh bridge status after scan
+            _publisher.EnqueueStatus(online: true, gatewayConnected: _gateway.IsConnected);
+        }
+        catch (OperationCanceledException)
+        {
+            _log.LogDebug("[Startup] Startup sequence cancelled.");
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "[Startup] Startup sequence failed.");
+        }
+    }
 
     private async Task OnConnectedAsync(MqttClientConnectedEventArgs _)
     {
