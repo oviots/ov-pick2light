@@ -15,9 +15,16 @@ using Spectre.Console.Cli;
 
 // ─── Configuration ────────────────────────────────────────────────────────
 
+// ProgramData\P2L — writable by NT SERVICE\* accounts; used for config, logs, DB.
+// Windows installer places appsettings.json here; on Linux/macOS, falls back to exe dir.
+var appDataBase = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+    "P2L");
+
 var config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
-    .AddJsonFile("appsettings.json", optional: true)
+    .AddJsonFile("appsettings.json", optional: true)                                       // exe-dir defaults
+    .AddJsonFile(Path.Combine(appDataBase, "appsettings.json"), optional: true)            // ProgramData user config (overrides)
     .AddEnvironmentVariables("P2L_")
     .Build();
 
@@ -36,7 +43,7 @@ var appSettings = new AppSettings
         Port    = Cfg_Int   (config, "Gateway:Port",    AioiConstants.DefaultTcpPort),
         BlockNo = Cfg_String(config, "Gateway:BlockNo", "00"),
     },
-    LogDirectory        = Cfg_String(config, "LogDirectory",        "logs"),
+    LogDirectory        = Cfg_String(config, "LogDirectory",        Path.Combine(appDataBase, "logs")),
     MaxLogFileSizeBytes = Cfg_Long  (config, "MaxLogFileSizeBytes", 10 * 1024 * 1024),
     EnableStatePersistence = Cfg_Bool(config, "EnableStatePersistence", false),
     Mqtt = new MqttSettings
@@ -51,8 +58,8 @@ var appSettings = new AppSettings
         EventTopic        = Cfg_String(config, "Mqtt:EventTopic",        "p2l/events"),
         DevicesTopic      = Cfg_String(config, "Mqtt:DevicesTopic",      "p2l/devices"),
         StatusTopic       = Cfg_String(config, "Mqtt:StatusTopic",       "p2l/status"),
-        OfflineBufferPath = Cfg_String(config, "Mqtt:OfflineBufferPath", "mqtt_offline_buffer.jsonl"),
-        ClientDbPath      = config["Mqtt:ClientDbPath"],
+        OfflineBufferPath = Cfg_String(config, "Mqtt:OfflineBufferPath", Path.Combine(appDataBase, "mqtt_offline_buffer.jsonl")),
+        ClientDbPath      = config["Mqtt:ClientDbPath"] ?? Path.Combine(appDataBase, "p2l_devices.db"),
         Tls = new MqttTlsSettings
         {
             Enabled             = Cfg_Bool  (config, "Mqtt:Tls:Enabled",             true),
@@ -76,7 +83,7 @@ var appSettings = new AppSettings
 // ─── Self-heal crash handlers (installed as early as possible) ────────────
 
 if (appSettings.SelfHeal.Enabled)
-    SelfHealHandler.Install(appSettings.SelfHeal, args);
+    SelfHealHandler.Install(appSettings.SelfHeal, args, appDataBase);
 
 // ─── Graceful-shutdown token ──────────────────────────────────────────────
 // Created early so it can be registered in DI for long-running commands.
@@ -172,6 +179,7 @@ services.AddSingleton<DeviceConfigCsvService>();
 services.AddTransient<ExportCommand>();
 services.AddTransient<ImportCommand>();
 services.AddTransient<RunPickCommand>();
+services.AddTransient<ServeCommand>();
 // Shutdown CTS — long-running commands can inject this to honour graceful stop
 services.AddSingleton(cts);
 
@@ -212,6 +220,9 @@ app.Configure(cfg =>
 
     cfg.AddCommand<RunPickCommand>("run")
        .WithDescription("Run a CSV pick-task file sequentially with auto-delete on confirmation");
+
+    cfg.AddCommand<ServeCommand>("serve")
+       .WithDescription("Run as a headless daemon (Windows Service / systemd unit entry point)");
 
 #if DEBUG
     cfg.PropagateExceptions();

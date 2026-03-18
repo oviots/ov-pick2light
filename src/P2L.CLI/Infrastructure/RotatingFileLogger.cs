@@ -49,7 +49,9 @@ public sealed class RotatingFileLoggerProvider : ILoggerProvider
         _directory = directory;
         _maxBytes  = maxBytes;
         MinLevel   = minLevel;
-        Directory.CreateDirectory(directory);
+        // Best-effort: log directory may be created later (e.g. first write).
+        // Do NOT throw here — a failure would crash the process before SCM handshake.
+        try { Directory.CreateDirectory(directory); } catch { }
     }
 
     public ILogger CreateLogger(string categoryName) =>
@@ -81,6 +83,7 @@ public sealed class RotatingFileLoggerProvider : ILoggerProvider
 
         _writer?.Dispose();
         _currentPath = path;
+        Directory.CreateDirectory(_directory);  // retry every roll in case dir was unavailable at startup
         // FileShare.ReadWrite: multiple processes (dashboard + one-shot commands)
         // can safely append to the same log file concurrently.
         var stream   = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);

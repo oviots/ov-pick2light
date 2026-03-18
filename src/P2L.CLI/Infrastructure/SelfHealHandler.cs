@@ -18,17 +18,27 @@ namespace P2L.CLI.Infrastructure;
 /// </summary>
 internal static class SelfHealHandler
 {
-    private const string CrashHistoryFile = "crash_history.jsonl";
+    private const string CrashHistoryFileName = "crash_history.jsonl";
 
     private static SelfHealSettings _settings  = new();
     private static string[]         _launchArgs = [];
+    private static string           _crashHistoryFile = CrashHistoryFileName;
 
     // ─── Public API ───────────────────────────────────────────────────────
 
-    public static void Install(SelfHealSettings settings, string[] launchArgs)
+    /// <param name="basePath">
+    /// Optional absolute directory for the crash-history JSONL file.
+    /// Defaults to the process working directory when omitted.
+    /// Pass <c>ProgramData\P2L</c> when running as a Windows service so the
+    /// file is written to a writable location regardless of working directory.
+    /// </param>
+    public static void Install(SelfHealSettings settings, string[] launchArgs, string basePath = "")
     {
         _settings   = settings;
         _launchArgs = launchArgs;
+        _crashHistoryFile = string.IsNullOrEmpty(basePath)
+            ? CrashHistoryFileName
+            : Path.Combine(basePath, CrashHistoryFileName);
 
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
@@ -76,12 +86,12 @@ internal static class SelfHealHandler
     {
         try
         {
-            if (!File.Exists(CrashHistoryFile)) return false;
+            if (!File.Exists(_crashHistoryFile)) return false;
 
             var cutoff = DateTime.UtcNow.AddMinutes(-_settings.RestartWindowMinutes);
             int count  = 0;
 
-            foreach (var line in File.ReadLines(CrashHistoryFile))
+            foreach (var line in File.ReadLines(_crashHistoryFile))
             {
                 if (string.IsNullOrWhiteSpace(line)) continue;
                 try
@@ -109,7 +119,7 @@ internal static class SelfHealHandler
             var escaped = message.Replace("\\", "\\\\").Replace("\"", "\\\"")
                                  .Replace("\r", "\\r").Replace("\n", "\\n")
                                  .Replace("\t", "\\t");
-            File.AppendAllText(CrashHistoryFile, $"{{\"at\":\"{at}\",\"msg\":\"{escaped}\"}}\n");
+            File.AppendAllText(_crashHistoryFile, $"{{\"at\":\"{at}\",\"msg\":\"{escaped}\"}}\n");
         }
         catch { /* best-effort */ }
     }

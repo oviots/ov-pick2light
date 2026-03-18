@@ -38,7 +38,7 @@
                         Start="auto"
                         ErrorControl="normal"
                         Account="NT SERVICE\P2L"
-                        Arguments='run "[APPDATAFOLDER]tasks.csv"' />
+                        Arguments="serve" />
 
         <!--
           util:ServiceConfig omitted — WiX 5.0.2 bug: Wix4ExecServiceConfig runs
