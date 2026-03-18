@@ -60,9 +60,9 @@ jobs:
 
       - name: Install WiX
         run: |
-          dotnet tool install --global wix
-          wix extension add WixToolset.UI.wixext
-          wix extension add WixToolset.Util.wixext
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add WixToolset.UI.wixext/5.0.2
+          wix extension add WixToolset.Util.wixext/5.0.2
 
       - name: Build .NET binary (Native AOT win-${{ env.PLATFORM }})
         run: |
