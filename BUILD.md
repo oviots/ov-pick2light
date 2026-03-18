@@ -16,14 +16,16 @@ Both are **fully self-contained** — no .NET runtime, no Python installation re
 ## Quick Start
 
 ```bash
-# Linux/macOS — full package (binary + client + installer scripts)
+# Recommended — build all platforms on GitHub Actions (no local toolchain needed)
+gh workflow run build-all.yml -f version=1.0.0 -f targets=all \
+  --repo <owner>/ov-pick2light
+
+# Linux/macOS — local native build
 ./deploy/package.sh linux-x64
 ./deploy/package.sh osx-arm64
 
-# Windows — prepare binaries via Docker, build MSI on Windows
-docker build -f deploy/Dockerfile.build -t p2l-builder .
-docker run --rm -v "$(pwd)/artifacts:/workspace/artifacts" p2l-builder win-x64
-# Then on Windows: .\deploy\build-msi.ps1 -SkipDotnetPublish
+# All platforms via Docker (Linux packages) + GitHub Actions (Windows/macOS)
+./deploy/build-all.sh all
 ```
 
 ---
@@ -114,33 +116,38 @@ p2l-<version>-<rid>/
 
 ---
 
-## Building with Docker
+## Building with Docker (Linux packages, local)
 
-Docker builds run on any host (macOS, Linux, Windows) and produce packages for other platforms.
+Docker builds run on any host and produce Linux packages. Use GitHub Actions for Windows/macOS.
 
 ```bash
-# Build the image (one-time)
-docker build -f deploy/Dockerfile.build -t p2l-builder .
+# Build the image (one-time, must use --platform linux/amd64 on Apple Silicon)
+docker build --platform linux/amd64 -f deploy/Dockerfile.build -t p2l-builder .
 
 # Linux packages (full: AOT binary + PyInstaller client + tar.gz)
-docker run --rm -v "$(pwd)/dist:/workspace/dist" p2l-builder linux-x64
-docker run --rm -v "$(pwd)/dist:/workspace/dist" p2l-builder linux-arm64
+docker run --rm --platform linux/amd64 \
+  -v "$(pwd)/dist:/workspace/dist" \
+  p2l-builder linux-x64
 
-# Windows binaries only (p2l.exe + e_sqlite3.dll → artifacts/win-x64/)
-# Note: p2l-client.exe and MSI require Windows — see MSI section below
-docker run --rm -v "$(pwd)/artifacts:/workspace/artifacts" p2l-builder win-x64
+docker run --rm --platform linux/arm64 \
+  -v "$(pwd)/dist:/workspace/dist" \
+  p2l-builder linux-arm64
+
+# Or use the master script (handles --platform flags automatically)
+./deploy/build-all.sh linux-x64
+./deploy/build-all.sh linux        # x64 + arm64
 ```
 
 ### What Docker can/cannot build
 
-| Target | Docker (Linux) | Notes |
+| Target | Docker (Linux) | Use instead |
 |---|---|---|
-| `linux-x64` full package | ✅ | AOT + PyInstaller + tar.gz |
-| `linux-arm64` full package | ✅ | Cross-compiled |
-| `win-x64` binaries | ✅ | `p2l.exe` + `e_sqlite3.dll` (non-AOT, self-contained) |
-| `win-x64` `p2l-client.exe` | ❌ | PyInstaller requires Windows |
-| `win-x64` MSI | ❌ | WiX 5 is Windows-only |
-| `osx-*` any | ❌ | macOS SDK required |
+| `linux-x64` full package | ✅ | — |
+| `linux-arm64` full package | ✅ | — |
+| `win-x64` binaries only | ✅ | `p2l.exe` + `e_sqlite3.dll` (non-AOT) |
+| `win-x64` `p2l-client.exe` | ❌ | GitHub Actions `windows-x64` job |
+| `win-x64` MSI | ❌ | GitHub Actions `windows-x64` job |
+| `osx-*` | ❌ | GitHub Actions `osx-*` jobs or local `package.sh` |
 
 ---
 
@@ -178,10 +185,21 @@ Profiles in `src/P2L.CLI/Properties/PublishProfiles/` set: `PublishAot=true`, `S
 
 See **[deploy/INSTALLER.md](INSTALLER.md)** for the full WiX 5 MSI guide.
 
-### From macOS/Linux — via GitHub Actions
+### From macOS/Linux — via GitHub Actions (recommended)
 
 ```bash
-# Trigger build on a Windows runner (requires gh CLI + repo push access)
+# Trigger full cross-platform build
+gh workflow run build-all.yml -f version=1.0.0 -f targets=windows \
+  --repo <owner>/ov-pick2light
+
+# Download MSI when done
+gh run download --repo <owner>/ov-pick2light --dir dist/
+```
+
+### MSI-only via GitHub Actions
+
+```bash
+# Trigger MSI-only build
 ./deploy/build-msi.sh 1.0.0           # x64
 ./deploy/build-msi.sh 1.0.0 arm64     # ARM64
 
@@ -259,20 +277,58 @@ Native AOT compilation **cannot cross OS families**:
 
 ## CI/CD — GitHub Actions
 
-The repo ships three workflows:
+The repo ships two workflows:
 
-| Workflow | File | Trigger |
+| Workflow | File | Trigger | Description |
+|---|---|---|---|
+| **Build All Platforms** | `.github/workflows/build-all.yml` | Manual / `v*` tag | All platforms in parallel — **recommended** |
+| Build MSI only | `.github/workflows/build-msi.yml` | Manual / `v*` tag | Windows MSI only |
+
+### Build all platforms (recommended)
+
+Each platform runs on its own native GitHub-hosted runner — no Docker, no local toolchain required:
+
+| Job | Runner | Output |
 |---|---|---|
-| Build MSI | `.github/workflows/build-msi.yml` | Manual / `v*` tag |
-
-### Trigger MSI build from any machine
+| `linux-x64` | `ubuntu-24.04` | `p2l-<v>-linux-x64.tar.gz` |
+| `linux-arm64` | `ubuntu-24.04-arm` | `p2l-<v>-linux-arm64.tar.gz` |
+| `osx-arm64` | `macos-latest` | `p2l-<v>-osx-arm64.tar.gz` |
+| `osx-x64` | `macos-13` (Intel) | `p2l-<v>-osx-x64.tar.gz` |
+| `windows-x64` | `windows-latest` | `P2L-<v>-x64.msi` + `.zip` |
 
 ```bash
-# Manual trigger (any version/platform)
-gh workflow run build-msi.yml -f version=1.0.0 -f platform=x64
+# Trigger manually
+gh workflow run build-all.yml \
+  -f version=1.0.0 \
+  -f targets=all \
+  --repo <owner>/ov-pick2light
 
-# Tag push (auto-builds and creates GitHub Release)
-git tag v1.0.0 && git push origin v1.0.0
+# Build only Linux
+gh workflow run build-all.yml -f version=1.0.0 -f targets=linux
+
+# Build only Windows
+gh workflow run build-all.yml -f version=1.0.0 -f targets=windows
+
+# Monitor progress
+gh run watch --repo <owner>/ov-pick2light
+
+# Download all artifacts when done
+gh run download --repo <owner>/ov-pick2light --dir dist/
+```
+
+### Release (auto on tag)
+
+```bash
+git tag v1.0.0
+git push github v1.0.0
+# → builds all platforms → creates GitHub Release with all 5 packages
+```
+
+### Trigger MSI-only build
+
+```bash
+gh workflow run build-msi.yml -f version=1.0.0 -f platform=x64
+./deploy/build-msi.sh --download   # download MSI to dist/
 ```
 
 ---
@@ -281,7 +337,7 @@ git tag v1.0.0 && git push origin v1.0.0
 
 | Problem | Fix |
 |---|---|
-| `clang: invalid linker name` | Use Docker for cross-platform Linux builds |
+| `ld: library 'ssl' not found` (macOS) | `brew install openssl@3 brotli` — already handled by `package.sh` |
 | `p2l` exits silently (no output) | Check `crash_history.jsonl`; likely missing type in `rd.xml` |
 | `e_sqlite3.dll/so/dylib not found` | Keep SQLite lib in same dir as `p2l` binary |
 | macOS: "developer cannot be verified" | `xattr -d com.apple.quarantine /path/to/p2l` |
