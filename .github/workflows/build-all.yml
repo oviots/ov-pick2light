@@ -410,7 +410,6 @@ jobs:
             | Linux x64   | `p2l-${{ env.VERSION }}-linux-x64.tar.gz` |
             | Linux arm64 | `p2l-${{ env.VERSION }}-linux-arm64.tar.gz` |
             | macOS arm64 | `p2l-${{ env.VERSION }}-osx-arm64.tar.gz` |
-            | macOS x64   | `p2l-${{ env.VERSION }}-osx-x64.tar.gz` |
 
             ### Windows silent install
             ```cmd
