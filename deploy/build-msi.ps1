@@ -1,152 +1,145 @@
-# Pick2Light MSI Installer Builder
-# Requires: WiX Toolset 4.0+
-# Usage: .\build-msi.ps1 -Platform x64 -OutputPath C:\Releases
+<#
+.SYNOPSIS
+  Build the P2L Windows MSI installer using WiX 4/5.
 
+.DESCRIPTION
+  Orchestrates:
+    1. dotnet publish (Native AOT) for win-x64 / win-arm64
+    2. PyInstaller build of p2l-client.exe (must run on Windows)
+    3. dotnet build on P2L.Installer.wixproj → .msi
+
+  Prerequisites (one-time setup):
+    dotnet tool install --global wix
+    wix extension add WixToolset.UI.wixext
+    wix extension add WixToolset.Util.wixext
+    pip install pyinstaller  (for client binary)
+
+.PARAMETER Platform
+  Target platform: x64 (default) or arm64
+
+.PARAMETER Version
+  Version string embedded in the MSI. Default: 1.0.0
+
+.PARAMETER SkipDotnetPublish
+  Skip dotnet publish (use pre-built binaries in artifacts/).
+
+.PARAMETER SkipClientBuild
+  Skip PyInstaller build (use pre-built p2l-client.exe in artifacts/).
+
+.EXAMPLE
+  .\deploy\build-msi.ps1
+  .\deploy\build-msi.ps1 -Platform arm64 -Version 1.2.3
+  .\deploy\build-msi.ps1 -SkipDotnetPublish -SkipClientBuild
+#>
+[CmdletBinding()]
 param(
     [ValidateSet('x64', 'arm64')]
     [string]$Platform = 'x64',
-    
-    [ValidateSet('Release', 'Debug')]
-    [string]$Configuration = 'Release',
-    
-    [string]$OutputPath = '.\releases',
-    
-    [switch]$SkipBuild,
-    
-    [switch]$SignMSI
+
+    [string]$Version = '1.0.0',
+
+    [switch]$SkipDotnetPublish,
+    [switch]$SkipClientBuild
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Configuration
-$ProjectRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
-$InstallerRoot = $PSScriptRoot
-$ArtifactDir = Join-Path $ProjectRoot "artifacts" "win-$Platform"
-$BinaryPath = Join-Path $ArtifactDir "p2l.exe"
+$RepoRoot    = Split-Path $PSScriptRoot -Parent
+$ArtifactDir = "$RepoRoot\artifacts\win-$Platform"
+$InstallerDir = "$RepoRoot\deploy\P2L.Installer"
+$DistDir      = "$RepoRoot\dist"
 
-# WiX variables
-$WiXProject = Join-Path $InstallerRoot "P2L.Installer.wixproj"
-$OutputDir = New-Item -ItemType Directory -Path $OutputPath -Force
-
-Write-Host ""
-Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║  Pick2Light MSI Installer Builder                         ║" -ForegroundColor Cyan
-Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "=== P2L MSI Build ===" -ForegroundColor Cyan
+Write-Host "Platform : $Platform"
+Write-Host "Version  : $Version"
+Write-Host "Artifacts: $ArtifactDir"
 Write-Host ""
 
-# Validation
-Write-Host "Validating prerequisites..." -ForegroundColor Yellow
+# ── Prerequisites check ──────────────────────────────────────────────────
+Write-Host "[0/4] Checking prerequisites..." -ForegroundColor Yellow
 
-# Check for WiX Toolset
-$heatExe = Get-Command heat.exe -ErrorAction SilentlyContinue
-if (-not $heatExe) {
-    Write-Host "⚠️  WiX Toolset 4.0+ not found in PATH" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Install options:" -ForegroundColor Cyan
-    Write-Host "  1. Download: https://wixtoolset.org/releases/v4.0.x/wix4-latest.exe" -ForegroundColor Gray
-    Write-Host "  2. Or via winget: winget install WiXToolset" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "After installation, run this script again." -ForegroundColor Cyan
-    exit 1
+if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+    throw ".NET SDK not found. Install from https://dot.net"
+}
+if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
+    Write-Host "  wix CLI not found. Installing..." -ForegroundColor Yellow
+    dotnet tool install --global wix
+    wix extension add WixToolset.UI.wixext
+    wix extension add WixToolset.Util.wixext
 }
 
-Write-Host "✓ WiX Toolset found" -ForegroundColor Green
-
-# Check for binaries
-if (-not (Test-Path $BinaryPath)) {
-    Write-Host "⚠️  Binary not found: $BinaryPath" -ForegroundColor Yellow
-    Write-Host ""
-    if (-not $SkipBuild) {
-        Write-Host "Building P2L for $Platform..." -ForegroundColor Cyan
-        & "$ProjectRoot\deploy\publish.ps1" -RID "win-$Platform"
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "✗ Build failed" -ForegroundColor Red
-            exit 1
-        }
-    } else {
-        Write-Host "Skipping build. Use -SkipBuild:$false to build first." -ForegroundColor Red
-        exit 1
-    }
-}
-
-Write-Host "✓ Binary found: $BinaryPath" -ForegroundColor Green
-Write-Host ""
-
-# Generate WiX source files
-Write-Host "Generating WiX source files..." -ForegroundColor Yellow
-
-$heatArgs = @(
-    "dir"
-    $ArtifactDir
-    "-o", (Join-Path $InstallerRoot "GeneratedFileList.wxs")
-    "-var", "var.SourceDir"
-    "-gg"
-    "-srd"
-    "-sfrag"
-)
-
-& heat.exe @heatArgs
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "✗ Failed to harvest binary directory" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "✓ Generated file list" -ForegroundColor Green
-
-# Build MSI
-Write-Host ""
-Write-Host "Building MSI package..." -ForegroundColor Yellow
-
-$msBuildArgs = @(
-    $WiXProject
-    "/p:Configuration=$Configuration"
-    "/p:Platform=$Platform"
-    "/p:SourceDir=$ArtifactDir"
-    "/p:OutputPath=$OutputDir"
-)
-
-if ($Configuration -eq 'Release') {
-    $msBuildArgs += "/p:TreatWarningsAsErrors=true"
-}
-
-& msbuild.exe @msBuildArgs
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "✗ MSI build failed" -ForegroundColor Red
-    exit 1
-}
-
-Write-Host "✓ MSI package created" -ForegroundColor Green
-
-# Locate MSI output
-$msiFile = Get-ChildItem $OutputDir -Filter "*.msi" -ErrorAction SilentlyContinue | Select-Object -First 1
-
-if ($msiFile) {
-    Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Green
-    Write-Host "║  ✓ Build Successful                                       ║" -ForegroundColor Green
-    Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "MSI Package:" -ForegroundColor Cyan
-    Write-Host "  Path: $($msiFile.FullName)" -ForegroundColor Gray
-    Write-Host "  Size: $($msiFile.Length / 1MB | FormatNumber -Digits 1) MB" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "Installation:" -ForegroundColor Cyan
-    Write-Host "  msiexec /i ""$($msiFile.FullName)"" /qn" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "Uninstallation:" -ForegroundColor Cyan
-    Write-Host "  msiexec /x ""$($msiFile.FullName)"" /qn" -ForegroundColor Gray
-    Write-Host ""
-
-    if ($SignMSI) {
-        Write-Host "Signing MSI..." -ForegroundColor Yellow
-        # Note: This requires a valid code signing certificate
-        # Uncomment and configure as needed:
-        # signtool sign /f "path/to/cert.pfx" /p "password" /fd sha256 /tr http://timestamp.server "$($msiFile.FullName)"
-        Write-Host "⚠️  MSI signing not configured. Add your certificate path to the script." -ForegroundColor Yellow
-    }
+# ── Step 1: dotnet publish (Native AOT) ─────────────────────────────────
+if (-not $SkipDotnetPublish) {
+    Write-Host "[1/4] Publishing .NET Native AOT for win-$Platform..." -ForegroundColor Yellow
+    $rid = "win-$Platform"
+    & dotnet publish "$RepoRoot\src\P2L.CLI" `
+        -c Release `
+        -r $rid `
+        --self-contained true `
+        -p:PublishAot=true `
+        -p:PublishSingleFile=false `
+        -p:AssemblyVersion=$Version `
+        -o "$ArtifactDir"
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+    Write-Host "  → p2l.exe published" -ForegroundColor Green
 } else {
-    Write-Host "✗ MSI file not found in output directory" -ForegroundColor Red
-    exit 1
+    Write-Host "[1/4] Skipping dotnet publish (--SkipDotnetPublish)" -ForegroundColor DarkGray
 }
 
+# Verify e_sqlite3.dll was produced
+if (-not (Test-Path "$ArtifactDir\e_sqlite3.dll")) {
+    throw "e_sqlite3.dll not found in $ArtifactDir`nCheck that Microsoft.Data.Sqlite is referenced in P2L.Mqtt.csproj"
+}
+Write-Host "  e_sqlite3.dll found ✓" -ForegroundColor Green
+
+# ── Step 2: PyInstaller build for p2l-client.exe ────────────────────────
+if (-not $SkipClientBuild) {
+    Write-Host "[2/4] Building p2l-client.exe with PyInstaller..." -ForegroundColor Yellow
+    if (-not (Get-Command pyinstaller -ErrorAction SilentlyContinue)) {
+        throw "pyinstaller not found. Run: pip install pyinstaller"
+    }
+    Push-Location "$RepoRoot\client"
+    & pyinstaller --onefile --name p2l-client --distpath "$ArtifactDir" main.py
+    if ($LASTEXITCODE -ne 0) { Pop-Location; throw "PyInstaller build failed" }
+    Pop-Location
+    Write-Host "  → p2l-client.exe built" -ForegroundColor Green
+} else {
+    Write-Host "[2/4] Skipping client build (--SkipClientBuild)" -ForegroundColor DarkGray
+}
+
+# ── Step 3: Verify all required files ────────────────────────────────────
+Write-Host "[3/4] Verifying artifacts..." -ForegroundColor Yellow
+$required = @('p2l.exe', 'p2l-client.exe', 'e_sqlite3.dll')
+foreach ($f in $required) {
+    if (-not (Test-Path "$ArtifactDir\$f")) {
+        throw "Required file missing: $ArtifactDir\$f"
+    }
+    $size = (Get-Item "$ArtifactDir\$f").Length / 1MB
+    Write-Host ("  {0,-24} {1:F1} MB  ✓" -f $f, $size) -ForegroundColor Green
+}
+
+# ── Step 4: Build MSI ────────────────────────────────────────────────────
+Write-Host "[4/4] Building MSI..." -ForegroundColor Yellow
+New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+
+& dotnet build "$InstallerDir\P2L.Installer.wixproj" `
+    -c Release `
+    -p:Platform=$Platform `
+    -p:ProductVersion=$Version `
+    -p:BinaryPath=$ArtifactDir `
+    -o "$DistDir"
+if ($LASTEXITCODE -ne 0) { throw "MSI build failed" }
+
+$msi = Get-ChildItem "$DistDir\*.msi" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (-not $msi) { throw "No .msi file found in $DistDir" }
+
 Write-Host ""
+Write-Host "═══════════════════════════════════════" -ForegroundColor Cyan
+Write-Host " MSI ready: $($msi.FullName)" -ForegroundColor Green
+Write-Host " Size     : $([math]::Round($msi.Length/1MB, 1)) MB" -ForegroundColor Green
+Write-Host "═══════════════════════════════════════" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Install (interactive):  msiexec /i `"$($msi.Name)`""
+Write-Host "Install (silent):       msiexec /i `"$($msi.Name)`" /qn"
+Write-Host "Uninstall:              msiexec /x `"$($msi.Name)`" /qn"

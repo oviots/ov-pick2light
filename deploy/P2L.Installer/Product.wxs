@@ -1,62 +1,84 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*"
-           Name="Pick2Light (P2L) Warehouse Control System"
-           Language="1033"
-           Version="1.0.0.0"
+<!--
+  Product.wxs — Main WiX 4 package definition for Pick2Light (P2L).
+
+  Produces: P2L-<version>-<platform>.msi
+  Installs:
+    C:\Program Files\P2L\
+      p2l.exe               P2L .NET bridge service
+      p2l-client.exe        P2L web dashboard (standalone)
+      e_sqlite3.dll         SQLite native library
+    C:\ProgramData\P2L\
+      appsettings.json      Bridge configuration
+      logs\                 Log directory
+
+  Services registered:
+    P2L            — Pick2Light Warehouse Daemon  (auto-start)
+    P2LClient      — Pick2Light Web Dashboard     (auto-start)
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package Name="Pick2Light (P2L) Warehouse Control System"
            Manufacturer="Pick2Light"
-           UpgradeCode="87654321-4321-4321-4321-210987654321">
+           Version="$(var.ProductVersion)"
+           UpgradeCode="87654321-4321-4321-4321-210987654321"
+           Language="1033"
+           Compressed="yes"
+           InstallerVersion="500"
+           Scope="perMachine">
 
-    <!-- Metadata -->
-    <Package InstallerVersion="500"
-             Compressed="yes"
-             InstallScope="perMachine"
-             Platform="$(var.Platform)"
-             Description="Pick2Light - Native AOT warehouse control system for Aioi light modules"
-             Manufacturer="Pick2Light" />
+    <!-- Upgrade: remove older versions, block downgrade -->
+    <MajorUpgrade
+        Schedule="afterInstallInitialize"
+        DowngradeErrorMessage="A newer version of Pick2Light is already installed. Uninstall it first." />
 
-    <!-- Media for installation source -->
-    <Media Id="1" Cabinet="p2l.cab" EmbedCab="yes" />
+    <!-- Single embedded CAB -->
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <!-- Installation directory structure -->
-    <StandardDirectory Id="ProgramFilesFolder">
-      <Directory Id="INSTALLFOLDER" Name="Pick2Light">
-        <Directory Id="BinFolder" Name="bin" />
-      </Directory>
+    <!-- ── Install directories ─────────────────────────────────────────── -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="P2L" />
     </StandardDirectory>
 
-    <!-- Add to PATH -->
     <StandardDirectory Id="CommonAppDataFolder">
-      <Directory Id="ProgramDataFolder" Name="Pick2Light">
-        <Directory Id="ConfigFolder" Name="config" />
+      <Directory Id="APPDATAFOLDER" Name="P2L">
+        <Directory Id="LOGSFOLDER" Name="logs" />
       </Directory>
     </StandardDirectory>
 
-    <!-- Start Menu -->
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="ProgramMenuDir" Name="Pick2Light" />
+      <Directory Id="P2LMENUFOLDER" Name="Pick2Light" />
     </StandardDirectory>
 
-    <!-- File references (harvested from binary directory) -->
+    <!-- ── Features ───────────────────────────────────────────────────── -->
     <Feature Id="ProductFeature"
-             Title="Pick2Light"
-             Description="Native AOT warehouse control system"
+             Title="Pick2Light Core"
+             Description="P2L bridge service, web dashboard, and SQLite runtime."
              Level="1"
-             Absent="disallow">
+             Absent="disallow"
+             AllowAdvertise="no"
+             Display="expand">
 
-      <ComponentRef Id="P2LBinary" />
-      <ComponentRef Id="PathEnvironment" />
-      <ComponentRef Id="UninstallRegistry" />
-      <ComponentGroupRef Id="StartMenuShortcuts" />
+      <ComponentGroupRef Id="BinaryFiles" />
+      <ComponentGroupRef Id="BridgeService" />
+      <ComponentGroupRef Id="ClientService" />
+      <ComponentGroupRef Id="ConfigFiles" />
+      <ComponentGroupRef Id="ShortcutComponents" />
+      <ComponentGroupRef Id="RegistryEntries" />
     </Feature>
 
-    <!-- Upgrade information -->
-    <Upgrade Id="87654321-4321-4321-4321-210987654321">
-      <UpgradeVersion Minimum="1.0.0.0" Maximum="99.99.99.99" Property="PREVIOUSVERSIONS" IncludeMinimum="yes" IncludeMaximum="no" />
-    </Upgrade>
+    <!-- ── UI (WiX standard InstallDir dialog) ───────────────────────── -->
+    <ui:WixUI Id="WixUI_InstallDir" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
 
-    <InstallExecuteSequence>
-      <RemoveExistingProducts After="InstallValidate" />
-    </InstallExecuteSequence>
-  </Product>
+    <!-- Skip license dialog (set to your own RTF if you have one) -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+
+    <!-- Banner and dialog bitmaps (optional, comment out if not provided) -->
+    <!-- <WixVariable Id="WixUIBannerBmp"  Value="Assets\banner.bmp"  /> -->
+    <!-- <WixVariable Id="WixUIDialogBmp"  Value="Assets\dialog.bmp"  /> -->
+
+  </Package>
 </Wix>

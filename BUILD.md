@@ -1,362 +1,289 @@
-# Pick2Light (P2L) Build & Deployment Guide
+# Pick2Light (P2L) — Build & Deployment Guide
 
 ## Overview
 
-Pick2Light is built as a **Native AOT** single-file binary for maximum portability and reduced footprint. This guide covers building for Windows, Linux, and macOS.
+P2L consists of two services:
 
-### Key Points
-- **No .NET Runtime required** — fully self-contained executable
-- **Single binary** — no dependencies to ship
-- **Cross-platform** — supports Windows (x64/arm64), Linux (x64/arm64), macOS (x64/arm64)
-- **Native AOT limitation** — must build on (or for) each target platform (cross-OS compilation not supported)
+| Service | Binary | Description |
+|---|---|---|
+| **P2L Bridge** | `p2l` / `p2l.exe` | .NET 10 Native AOT — controls Aioi light modules, exposes MQTT bridge |
+| **P2L Client** | `p2l-client` / `p2l-client.exe` | Python web dashboard (PyInstaller binary) — no Python needed on target |
+
+Both are **fully self-contained** — no .NET runtime, no Python installation required on deployment machines.
+
+---
+
+## Quick Start
+
+```bash
+# Linux/macOS — full package (binary + client + installer scripts)
+./deploy/package.sh linux-x64
+./deploy/package.sh osx-arm64
+
+# Windows — prepare binaries via Docker, build MSI on Windows
+docker build -f deploy/Dockerfile.build -t p2l-builder .
+docker run --rm -v "$(pwd)/artifacts:/workspace/artifacts" p2l-builder win-x64
+# Then on Windows: .\deploy\build-msi.ps1 -SkipDotnetPublish
+```
 
 ---
 
 ## Prerequisites
 
-### macOS & Linux
+### P2L Bridge (.NET 10)
+
 ```bash
-# Install .NET 10 SDK
-curl https://dot.net/v1/dotnet-install.sh | bash
+# macOS / Linux
+curl -L https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0
 export PATH="$HOME/.dotnet:$PATH"
+dotnet --version   # 10.0.x
+
+# Windows
+# Download from https://dotnet.microsoft.com/download/dotnet/10.0
 ```
+
+Native AOT also requires a C compiler toolchain:
+
+| Platform | Requirement |
+|---|---|
+| macOS | Xcode CLI tools: `xcode-select --install` |
+| Linux | clang + zlib: `apt install clang zlib1g-dev` |
+| Windows | Visual Studio Build Tools (C++ workload) |
+
+### P2L Client (Python 3.11+)
+
+```bash
+pip install pyinstaller
+pip install -r client/requirements.txt
+```
+
+---
+
+## Package Build (Recommended)
+
+`package.sh` / `package.ps1` orchestrates the full build:
+1. `dotnet publish` (Native AOT) for the bridge binary
+2. `pyinstaller` for the standalone client binary
+3. Bundles `e_sqlite3.dll/.so/.dylib` (SQLite native lib required at runtime)
+4. Writes installer scripts into the package
+5. Archives everything as `.tar.gz` (Linux/macOS) or `.zip` (Windows)
+
+### Linux / macOS
+
+```bash
+# Native platform
+./deploy/package.sh
+
+# Explicit RID
+./deploy/package.sh linux-x64
+./deploy/package.sh linux-arm64   # Raspberry Pi, ARM servers
+./deploy/package.sh osx-arm64     # Apple Silicon
+./deploy/package.sh osx-x64       # Intel Mac
+```
+
+Output: `dist/p2l-<version>-<rid>.tar.gz`
 
 ### Windows
-Download [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+
+```powershell
+.\deploy\package.ps1                   # x64
+.\deploy\package.ps1 -Platform arm64   # ARM64
+.\deploy\package.ps1 -Version 1.2.3
+```
+
+Output: `dist\p2l-<version>-win-x64.zip`
+
+### Package Layout
+
+```
+p2l-<version>-<rid>/
+├── bin/
+│   ├── p2l                      P2L bridge binary (p2l.exe on Windows)
+│   ├── p2l-client               Web dashboard binary (p2l-client.exe on Windows)
+│   └── libe_sqlite3.dylib       SQLite native lib (name varies by platform)
+├── config/
+│   └── appsettings.json         Bridge configuration
+└── deploy/
+    ├── install.sh               Linux/macOS installer
+    ├── install.ps1              Windows installer
+    ├── p2l.service              systemd unit (bridge)
+    └── p2l-client.service       systemd unit (dashboard)
+```
+
+> ⚠️ The SQLite native lib (`e_sqlite3.*`) **must** remain alongside the `p2l` binary.
 
 ---
 
-## Building on macOS
+## Building with Docker
 
-### For macOS (arm64) — Apple Silicon
+Docker builds run on any host (macOS, Linux, Windows) and produce packages for other platforms.
+
 ```bash
-./deploy/publish.sh osx-arm64
-# Output: artifacts/osx-arm64/p2l (15 MB)
+# Build the image (one-time)
+docker build -f deploy/Dockerfile.build -t p2l-builder .
+
+# Linux packages (full: AOT binary + PyInstaller client + tar.gz)
+docker run --rm -v "$(pwd)/dist:/workspace/dist" p2l-builder linux-x64
+docker run --rm -v "$(pwd)/dist:/workspace/dist" p2l-builder linux-arm64
+
+# Windows binaries only (p2l.exe + e_sqlite3.dll → artifacts/win-x64/)
+# Note: p2l-client.exe and MSI require Windows — see MSI section below
+docker run --rm -v "$(pwd)/artifacts:/workspace/artifacts" p2l-builder win-x64
 ```
 
-### For macOS (x64) — Intel Macs
-```bash
-./deploy/publish.sh osx-x64
-# Output: artifacts/osx-x64/p2l (15 MB)
-```
+### What Docker can/cannot build
 
-### Build Both macOS Architectures
-```bash
-./deploy/publish.sh native  # Auto-detects and builds for current platform
-```
-
-### Signing & Notarization (Optional - for distribution)
-```bash
-# Sign the binary
-codesign -s - artifacts/osx-arm64/p2l
-
-# For App Store / developer ID, replace `-s -` with your certificate
-```
+| Target | Docker (Linux) | Notes |
+|---|---|---|
+| `linux-x64` full package | ✅ | AOT + PyInstaller + tar.gz |
+| `linux-arm64` full package | ✅ | Cross-compiled |
+| `win-x64` binaries | ✅ | `p2l.exe` + `e_sqlite3.dll` (non-AOT, self-contained) |
+| `win-x64` `p2l-client.exe` | ❌ | PyInstaller requires Windows |
+| `win-x64` MSI | ❌ | WiX 5 is Windows-only |
+| `osx-*` any | ❌ | macOS SDK required |
 
 ---
 
-## Building on Linux
+## Building the Bridge Only (dotnet publish)
 
-### For Linux (x64) — Standard servers
-```bash
-./deploy/publish.sh linux-x64
-# Output: artifacts/linux-x64/p2l (15 MB)
-```
+For CI or when you only need the bridge binary:
 
-### For Linux (arm64) — ARM servers / Raspberry Pi
 ```bash
-./deploy/publish.sh linux-arm64
-# Output: artifacts/linux-arm64/p2l (15 MB)
-```
-
-### Or use Docker (for cross-platform builds from macOS/Windows)
-```bash
-# Build linux-x64 binary on any platform
-docker run --rm \
-  -v "$(pwd):/src" \
-  -w /src/src/P2L.CLI \
-  mcr.microsoft.com/dotnet/sdk:10 \
-  dotnet publish \
-    -c Release \
-    -r linux-x64 \
+# Native AOT (production — smaller, faster startup, no runtime)
+dotnet publish src/P2L.CLI -c Release -r linux-x64 \
+    --self-contained true \
     -p:PublishAot=true \
-    -p:UsePortableLinuxSharedLibraries=true \
     -p:StripSymbols=true \
-    --output /src/artifacts/linux-x64
+    -o artifacts/linux-x64
+
+# Non-AOT self-contained (for cross-compile from macOS → Windows)
+dotnet publish src/P2L.CLI -c Release -r win-x64 \
+    --self-contained true \
+    -o artifacts/win-x64
+# Produces: artifacts/win-x64/p2l.exe + e_sqlite3.dll
 ```
+
+### Publish profiles (MSBuild)
+
+```bash
+dotnet publish src/P2L.CLI/P2L.CLI.csproj /p:PublishProfile=linux-x64
+dotnet publish src/P2L.CLI/P2L.CLI.csproj /p:PublishProfile=win-x64
+```
+
+Profiles in `src/P2L.CLI/Properties/PublishProfiles/` set: `PublishAot=true`, `SelfContained=true`, `InvariantGlobalization=true`, `StripSymbols=true`.
 
 ---
 
-## Building on Windows
+## Windows MSI Installer
 
-### For Windows (x64) — Standard PCs
-```powershell
-.\deploy\publish.ps1 win-x64
-# Or use dotnet CLI directly:
-dotnet publish src/P2L.CLI/P2L.CLI.csproj `
-  -c Release `
-  -r win-x64 `
-  -p:PublishAot=true `
-  --output artifacts/win-x64
-```
+See **[deploy/INSTALLER.md](INSTALLER.md)** for the full WiX 5 MSI guide.
 
-### For Windows (arm64) — ARM-based devices
-```powershell
-.\deploy\publish.ps1 win-arm64
-```
+### From macOS/Linux — via GitHub Actions
 
-### Output
-- `artifacts/win-x64/p2l.exe` (15 MB)
-- `artifacts/win-arm64/p2l.exe` (15 MB)
-
----
-
-## Deployment
-
-### macOS
 ```bash
-# Copy to Applications
-cp artifacts/osx-arm64/p2l /usr/local/bin/p2l
-chmod +x /usr/local/bin/p2l
-
-# Or copy to a specific directory
-cp artifacts/osx-arm64/p2l /opt/p2l/bin/
-
-# Run
-p2l --help
-```
-
-### Linux (Standard install)
-```bash
-sudo cp artifacts/linux-x64/p2l /usr/local/bin/p2l
-sudo chmod +x /usr/local/bin/p2l
-
-# Verify
-p2l --help
-```
-
-### Linux (systemd Service)
-```bash
-# Copy binary
-sudo cp artifacts/linux-x64/p2l /usr/local/bin/p2l
-sudo chmod +x /usr/local/bin/p2l
-
-# Create systemd service file
-sudo tee /etc/systemd/system/p2l.service > /dev/null <<EOF
-[Unit]
-Description=Pick2Light Warehouse Control System
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/p2l run /opt/p2l/config/picking-batch.csv
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-User=p2l
-WorkingDirectory=/opt/p2l
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Enable and start
-sudo systemctl daemon-reload
-sudo systemctl enable p2l
-sudo systemctl start p2l
+# Trigger build on a Windows runner (requires gh CLI + repo push access)
+./deploy/build-msi.sh 1.0.0           # x64
+./deploy/build-msi.sh 1.0.0 arm64     # ARM64
 
 # Monitor
-sudo journalctl -u p2l -f
+gh run watch
+
+# Download MSI when done
+./deploy/build-msi.sh --download
 ```
 
-### Windows (CLI)
-```cmd
-artifacts\win-x64\p2l.exe --help
+### From Windows — local build
 
-# Or add to PATH for system-wide access
-set PATH=%PATH%;C:\opt\p2l\bin
+```powershell
+.\deploy\build-msi.ps1 -Version 1.0.0           # full build
+.\deploy\build-msi.ps1 -SkipDotnetPublish        # use existing artifacts/win-x64/
 ```
 
-### Windows (Service - future)
-To run as a Windows Service, a separate installer or SC command would be needed. Contact DevOps for setup.
+Prerequisites: `dotnet tool install --global wix && wix extension add WixToolset.UI.wixext && wix extension add WixToolset.Util.wixext`
 
 ---
 
-## Testing & Verification
+## Artifact Structure
 
-### Quick Test (all platforms)
-```bash
-# Display help
-./artifacts/*/p2l --help
+After all platform builds:
 
-# Check version
-./artifacts/*/p2l --version
-
-# List devices (requires Aioi gateway running)
-./artifacts/*/p2l devices
-
-# Test light control
-./artifacts/*/p2l light <module-id> on
+```
+artifacts/
+├── osx-arm64/
+│   ├── p2l                        macOS Apple Silicon bridge (AOT, ~15 MB)
+│   └── libe_sqlite3.dylib
+├── osx-x64/
+│   ├── p2l
+│   └── libe_sqlite3.dylib
+├── linux-x64/
+│   ├── p2l                        Linux x64 bridge (AOT, ~15 MB)
+│   └── libe_sqlite3.so
+├── linux-arm64/
+│   ├── p2l
+│   └── libe_sqlite3.so
+├── win-x64/
+│   ├── p2l.exe                    Windows x64 bridge
+│   ├── p2l-client.exe             Web dashboard (standalone, ~40 MB)
+│   └── e_sqlite3.dll
+└── client/
+    ├── osx-arm64/p2l-client
+    ├── linux-x64/p2l-client
+    └── ...
 ```
 
-### Performance Check
+---
+
+## Native AOT Notes
+
+### Spectre.Console reflection (`rd.xml`)
+
+Spectre.Console.Cli uses runtime reflection to discover `Settings` types. `src/P2L.CLI/rd.xml` preserves these via `Dynamic="Required All"`. **If you add a command, add it to `rd.xml`:**
+
+```xml
+<Type Name="P2L.CLI.Commands.MyNewCommand"          Dynamic="Required All" />
+<Type Name="P2L.CLI.Commands.MyNewCommand+Settings" Dynamic="Required All" />
+```
+
+### `appsettings.json` binding
+
+`config.Get<T>()` is trimmed under AOT. P2L reads every key via string indexer (`config["Mqtt:Enabled"]`). Add new settings the same way in `Program.cs`.
+
+### Cross-OS AOT limitation
+
+Native AOT compilation **cannot cross OS families**:
+- macOS → Linux: requires Docker (`deploy/Dockerfile.build`)
+- macOS → Windows: Docker produces non-AOT exe (functional, ~80 MB vs ~15 MB AOT)
+- Linux → macOS: not supported (requires macOS SDK)
+
+---
+
+## CI/CD — GitHub Actions
+
+The repo ships three workflows:
+
+| Workflow | File | Trigger |
+|---|---|---|
+| Build MSI | `.github/workflows/build-msi.yml` | Manual / `v*` tag |
+
+### Trigger MSI build from any machine
+
 ```bash
-# Binary size
-ls -lh artifacts/*/p2l
+# Manual trigger (any version/platform)
+gh workflow run build-msi.yml -f version=1.0.0 -f platform=x64
 
-# Runtime check
-time ./artifacts/osx-arm64/p2l --help
-
-# Memory usage (on macOS)
-/usr/bin/time -v ./artifacts/osx-arm64/p2l --help
+# Tag push (auto-builds and creates GitHub Release)
+git tag v1.0.0 && git push origin v1.0.0
 ```
 
 ---
 
 ## Troubleshooting
 
-### macOS: "p2l" cannot be opened because the developer cannot be verified
-```bash
-# Bypass Gatekeeper (one-time)
-xattr -d com.apple.quarantine /usr/local/bin/p2l
-
-# Or allow in Security & Privacy settings
-```
-
-### Linux: Permission denied
-```bash
-chmod +x /usr/local/bin/p2l
-```
-
-### Windows: Cannot find p2l
-Ensure `artifacts/win-x64/p2l.exe` exists and the path is in `%PATH%`
-
-### Build fails with "clang: invalid linker name"
-This happens when cross-compiling from macOS to Linux. Use Docker instead (see above).
-
----
-
-## Build Artifacts
-
-After running `./deploy/publish.sh all` on each platform, you'll have:
-
-```
-artifacts/
-├── osx-x64/
-│   ├── p2l                    # macOS Intel binary
-│   └── p2l.dSYM/             # Debug symbols
-├── osx-arm64/
-│   ├── p2l                    # macOS Apple Silicon binary
-│   └── p2l.dSYM/
-├── linux-x64/
-│   └── p2l                    # Linux x64 binary
-├── linux-arm64/
-│   └── p2l                    # Linux ARM binary
-├── win-x64/
-│   └── p2l.exe                # Windows x64 binary
-└── win-arm64/
-    └── p2l.exe                # Windows ARM binary
-```
-
-Each binary is ~15 MB and fully self-contained.
-
----
-
-## Native AOT Limitations
-
-- **No dynamic code generation** — all types must be known at compile time
-- **Reflection is limited** — use Source Generators for JSON serialization (already configured)
-- **No cross-OS compilation** — must compile on target platform or use Docker
-- **Platform-specific code** — Windows service host is compiled only for win-x64/win-arm64
-
----
-
-## CI/CD Integration
-
-### GitHub Actions Example
-```yaml
-name: Build P2L Binaries
-
-on:
-  push:
-    branches: [main]
-
-jobs:
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10'
-      - run: chmod +x deploy/publish.sh && ./deploy/publish.sh native
-      - uses: actions/upload-artifact@v4
-        with:
-          name: p2l-osx
-          path: artifacts/osx-*/p2l
-
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10'
-      - run: chmod +x deploy/publish.sh && ./deploy/publish.sh native
-      - uses: actions/upload-artifact@v4
-        with:
-          name: p2l-linux
-          path: artifacts/linux-*/p2l
-
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10'
-      - run: .\deploy\publish.ps1 -native
-      - uses: actions/upload-artifact@v4
-        with:
-          name: p2l-windows
-          path: artifacts/win-*/p2l.exe
-```
-
----
-
-## For Developers
-
-### Build locally during development
-```bash
-# Debug build (JIT, slower but with debugging)
-dotnet run --project src/P2L.CLI/P2L.CLI.csproj -- --help
-
-# Release build (AOT, optimized)
-./deploy/publish.sh native
-```
-
-### Clean build
-```bash
-rm -rf artifacts/*/
-dotnet clean
-./deploy/publish.sh native
-```
-
-### Publish to GitHub Releases
-```bash
-git tag v1.0.0
-git push --tags
-
-# Build binaries and attach to release via GitHub API or gh CLI
-gh release create v1.0.0 artifacts/*/p2l* --draft
-```
-
----
-
-## Support
-
-For issues or questions:
-- Check the main [README.md](README.md)
-- Review [CLAUDE.md](CLAUDE.md) for architecture
-- Open an issue on GitHub
+| Problem | Fix |
+|---|---|
+| `clang: invalid linker name` | Use Docker for cross-platform Linux builds |
+| `p2l` exits silently (no output) | Check `crash_history.jsonl`; likely missing type in `rd.xml` |
+| `e_sqlite3.dll/so/dylib not found` | Keep SQLite lib in same dir as `p2l` binary |
+| macOS: "developer cannot be verified" | `xattr -d com.apple.quarantine /path/to/p2l` |
+| AOT + `config.Get<T>()` returns null | Use string-key indexer instead |
+| PyInstaller: no module named X | Add to `client/requirements.txt` and rebuild |

@@ -1,212 +1,182 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Install P2L bridge service + Python web client as Windows Services.
+    Install P2L bridge service + web client as Windows Services.
+    Uses pre-built binaries — no Python runtime required.
 
 .DESCRIPTION
-    Copies the p2l.exe binary to C:\Program Files\P2L and registers it as a
-    Windows Service. Also installs the Python web dashboard to
-    C:\Program Files\P2L\client, creates a venv, and registers it as a
-    second Windows Service via NSSM (if available) or a Python wrapper.
+    Copies p2l.exe + p2l-client.exe to C:\Program Files\P2L and registers
+    both as Windows Services via sc.exe.
 
-    P2L detects it is running under the Service Control Manager via
-    Environment.UserInteractive == false and hands off to ServiceBase.Run().
-
-.PARAMETER BinaryPath
-    Path to the compiled p2l.exe (win-x64 AOT artifact).
-    Default: .\artifacts\win-x64\p2l.exe
+.PARAMETER PackageRoot
+    Path to the extracted package root (contains bin\, config\, deploy\).
+    Default: directory above this script.
 
 .PARAMETER CsvTaskFile
-    Absolute path to the picking task CSV that the daemon should process.
+    Path to the picking task CSV.
     Default: C:\Program Files\P2L\tasks.csv
-
-.PARAMETER ClientSourcePath
-    Path to the Python web client source directory.
-    Default: .\client
 
 .PARAMETER ServiceName
     Windows Service name for P2L bridge. Default: P2L
 
-.PARAMETER ServiceDisplayName
-    Display name shown in services.msc. Default: Pick2Light Warehouse Daemon
+.PARAMETER ClientPort
+    Port for the web dashboard. Default: 8765
 
 .PARAMETER StartNow
     If specified, start both services immediately after installation.
 
 .EXAMPLE
-    # Basic install with defaults
     .\deploy\install-windows.ps1
-
-.EXAMPLE
-    # Custom paths, start immediately
-    .\deploy\install-windows.ps1 `
-        -BinaryPath .\artifacts\win-x64\p2l.exe `
-        -CsvTaskFile "D:\Warehouse\tasks.csv" `
-        -StartNow
+    .\deploy\install-windows.ps1 -StartNow
+    .\deploy\install-windows.ps1 -PackageRoot "D:\p2l-1.0.0-win-x64"
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [string] $BinaryPath         = ".\artifacts\win-x64\p2l.exe",
-    [string] $CsvTaskFile        = "C:\Program Files\P2L\tasks.csv",
-    [string] $ClientSourcePath   = ".\client",
-    [string] $ServiceName        = "P2L",
-    [string] $ServiceDisplayName = "Pick2Light Warehouse Daemon",
+    [string] $PackageRoot    = "",
+    [string] $CsvTaskFile    = "C:\Program Files\P2L\tasks.csv",
+    [string] $ServiceName    = "P2L",
+    [string] $ClientPort     = "8765",
     [switch] $StartNow
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
 function Write-Step([string]$msg)  { Write-Host "[INFO]  $msg" -ForegroundColor Cyan }
 function Write-Ok([string]$msg)    { Write-Host "[OK]    $msg" -ForegroundColor Green }
 function Write-Warn([string]$msg)  { Write-Host "[WARN]  $msg" -ForegroundColor Yellow }
 function Fail([string]$msg)        { Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
 
+# Resolve package root
+if (-not $PackageRoot) {
+    $PackageRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+}
+$PackageRoot = (Resolve-Path $PackageRoot).Path
+
 # ── Pre-flight ────────────────────────────────────────────────────────────────
-$BinaryPath = Resolve-Path $BinaryPath -ErrorAction SilentlyContinue
-if (-not $BinaryPath -or -not (Test-Path $BinaryPath)) {
-    Fail "Binary not found: $BinaryPath`n  Build first with: .\deploy\publish.ps1 -RID win-x64"
-}
-if (-not (Test-Path $ClientSourcePath)) {
-    Fail "Client source not found: $ClientSourcePath"
-}
+$P2LBin    = Join-Path $PackageRoot "bin\p2l.exe"
+$ClientBin = Join-Path $PackageRoot "bin\p2l-client.exe"
 
-# Check Python availability
-$PythonExe = (Get-Command python -ErrorAction SilentlyContinue)?.Source
-if (-not $PythonExe) { $PythonExe = (Get-Command python3 -ErrorAction SilentlyContinue)?.Source }
-if (-not $PythonExe) { Fail "Python not found. Install Python 3.10+ from https://python.org" }
-Write-Ok "Python found: $PythonExe"
+if (-not (Test-Path $P2LBin))    { Fail "Not found: $P2LBin" }
+if (-not (Test-Path $ClientBin)) { Fail "Not found: $ClientBin" }
 
-Write-Step "Installing P2L from      : $BinaryPath"
-Write-Step "CSV task file            : $CsvTaskFile"
-Write-Step "Python client source     : $ClientSourcePath"
-Write-Step "Service name             : $ServiceName"
+$InstallDir = "C:\Program Files\P2L"
+$LogDir     = "C:\ProgramData\P2L\logs"
+$ClientServiceName = "${ServiceName}Client"
 
-# ── 1. Copy P2L binary + config ──────────────────────────────────────────────
-$InstallDir   = "C:\Program Files\P2L"
-$ClientDir    = "$InstallDir\client"
-$LogDir       = "$InstallDir\logs"
-$Dest         = "$InstallDir\p2l.exe"
+Write-Step "Package root : $PackageRoot"
+Write-Step "Install dir  : $InstallDir"
+Write-Host ""
 
-Write-Step "Creating install directory: $InstallDir"
+# ── 1. Create install directories ─────────────────────────────────────────────
+Write-Step "Creating directories ..."
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-New-Item -ItemType Directory -Path $ClientDir  -Force | Out-Null
 New-Item -ItemType Directory -Path $LogDir     -Force | Out-Null
+Write-Ok "Directories ready"
 
-Write-Step "Copying P2L binary..."
-Copy-Item -Path $BinaryPath -Destination $Dest -Force
+# ── 2. Install binaries ───────────────────────────────────────────────────────
+Write-Step "Installing binaries ..."
+Copy-Item $P2LBin    (Join-Path $InstallDir "p2l.exe")        -Force
+Copy-Item $ClientBin (Join-Path $InstallDir "p2l-client.exe") -Force
+Write-Ok "Installed p2l.exe and p2l-client.exe"
 
-$AppSettingsSrc = Join-Path (Split-Path $BinaryPath) "appsettings.json"
-if (-not (Test-Path $AppSettingsSrc)) {
-    $AppSettingsSrc = Join-Path (Split-Path $PSScriptRoot) "appsettings.json"
-}
-if (Test-Path $AppSettingsSrc) {
-    Copy-Item -Path $AppSettingsSrc -Destination "$InstallDir\appsettings.json" -Force
-    Write-Ok "Copied appsettings.json"
+# SQLite native library (e_sqlite3.dll) — required by p2l at runtime
+$SqliteDll = Join-Path $PackageRoot "bin\e_sqlite3.dll"
+if (Test-Path $SqliteDll) {
+    Copy-Item $SqliteDll (Join-Path $InstallDir "e_sqlite3.dll") -Force
+    Write-Ok "Installed SQLite native lib: e_sqlite3.dll"
 } else {
-    Write-Warn "appsettings.json not found alongside binary — using compiled-in defaults."
+    Write-Warn "e_sqlite3.dll not found in package — p2l may fail at runtime"
 }
 
-# ── 2. Install Python web client ──────────────────────────────────────────────
-Write-Step "Copying Python web client to $ClientDir ..."
-# Robocopy: /E = include subdirs, /PURGE = remove extra, /XD = exclude dirs, /NFL /NDL = quiet
-robocopy $ClientSourcePath $ClientDir /E /PURGE /XD "__pycache__" "venv" ".git" /XF "*.pyc" "*.db-shm" "*.db-wal" /NFL /NDL /NJH /NJS | Out-Null
+# appsettings.json
+$AppSettings = Join-Path $PackageRoot "config\appsettings.json"
+$AppSettingsDest = Join-Path $InstallDir "appsettings.json"
+if (Test-Path $AppSettings) {
+    if (Test-Path $AppSettingsDest) {
+        Write-Warn "appsettings.json already exists — keeping existing config"
+    } else {
+        Copy-Item $AppSettings $AppSettingsDest -Force
+        Write-Ok "Installed appsettings.json  <- edit before starting the service"
+    }
+}
 
-Write-Step "Creating Python virtual environment ..."
-& $PythonExe -m venv "$ClientDir\venv"
-& "$ClientDir\venv\Scripts\pip.exe" install --quiet --upgrade pip
-& "$ClientDir\venv\Scripts\pip.exe" install --quiet -r "$ClientDir\requirements.txt"
-Write-Ok "Python client installed (venv ready)"
-
-# ── 3. Secure directory ACL ───────────────────────────────────────────────────
-Write-Step "Locking down directory permissions..."
-$Acl = Get-Acl $InstallDir
-$Acl.SetAccessRuleProtection($true, $false)
-$SystemRule  = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "NT AUTHORITY\SYSTEM",    "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-$AdminRule   = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "BUILTIN\Administrators", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-$ServiceRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "NT SERVICE\$ServiceName", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
-$LogRule     = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    "NT SERVICE\$ServiceName", "Modify", "ContainerInherit,ObjectInherit", "None", "Allow")
-$Acl.AddAccessRule($SystemRule)
-$Acl.AddAccessRule($AdminRule)
-$Acl.AddAccessRule($ServiceRule)
-Set-Acl $InstallDir $Acl
-
-$LogAcl = Get-Acl $LogDir
-$LogAcl.AddAccessRule($LogRule)
-Set-Acl $LogDir $LogAcl
-
-# ── 4. Register P2L bridge Windows Service ───────────────────────────────────
+# ── 3. Register P2L bridge Windows Service ────────────────────────────────────
+Write-Step "Registering P2L bridge service ..."
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existing) {
-    Write-Warn "Service '$ServiceName' already exists — removing for clean install."
+    Write-Warn "Service '$ServiceName' already exists — removing for clean install"
     if ($existing.Status -eq "Running") { Stop-Service -Name $ServiceName -Force }
     sc.exe delete $ServiceName | Out-Null
     Start-Sleep -Seconds 2
 }
 
-$BinPathArg = "`"$Dest`" run `"$CsvTaskFile`""
-Write-Step "Registering P2L bridge Windows Service..."
+$p2lExe = Join-Path $InstallDir "p2l.exe"
+$binPath = "`"$p2lExe`" run `"$CsvTaskFile`""
 $result = sc.exe create $ServiceName `
-    binPath= $BinPathArg `
-    DisplayName= $ServiceDisplayName `
-    start= auto `
-    obj= "NT AUTHORITY\LocalService"
-
+    binPath= $binPath `
+    DisplayName= "Pick2Light Warehouse Daemon" `
+    start= auto
 if ($LASTEXITCODE -ne 0) { Fail "sc.exe create failed: $result" }
 sc.exe description $ServiceName "Pick2Light warehouse light-module controller (Aioi Systems)" | Out-Null
 sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/5000 | Out-Null
-Write-Ok "P2L bridge service registered."
+Write-Ok "P2L bridge service registered: $ServiceName"
 
-# ── 5. Register Python web client Windows Service ────────────────────────────
-$ClientServiceName = "${ServiceName}Client"
-$ClientSvcExisting = Get-Service -Name $ClientServiceName -ErrorAction SilentlyContinue
-if ($ClientSvcExisting) {
-    Write-Warn "Service '$ClientServiceName' already exists — removing for clean install."
-    if ($ClientSvcExisting.Status -eq "Running") { Stop-Service -Name $ClientServiceName -Force }
+# ── 4. Register P2L client Windows Service ────────────────────────────────────
+Write-Step "Registering P2L web client service ..."
+$existingClient = Get-Service -Name $ClientServiceName -ErrorAction SilentlyContinue
+if ($existingClient) {
+    Write-Warn "Service '$ClientServiceName' already exists — removing for clean install"
+    if ($existingClient.Status -eq "Running") { Stop-Service -Name $ClientServiceName -Force }
     sc.exe delete $ClientServiceName | Out-Null
     Start-Sleep -Seconds 2
 }
 
-# Write a wrapper script that Windows SCM can launch (pythonservice.exe alternative)
-$WrapperScript = "$ClientDir\start-service.ps1"
-@"
-`$env:P2L_CLIENT_HOST = '0.0.0.0'
-`$env:P2L_CLIENT_PORT = '8765'
-Set-Location '$ClientDir'
-& '$ClientDir\venv\Scripts\python.exe' '$ClientDir\run.py'
-"@ | Set-Content -Path $WrapperScript -Encoding UTF8
-
-$ClientBinPath = "`"$Env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`" -NonInteractive -ExecutionPolicy Bypass -File `"$WrapperScript`""
-Write-Step "Registering P2L web client Windows Service..."
+$clientExe = Join-Path $InstallDir "p2l-client.exe"
+$clientBinPath = "`"$clientExe`""
 $result = sc.exe create $ClientServiceName `
-    binPath= $ClientBinPath `
+    binPath= $clientBinPath `
     DisplayName= "Pick2Light Web Dashboard" `
-    start= auto `
-    obj= "NT AUTHORITY\LocalService"
-
+    start= auto
 if ($LASTEXITCODE -ne 0) { Fail "sc.exe create (client) failed: $result" }
-sc.exe description $ClientServiceName "Pick2Light web dashboard (FastAPI) on port 8765" | Out-Null
+sc.exe description $ClientServiceName "Pick2Light web dashboard on port $ClientPort" | Out-Null
 sc.exe failure $ClientServiceName reset= 86400 actions= restart/5000/restart/5000/restart/5000 | Out-Null
-Write-Ok "P2L web client service registered."
 
-# ── 6. Optionally start now ───────────────────────────────────────────────────
+# Set environment variables for the service
+$regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ClientServiceName\Parameters"
+New-Item -Path $regPath -Force | Out-Null
+Set-ItemProperty -Path $regPath -Name "AppParameters" -Value "" | Out-Null
+
+# Use sc.exe to set environment
+$envMultiSz = [string[]]@("P2L_CLIENT_HOST=0.0.0.0", "P2L_CLIENT_PORT=$ClientPort")
+$regEnvPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ClientServiceName"
+New-ItemProperty -Path $regEnvPath -Name "Environment" -Value $envMultiSz -PropertyType MultiString -Force | Out-Null
+
+Write-Ok "P2L client service registered: $ClientServiceName"
+
+# ── 5. Configure ACLs ─────────────────────────────────────────────────────────
+# Allow LocalService to read the install dir
+$acl = Get-Acl $InstallDir
+$rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    "NT AUTHORITY\LocalService", "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow")
+$acl.AddAccessRule($rule)
+$dataRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    "NT AUTHORITY\LocalService", "Modify", "ContainerInherit,ObjectInherit", "None", "Allow")
+$acl.AddAccessRule($dataRule)
+Set-Acl $InstallDir $acl
+Write-Ok "ACLs configured"
+
+# ── 6. Optionally start now ────────────────────────────────────────────────────
 if ($StartNow) {
-    Write-Step "Starting P2L bridge service..."
+    Write-Step "Starting P2L bridge ..."
     Start-Service -Name $ServiceName
     Start-Sleep -Seconds 2
-    $svc = Get-Service -Name $ServiceName
-    Write-Ok "P2L bridge status: $($svc.Status)"
+    Write-Ok "P2L bridge: $((Get-Service -Name $ServiceName).Status)"
 
-    Write-Step "Starting P2L web client service..."
+    Write-Step "Starting P2L web client ..."
     Start-Service -Name $ClientServiceName
     Start-Sleep -Seconds 2
-    $csvc = Get-Service -Name $ClientServiceName
-    Write-Ok "P2L client status: $($csvc.Status)"
+    Write-Ok "P2L client: $((Get-Service -Name $ClientServiceName).Status)"
 } else {
     Write-Warn "Services not started. Run when ready:"
     Write-Host "    Start-Service -Name $ServiceName" -ForegroundColor White
@@ -215,10 +185,9 @@ if ($StartNow) {
 
 Write-Host ""
 Write-Ok "=== Installation complete ==="
-Write-Host "  Dashboard         : http://localhost:8765"
-Write-Host "  Logs (bridge)     : $LogDir\*.log"
-Write-Host "  Logs (client)     : Get-EventLog -LogName Application -Source $ClientServiceName -Newest 50"
-Write-Host "  Stop bridge       : Stop-Service -Name $ServiceName"
-Write-Host "  Stop client       : Stop-Service -Name $ClientServiceName"
-Write-Host "  Status bridge     : Get-Service -Name $ServiceName"
-Write-Host "  Status client     : Get-Service -Name $ClientServiceName"
+Write-Host "  Dashboard     : http://localhost:$ClientPort"
+Write-Host "  Config        : $InstallDir\appsettings.json"
+Write-Host "  Logs          : $LogDir\"
+Write-Host "  Stop bridge   : Stop-Service -Name $ServiceName"
+Write-Host "  Stop client   : Stop-Service -Name $ClientServiceName"
+Write-Host "  Uninstall     : sc.exe delete $ServiceName; sc.exe delete $ClientServiceName"

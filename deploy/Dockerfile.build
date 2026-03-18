@@ -1,0 +1,81 @@
+# Dockerfile.build — Build P2L packages from any host using Docker.
+#
+# IMPORTANT: Always build this image for linux/amd64 (even on Apple Silicon):
+#   docker build --platform linux/amd64 -f deploy/Dockerfile.build -t p2l-builder .
+#
+# For linux-arm64 packages, build a second image:
+#   docker build --platform linux/arm64 -f deploy/Dockerfile.build -t p2l-builder-arm64 .
+#
+# Use deploy/build-all.sh — handles platforms, image builds, and volumes automatically:
+#   ./deploy/build-all.sh              # all platforms
+#   ./deploy/build-all.sh linux-x64
+#   ./deploy/build-all.sh linux-arm64
+#   ./deploy/build-all.sh windows
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │  Platform matrix                                                            │
+# │                                                                             │
+# │  linux-x64    AOT binary + PyInstaller + tar.gz  ✅ (linux/amd64 image)   │
+# │  linux-arm64  AOT binary + PyInstaller + tar.gz  ✅ (linux/arm64 image)   │
+# │  win-x64      p2l.exe + e_sqlite3.dll            ✅ (any image, non-AOT)  │
+# │  win-x64      p2l-client.exe                     ❌ PyInstaller = Windows │
+# │  win-x64      MSI                                ❌ WiX 5 = Windows only  │
+# │  osx-*        any                                ❌ macOS SDK required     │
+# │                                                                             │
+# │  For macOS packages: ./deploy/package.sh osx-arm64  (run on macOS)        │
+# │  For Windows MSI:    ./deploy/build-msi.sh 1.0.0    (GitHub Actions)      │
+# └─────────────────────────────────────────────────────────────────────────────┘
+
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble AS builder
+
+# Platform is controlled by --platform flag passed to docker build / docker run
+# e.g.: docker build --platform linux/amd64 ... (for linux-x64 + win-x64 targets)
+#        docker build --platform linux/arm64 ... (for linux-arm64 target)
+
+# ── System dependencies ────────────────────────────────────────────────────────
+# clang + lld: Native AOT linker (lld supports both x64 and arm64 targets)
+# python3 + pip: PyInstaller for p2l-client standalone binary
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
+    lld \
+    llvm \
+    zlib1g-dev \
+    libssl-dev \
+    python3 \
+    python3-venv \
+    python3-pip \
+    python3-dev \
+    zip \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Cross-compile toolchains ───────────────────────────────────────────────────
+# amd64 image building arm64: install arm64 cross-linker
+# arm64 image building amd64: install x86_64 cross-linker
+RUN dpkg --add-architecture arm64 2>/dev/null || true && \
+    dpkg --add-architecture amd64 2>/dev/null || true && \
+    apt-get update 2>/dev/null || true && \
+    apt-get install -y --no-install-recommends \
+        gcc-aarch64-linux-gnu \
+        binutils-aarch64-linux-gnu \
+    2>/dev/null || true && \
+    rm -rf /var/lib/apt/lists/* 2>/dev/null || true
+
+# ── Python venv + dependencies (cached separately from source code) ────────────
+# Copy only requirements first so this layer is cached unless deps change
+COPY client/requirements.txt /tmp/client-requirements.txt
+RUN python3 -m venv /opt/p2l-venv && \
+    /opt/p2l-venv/bin/pip install --upgrade pip && \
+    /opt/p2l-venv/bin/pip install pyinstaller && \
+    /opt/p2l-venv/bin/pip install -r /tmp/client-requirements.txt
+
+ENV PATH="/opt/p2l-venv/bin:$PATH"
+
+WORKDIR /workspace
+
+# Copy project files
+COPY . .
+
+# ── Entrypoint: run package.sh ─────────────────────────────────────────────────
+ENTRYPOINT ["bash", "deploy/package.sh"]
+CMD ["linux-x64"]

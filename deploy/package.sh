@@ -80,6 +80,33 @@ build_dotnet() {
     [[ "$RID" == linux-* ]] && EXTRA="-p:UsePortableLinuxSharedLibraries=true"
 
     info "Building P2L (.NET AOT) for $RID ..."
+    mkdir -p "$OUT"
+
+    # On macOS, AOT linking needs OpenSSL + Brotli from Homebrew (not in system path)
+    if [[ "$(uname -s)" == Darwin && "$RID" == osx-* ]]; then
+        local _extra_libs=""
+        for _pkg in openssl@3 openssl brotli; do
+            local _prefix
+            _prefix="$(brew --prefix "$_pkg" 2>/dev/null || true)"
+            if [[ -n "$_prefix" && -d "$_prefix/lib" ]]; then
+                _extra_libs="${_extra_libs}${_extra_libs:+:}${_prefix}/lib"
+            fi
+        done
+        if [[ -n "$_extra_libs" ]]; then
+            export LIBRARY_PATH="${_extra_libs}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+            info "LIBRARY_PATH set: $LIBRARY_PATH"
+        else
+            warn "OpenSSL/Brotli not found — install with: brew install openssl@3 brotli"
+        fi
+        # osx-x64 AOT on Apple Silicon (arm64 host) is not supported
+        if [[ "$RID" == osx-x64 && "$(uname -m)" == arm64 ]]; then
+            warn "osx-x64 AOT is not supported on Apple Silicon. Falling back to non-AOT self-contained."
+            EXTRA="-p:PublishAot=false"
+        fi
+    fi
+
+    # Capture exit code explicitly — >&2 alone can mask failures in some shells
+    local RC=0
     dotnet publish "$PROJECT" \
         --configuration Release \
         --runtime "$RID" \
@@ -88,7 +115,12 @@ build_dotnet() {
         -p:PublishAot=true \
         -p:InvariantGlobalization=true \
         -p:StripSymbols=true \
-        $EXTRA >&2
+        $EXTRA 2>&1 | tee /tmp/p2l-publish.log >&2 || RC=$?
+
+    if [[ $RC -ne 0 ]]; then
+        error "dotnet publish failed (exit $RC) for $RID. Last 20 lines:
+$(tail -20 /tmp/p2l-publish.log)"
+    fi
 
     local BIN="$OUT/p2l"
     [[ "$RID" == win-* ]] && BIN="$OUT/p2l.exe"
@@ -127,13 +159,29 @@ stage_package() {
     cp "$P2L_BIN" "$STAGE/bin/$BIN_NAME"
     chmod +x "$STAGE/bin/$BIN_NAME"
 
+    # ── SQLite native library (required at runtime alongside p2l) ────────────
+    local ARTIFACT_DIR; ARTIFACT_DIR="$(dirname "$P2L_BIN")"
+    local SQLITE_LIB=""
+    for pattern in "libe_sqlite3.dylib" "libe_sqlite3.so" "e_sqlite3.dll"; do
+        if [[ -f "$ARTIFACT_DIR/$pattern" ]]; then
+            SQLITE_LIB="$ARTIFACT_DIR/$pattern"
+            break
+        fi
+    done
+    if [[ -n "$SQLITE_LIB" ]]; then
+        cp "$SQLITE_LIB" "$STAGE/bin/"
+        ok "Bundled SQLite native lib: $(basename "$SQLITE_LIB")"
+    else
+        warn "SQLite native lib not found in $ARTIFACT_DIR — p2l may fail at runtime!"
+    fi
+
     # ── P2L client binary ────────────────────────────────────────────────────
     local CLIENT_NAME="p2l-client"; [[ "$RID" == win-* ]] && CLIENT_NAME="p2l-client.exe"
     cp "$CLIENT_BIN" "$STAGE/bin/$CLIENT_NAME"
     chmod +x "$STAGE/bin/$CLIENT_NAME"
 
-    # ── appsettings.json ─────────────────────────────────────────────────────
-    local SETTINGS_SRC="$(dirname "$P2L_BIN")/appsettings.json"
+    # ── appsettings.json — use template (no credentials) ─────────────────────
+    local SETTINGS_SRC="$DEPLOY_DIR/appsettings.template.json"
     [[ ! -f "$SETTINGS_SRC" ]] && SETTINGS_SRC="$ROOT/appsettings.json"
     if [[ -f "$SETTINGS_SRC" ]]; then
         cp "$SETTINGS_SRC" "$STAGE/config/appsettings.json"
@@ -181,69 +229,67 @@ OS="$(uname -s)"
 INSTALL_DIR="/opt/p2l"
 P2L_USER="p2l"
 
-# ── Pre-flight ────────────────────────────────────────────────────────────────
-[[ -f "$PKG_ROOT/bin/p2l" ]]        || error "Binary not found: $PKG_ROOT/bin/p2l"
-[[ -f "$PKG_ROOT/bin/p2l-client" ]] || error "Client binary not found: $PKG_ROOT/bin/p2l-client"
-
-info "Installing to: $INSTALL_DIR"
-
-# ── Create system user (Linux only) ──────────────────────────────────────────
-if [[ "$OS" == "Linux" ]]; then
-    [[ $EUID -eq 0 ]] || error "Run as root: sudo ./deploy/install.sh"
-    if ! id -u "$P2L_USER" &>/dev/null; then
-        useradd --system --no-create-home --shell /usr/sbin/nologin "$P2L_USER"
-        info "Created system user: $P2L_USER"
-    fi
-fi
-
-# ── Install binaries ──────────────────────────────────────────────────────────
-info "Installing binaries ..."
-mkdir -p "$INSTALL_DIR/logs" "$INSTALL_DIR/data"
-install -m 0755 "$PKG_ROOT/bin/p2l"        "$INSTALL_DIR/p2l"
-install -m 0755 "$PKG_ROOT/bin/p2l-client" "$INSTALL_DIR/p2l-client"
-[[ -f "$PKG_ROOT/config/appsettings.json" ]] && \
-    install -m 0640 "$PKG_ROOT/config/appsettings.json" "$INSTALL_DIR/appsettings.json"
-ok "Binaries installed"
-
-# ── Fix permissions ───────────────────────────────────────────────────────────
-if [[ "$OS" == "Linux" ]]; then
-    chown -R "$P2L_USER:$P2L_USER" "$INSTALL_DIR"
-    chmod 755 "$INSTALL_DIR"
-fi
-
-# ── Install services ──────────────────────────────────────────────────────────
-if [[ "$OS" == "Linux" ]]; then
-    _install_systemd
-elif [[ "$OS" == "Darwin" ]]; then
-    _install_launchd
-fi
-
-echo ""
-ok "=== Installation complete ==="
-if [[ "$OS" == "Linux" ]]; then
-    echo "  P2L bridge  : sudo systemctl start p2l"
-    echo "  Web client  : sudo systemctl start p2l-client"
-    echo "  Dashboard   : http://localhost:8765"
-    echo "  Logs bridge : journalctl -u p2l -f"
-    echo "  Logs client : journalctl -u p2l-client -f"
-elif [[ "$OS" == "Darwin" ]]; then
-    echo "  P2L bridge  : launchctl start com.p2l.service"
-    echo "  Web client  : launchctl start com.p2l.client"
-    echo "  Dashboard   : http://localhost:8765"
-    echo "  Logs        : ~/Library/Logs/P2L/"
-fi
-
+# ── Helper: install systemd units ────────────────────────────────────────────
 _install_systemd() {
     info "Installing systemd units ..."
-    sed "s|WorkingDirectory=.*|WorkingDirectory=$INSTALL_DIR|" \
-        "$SCRIPT_DIR/p2l.service" | \
-    sed "s|ExecStart=.*p2l run.*|ExecStart=$INSTALL_DIR/p2l run $INSTALL_DIR/tasks.csv|" \
-        > /etc/systemd/system/p2l.service
+    cat > /etc/systemd/system/p2l.service <<UNIT
+[Unit]
+Description=Pick2Light (P2L) Warehouse Control Daemon
+After=network-online.target
+Wants=network-online.target
 
-    sed "s|WorkingDirectory=.*|WorkingDirectory=$INSTALL_DIR|" \
-        "$SCRIPT_DIR/p2l-client.service" | \
-    sed "s|ExecStart=.*|ExecStart=$INSTALL_DIR/p2l-client|" \
-        > /etc/systemd/system/p2l-client.service
+[Service]
+Type=simple
+User=${P2L_USER}
+Group=${P2L_USER}
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/p2l run ${INSTALL_DIR}/tasks.csv
+Environment=LD_LIBRARY_PATH=${INSTALL_DIR}
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=p2l
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=${INSTALL_DIR}/logs ${INSTALL_DIR}
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+    cat > /etc/systemd/system/p2l-client.service <<UNIT
+[Unit]
+Description=Pick2Light Web Dashboard (P2L Client)
+After=network-online.target p2l.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${P2L_USER}
+Group=${P2L_USER}
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/p2l-client
+Environment=P2L_CLIENT_HOST=0.0.0.0
+Environment=P2L_CLIENT_PORT=8765
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=p2l-client
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=${INSTALL_DIR}
+
+[Install]
+WantedBy=multi-user.target
+UNIT
 
     systemctl daemon-reload
     systemctl enable p2l p2l-client
@@ -258,8 +304,9 @@ _install_systemd() {
     fi
 }
 
+# ── Helper: install launchd agents ────────────────────────────────────────────
 _install_launchd() {
-    info "Installing launchd plists (macOS) ..."
+    info "Installing launchd agents (macOS) ..."
     local LOG_DIR="$HOME/Library/Logs/P2L"
     local LAUNCH_DIR="$HOME/Library/LaunchAgents"
     mkdir -p "$LOG_DIR" "$LAUNCH_DIR"
@@ -269,13 +316,14 @@ _install_launchd() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
     <key>Label</key>             <string>com.p2l.service</string>
-    <key>ProgramArguments</key>  <array><string>$INSTALL_DIR/p2l</string><string>run</string><string>$INSTALL_DIR/tasks.csv</string></array>
-    <key>WorkingDirectory</key>  <string>$INSTALL_DIR</string>
+    <key>ProgramArguments</key>  <array><string>${INSTALL_DIR}/p2l</string><string>run</string><string>${INSTALL_DIR}/tasks.csv</string></array>
+    <key>WorkingDirectory</key>  <string>${INSTALL_DIR}</string>
+    <key>EnvironmentVariables</key><dict><key>DYLD_LIBRARY_PATH</key><string>${INSTALL_DIR}</string></dict>
     <key>RunAtLoad</key>         <true/>
     <key>KeepAlive</key>         <dict><key>SuccessfulExit</key><false/></dict>
     <key>ThrottleInterval</key>  <integer>5</integer>
-    <key>StandardOutPath</key>   <string>$LOG_DIR/p2l.log</string>
-    <key>StandardErrorPath</key> <string>$LOG_DIR/p2l.log</string>
+    <key>StandardOutPath</key>   <string>${LOG_DIR}/p2l.log</string>
+    <key>StandardErrorPath</key> <string>${LOG_DIR}/p2l.log</string>
 </dict></plist>
 PLIST
 
@@ -284,14 +332,17 @@ PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
     <key>Label</key>             <string>com.p2l.client</string>
-    <key>ProgramArguments</key>  <array><string>$INSTALL_DIR/p2l-client</string></array>
-    <key>WorkingDirectory</key>  <string>$INSTALL_DIR</string>
-    <key>EnvironmentVariables</key><dict><key>P2L_CLIENT_HOST</key><string>0.0.0.0</string><key>P2L_CLIENT_PORT</key><string>8765</string></dict>
+    <key>ProgramArguments</key>  <array><string>${INSTALL_DIR}/p2l-client</string></array>
+    <key>WorkingDirectory</key>  <string>${INSTALL_DIR}</string>
+    <key>EnvironmentVariables</key><dict>
+        <key>P2L_CLIENT_HOST</key><string>0.0.0.0</string>
+        <key>P2L_CLIENT_PORT</key><string>8765</string>
+    </dict>
     <key>RunAtLoad</key>         <true/>
     <key>KeepAlive</key>         <dict><key>SuccessfulExit</key><false/></dict>
     <key>ThrottleInterval</key>  <integer>5</integer>
-    <key>StandardOutPath</key>   <string>$LOG_DIR/p2l-client.log</string>
-    <key>StandardErrorPath</key> <string>$LOG_DIR/p2l-client.log</string>
+    <key>StandardOutPath</key>   <string>${LOG_DIR}/p2l-client.log</string>
+    <key>StandardErrorPath</key> <string>${LOG_DIR}/p2l-client.log</string>
 </dict></plist>
 PLIST
 
@@ -299,8 +350,78 @@ PLIST
     launchctl unload "$LAUNCH_DIR/com.p2l.client.plist"  2>/dev/null || true
     launchctl load   "$LAUNCH_DIR/com.p2l.service.plist"
     launchctl load   "$LAUNCH_DIR/com.p2l.client.plist"
-    ok "launchd agents installed"
+    ok "launchd agents installed and loaded"
 }
+
+# ── Pre-flight ────────────────────────────────────────────────────────────────
+[[ -f "$PKG_ROOT/bin/p2l" ]]        || error "Binary not found: $PKG_ROOT/bin/p2l"
+[[ -f "$PKG_ROOT/bin/p2l-client" ]] || error "Client binary not found: $PKG_ROOT/bin/p2l-client"
+
+if [[ "$OS" == "Linux" ]]; then
+    [[ $EUID -eq 0 ]] || error "Run as root: sudo ./deploy/install.sh"
+fi
+
+info "Installing to: $INSTALL_DIR"
+
+# ── Create system user (Linux only) ──────────────────────────────────────────
+if [[ "$OS" == "Linux" ]]; then
+    if ! id -u "$P2L_USER" &>/dev/null; then
+        useradd --system --no-create-home --shell /usr/sbin/nologin "$P2L_USER"
+        info "Created system user: $P2L_USER"
+    fi
+fi
+
+# ── Install binaries + SQLite native lib ─────────────────────────────────────
+info "Installing binaries ..."
+mkdir -p "$INSTALL_DIR/logs"
+install -m 0755 "$PKG_ROOT/bin/p2l"        "$INSTALL_DIR/p2l"
+install -m 0755 "$PKG_ROOT/bin/p2l-client" "$INSTALL_DIR/p2l-client"
+
+for sqlite_lib in "$PKG_ROOT/bin/"libe_sqlite3.* "$PKG_ROOT/bin/"e_sqlite3.*; do
+    [[ -f "$sqlite_lib" ]] && install -m 0644 "$sqlite_lib" "$INSTALL_DIR/" && ok "Installed $(basename "$sqlite_lib")"
+done
+
+[[ -f "$PKG_ROOT/config/appsettings.json" ]] && \
+    install -m 0640 "$PKG_ROOT/config/appsettings.json" "$INSTALL_DIR/appsettings.json"
+ok "Binaries installed"
+
+# ── Fix permissions (Linux) ───────────────────────────────────────────────────
+if [[ "$OS" == "Linux" ]]; then
+    chown -R "$P2L_USER:$P2L_USER" "$INSTALL_DIR"
+    chmod 755 "$INSTALL_DIR"
+fi
+
+# ── Install services ──────────────────────────────────────────────────────────
+if [[ "$OS" == "Linux" ]]; then
+    _install_systemd
+elif [[ "$OS" == "Darwin" ]]; then
+    INSTALL_DIR="$HOME/Library/Application Support/P2L"
+    mkdir -p "$INSTALL_DIR/logs"
+    install -m 0755 "$PKG_ROOT/bin/p2l"        "$INSTALL_DIR/p2l"
+    install -m 0755 "$PKG_ROOT/bin/p2l-client" "$INSTALL_DIR/p2l-client"
+    for sqlite_lib in "$PKG_ROOT/bin/"libe_sqlite3.* "$PKG_ROOT/bin/"e_sqlite3.*; do
+        [[ -f "$sqlite_lib" ]] && install -m 0644 "$sqlite_lib" "$INSTALL_DIR/"
+    done
+    [[ -f "$PKG_ROOT/config/appsettings.json" ]] && \
+        install -m 0640 "$PKG_ROOT/config/appsettings.json" "$INSTALL_DIR/appsettings.json"
+    _install_launchd
+fi
+
+echo ""
+ok "=== Installation complete ==="
+if [[ "$OS" == "Linux" ]]; then
+    echo "  Start bridge  : sudo systemctl start p2l"
+    echo "  Start client  : sudo systemctl start p2l-client"
+    echo "  Dashboard     : http://localhost:8765"
+    echo "  Logs bridge   : journalctl -u p2l -f"
+    echo "  Logs client   : journalctl -u p2l-client -f"
+elif [[ "$OS" == "Darwin" ]]; then
+    echo "  Dashboard     : http://localhost:8765"
+    echo "  Logs bridge   : tail -f ~/Library/Logs/P2L/p2l.log"
+    echo "  Logs client   : tail -f ~/Library/Logs/P2L/p2l-client.log"
+    echo "  Stop bridge   : launchctl unload ~/Library/LaunchAgents/com.p2l.service.plist"
+    echo "  Stop client   : launchctl unload ~/Library/LaunchAgents/com.p2l.client.plist"
+fi
 INSTALL_EOF
 }
 
@@ -371,17 +492,75 @@ create_archive() {
     fi
 }
 
+# ── Prepare Windows artifacts (binaries only, no client, no archive) ──────────
+# Used when building inside Docker on Linux to cross-compile win-x64 binaries.
+# Output: artifacts/win-x64/  (p2l.exe + e_sqlite3.dll — ready for MSI build)
+prepare_win_artifacts() {
+    local RID="$1"
+    local OUT="$ARTIFACTS_DIR/$RID"
+    mkdir -p "$OUT"
+
+    info "Cross-compiling P2L for $RID (non-AOT, self-contained) ..."
+    dotnet publish "$PROJECT" \
+        --configuration Release \
+        --runtime "$RID" \
+        --output "$OUT" \
+        --self-contained true \
+        -p:PublishAot=false \
+        -p:PublishSingleFile=false \
+        -p:InvariantGlobalization=true >&2
+
+    local BIN="$OUT/p2l.exe"
+    [[ -f "$BIN" ]] || error ".NET binary not found: $BIN"
+    ok "p2l.exe: $(du -sh "$BIN" | cut -f1)"
+
+    for dll in e_sqlite3.dll; do
+        [[ -f "$OUT/$dll" ]] && ok "$dll found ✓" || warn "$dll NOT found — SQLite will fail at runtime"
+    done
+
+    # Copy appsettings template for MSI packaging
+    local TMPL="$DEPLOY_DIR/appsettings.template.json"
+    [[ -f "$TMPL" ]] && cp "$TMPL" "$OUT/appsettings.json"
+
+    echo ""
+    ok "Windows artifacts ready in: $OUT"
+    echo "  Contents:"
+    ls -lh "$OUT/" | grep -v '^total' | sed 's/^/    /' >&2
+    echo ""
+    warn "p2l-client.exe NOT built — PyInstaller requires Windows."
+    warn "To build p2l-client.exe, run on Windows: pyinstaller --onefile --name p2l-client --distpath artifacts\\$RID client\\main.py"
+    warn "Then build MSI: .\\deploy\\build-msi.ps1 -SkipDotnetPublish -Platform x64"
+    echo ""
+    echo "Or trigger full build via GitHub Actions from any OS:"
+    echo "  ./deploy/build-msi.sh 1.0.0"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
     local RID="${1:-native}"
+    local BINARIES_ONLY=false
+
+    # Parse --binaries-only flag (used by Docker for Windows cross-compile)
+    for arg in "$@"; do
+        [[ "$arg" == "--binaries-only" ]] && BINARIES_ONLY=true
+    done
+    # Strip flags from RID
+    [[ "$RID" == --* ]] && RID="native"
     [[ "$RID" == "native" ]] && RID="$(detect_native_rid)"
 
     echo ""
     echo "╔══════════════════════════════════════════╗"
     echo "║  P2L Package Builder  v${VERSION}          "
     echo "║  Target: $RID"
+    [[ "$BINARIES_ONLY" == true ]] && echo "║  Mode: binaries-only (no client, no MSI)"
     echo "╚══════════════════════════════════════════╝"
     echo ""
+
+    # Windows binaries-only mode (Docker cross-compile from Linux)
+    if [[ "$BINARIES_ONLY" == true ]] || [[ "$RID" == win-* && "$(uname -s)" == "Linux" ]]; then
+        prepare_win_artifacts "$RID"
+        return
+    fi
 
     # Build .NET binary
     local P2L_BIN
@@ -407,4 +586,4 @@ main() {
     ls -lh "$DIST_DIR/"
 }
 
-main "${1:-native}"
+main "$@"

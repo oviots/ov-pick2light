@@ -1,8 +1,8 @@
 # Pick2Light (P2L) — Aioi Light Module Controller
 
 A cross-platform .NET 10 CLI for controlling Aioi Systems L-PICK light modules over TCP.
-Runs as one-shot commands or a live dashboard.
-Publishes to a **single self-contained binary** with no runtime dependency.
+Runs as one-shot commands or a live dashboard, with a web-based operator UI and MQTT bridge.
+Fully self-contained binaries — **no .NET runtime or Python required** on deployment machines.
 
 ---
 
@@ -10,7 +10,7 @@ Publishes to a **single self-contained binary** with no runtime dependency.
 
 1. [Prerequisites](#1-prerequisites)
 2. [Repository Layout](#2-repository-layout)
-3. [Build & Publish](#3-build--publish) — includes Native AOT / publish profiles / `rd.xml` note
+3. [Build & Publish](#3-build--publish) — package.sh, Docker, MSI, publish profiles, `rd.xml`
 4. [Configuration](#4-configuration)
 5. [USB-LAN Connection Verification](#5-usb-lan-connection-verification)
 6. [Command Reference](#6-command-reference)
@@ -102,10 +102,28 @@ src/
                        win-x64.pubxml    osx-arm64.pubxml
     appsettings.json
 deploy/
-  p2l.service          systemd unit template
-  publish.sh           cross-platform Native AOT build script (all RIDs)
-  install-linux.sh     systemd installer — creates system user, copies binary, enables service
-  install-windows.ps1  Windows Service installer — sc.exe registration with failure recovery
+  p2l.service              systemd unit (P2L bridge)
+  p2l-client.service       systemd unit (web dashboard)
+  package.sh               Full build orchestrator: AOT binary + PyInstaller client + archive
+  package.ps1              Windows equivalent of package.sh
+  publish.sh               Quick AOT-only publish (bridge binary, no client)
+  install-linux.sh         Linux binary installer (systemd, no Python needed)
+  install-macos.sh         macOS binary installer (launchd, no Python needed)
+  install-windows.ps1      Windows Service installer (sc.exe, both services)
+  build-msi.ps1            Build WiX 5 MSI on Windows
+  build-msi.sh             Trigger MSI build via GitHub Actions from macOS/Linux
+  Dockerfile.build         Cross-platform Docker builder (Linux packages + Windows binaries)
+  appsettings.template.json  Clean config template (no credentials)
+  INSTALLER.md             Complete WiX 5 MSI guide
+  P2L.Installer/           WiX 5 MSI project (Product.wxs, Components.wxs, Services.wxs)
+client/
+  main.py                  FastAPI web dashboard entry point
+  app/                     API routes and business logic
+  static/                  CSS, JS, images
+  templates/               Jinja2 HTML templates
+  requirements.txt
+tools/
+  sdk/                     Python / Node.js SDK for MQTT integration
 artifacts/             Published binary output (gitignored, one sub-dir per RID)
 ```
 
@@ -127,29 +145,50 @@ artifacts/             Published binary output (gitignored, one sub-dir per RID)
 
 ### Native AOT single-file binary (production)
 
-Use the included publish script, which sets all required AOT flags correctly:
+Use `package.sh` to build both the bridge binary and standalone web client, then package them together:
 
 ```bash
-# Single platform (default: linux-x64)
-./deploy/publish.sh
+# Full package for the current platform
+./deploy/package.sh
 
 # Specific platform
-./deploy/publish.sh linux-x64
-./deploy/publish.sh linux-arm64    # Raspberry Pi 4/5, industrial ARM SBCs
-./deploy/publish.sh win-x64
-./deploy/publish.sh osx-arm64      # Apple Silicon (must compile on macOS)
-
-# All four platforms in sequence
-./deploy/publish.sh all
+./deploy/package.sh linux-x64
+./deploy/package.sh linux-arm64    # Raspberry Pi 4/5, industrial ARM SBCs
+./deploy/package.sh osx-arm64      # Apple Silicon (must compile on macOS)
+./deploy/package.sh osx-x64        # Intel Mac
 ```
 
-Output lands in `artifacts/<rid>/p2l` (Linux/macOS) or `artifacts/win-x64/p2l.exe`.
+Output: `dist/p2l-<version>-<rid>.tar.gz` containing bridge binary, web dashboard binary, SQLite lib, and installer scripts.
+
+For bridge binary only (no client):
+
+```bash
+dotnet publish src/P2L.CLI -c Release -r linux-x64 --self-contained true -p:PublishAot=true -o artifacts/linux-x64
+```
+
+### Windows packages
+
+```powershell
+# Full package (on Windows)
+.\deploy\package.ps1 -Platform x64
+
+# Bridge binaries only via Docker (from macOS/Linux)
+docker build -f deploy/Dockerfile.build -t p2l-builder .
+docker run --rm -v "$(pwd)/artifacts:/workspace/artifacts" p2l-builder win-x64
+
+# Build MSI installer (on Windows)
+.\deploy\build-msi.ps1 -Version 1.0.0
+# Or trigger via GitHub Actions from macOS/Linux:
+./deploy/build-msi.sh 1.0.0
+```
+
+See [BUILD.md](BUILD.md) for the full build reference and [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md) for Windows MSI installation.
 
 Alternatively, use MSBuild publish profiles directly:
 
 ```bash
-~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj /p:PublishProfile=linux-x64
-~/.dotnet/dotnet publish src/P2L.CLI/P2L.CLI.csproj /p:PublishProfile=win-x64
+dotnet publish src/P2L.CLI/P2L.CLI.csproj /p:PublishProfile=linux-x64
+dotnet publish src/P2L.CLI/P2L.CLI.csproj /p:PublishProfile=win-x64
 ```
 
 Profiles live in `src/P2L.CLI/Properties/PublishProfiles/`. Each profile sets:
@@ -1384,35 +1423,33 @@ hooks work correctly without the full `Microsoft.Extensions.Hosting` stack.
 
 #### Install
 
+**MSI (recommended)** — installs both `p2l.exe` (bridge) and `p2l-client.exe` (dashboard) as Windows Services:
+
 ```powershell
-# Build first (must be run from Windows or a Windows CI runner)
-./deploy/publish.sh win-x64
+# Build MSI on Windows
+.\deploy\build-msi.ps1 -Version 1.0.0
 
-# Install (requires Administrator)
-./deploy/install-windows.ps1
-
-# Custom paths, start immediately
-./deploy/install-windows.ps1 `
-    -BinaryPath   .\artifacts\win-x64\p2l.exe `
-    -CsvTaskFile  "D:\Warehouse\tasks.csv" `
-    -StartNow
+# Install silently
+msiexec /i dist\P2L-1.0.0-x64.msi /qn
 ```
 
-The installer:
-1. Copies the binary to `C:\Program Files\P2L\`
-2. Locks down the directory ACL (SYSTEM + Administrators = Full; service account = read-execute; logs = modify)
-3. Registers the service via `sc.exe` with `start= auto`
-4. Sets failure recovery: restart after 5 s, 3 attempts per 24-hour window
+See [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md) for the full guide including GitHub Actions builds from macOS.
+
+**Manual install** (bridge only, no MSI):
+
+```powershell
+# Requires Administrator
+.\deploy\install-windows.ps1
+```
 
 #### Manage
 
 ```powershell
-Start-Service   P2L
-Stop-Service    P2L
-Get-Service     P2L
+Start-Service   P2L; Start-Service P2LClient
+Stop-Service    P2LClient; Stop-Service P2L
+Get-Service     P2L, P2LClient
 # Logs:
-Get-EventLog -LogName Application -Source P2L -Newest 50
-dir "C:\Program Files\P2L\logs"
+Get-Content "C:\ProgramData\P2L\logs\p2l.log" -Wait -Tail 50
 ```
 
 #### Environment overrides
@@ -1427,8 +1464,12 @@ Set machine-level environment variables before starting the service:
 #### Uninstall
 
 ```powershell
-Stop-Service P2L -Force
-sc.exe delete P2L
+# Via MSI
+msiexec /x dist\P2L-1.0.0-x64.msi /qn
+
+# Manual
+Stop-Service P2L, P2LClient -Force
+sc.exe delete P2L; sc.exe delete P2LClient
 Remove-Item "C:\Program Files\P2L" -Recurse -Force
 ```
 

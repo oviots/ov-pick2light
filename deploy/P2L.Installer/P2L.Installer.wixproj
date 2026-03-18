@@ -1,37 +1,62 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" InitialTargets="ValidateBinaries" xmlns="http://schemas.microsoft.com/wix/2006/wi" ToolsVersion="Current">
+<!-- P2L.Installer.wixproj: WiX 5 SDK MSI project. Build via deploy/build-msi.ps1 or build-msi.sh -->
+<Project Sdk="WixToolset.Sdk/5.0.2">
+
   <PropertyGroup>
-    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
-    <ProductVersion>1.0.0.0</ProductVersion>
-    <ProjectGuid>12345678-1234-1234-1234-123456789ABC</ProjectGuid>
-    <SchemaVersion>2.0</SchemaVersion>
-    <OutputName>P2L-1.0.0</OutputName>
-    <OutputType>Bundle</OutputType>
-    <WixTargetVersion>4.0</WixTargetVersion>
-    <SuppressIces>ICE61</SuppressIces>
-  </PropertyGroup>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <ProductVersion>1.0.0</ProductVersion>
+    <OutputName>P2L-$(ProductVersion)-$(Platform)</OutputName>
 
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
-    <DefineConstants>$(DefineConstants);Platform=x64;BinaryPath=$(MSBuildProjectDirectory)\..\..\artifacts\win-x64</DefineConstants>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|arm64'">
-    <DefineConstants>$(DefineConstants);Platform=arm64;BinaryPath=$(MSBuildProjectDirectory)\..\..\artifacts\win-arm64</DefineConstants>
+    <!-- Paths resolved relative to repo root (two levels up from this file) -->
+    <RepoRoot>$(MSBuildProjectDirectory)\..\..</RepoRoot>
+    <BinaryPath Condition="'$(Platform)' == 'x64'"  >$(RepoRoot)\artifacts\win-x64</BinaryPath>
+    <BinaryPath Condition="'$(Platform)' == 'arm64'">$(RepoRoot)\artifacts\win-arm64</BinaryPath>
+    <ConfigPath>$(MSBuildProjectDirectory)\Assets</ConfigPath>
+    <LicenseRtf>$(MSBuildProjectDirectory)\Assets\License.rtf</LicenseRtf>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="WixToolset.UI.wixext" Version="4.0.*" />
-    <PackageReference Include="WixToolset.Util.wixext" Version="4.0.*" />
+    <!-- WiX extensions -->
+    <PackageReference Include="WixToolset.UI.wixext"   Version="5.*" />
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.*" />
   </ItemGroup>
 
   <ItemGroup>
+    <!-- All WXS source files -->
     <Compile Include="Product.wxs" />
-    <Compile Include="Features.wxs" />
-    <Compile Include="UI.wxs" />
+    <Compile Include="Components.wxs" />
+    <Compile Include="Services.wxs" />
   </ItemGroup>
 
-  <Target Name="ValidateBinaries">
-    <Error Text="Binary not found at $(BinaryPath)\p2l.exe. Please build the project first." Condition="!Exists('$(BinaryPath)\p2l.exe')" />
+  <!-- Preprocessor variables passed to every WXS file as $(var.Name) -->
+  <ItemGroup>
+    <BindPath Include="$(BinaryPath)" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- Passed as -d flags to wix.exe -->
+    <DefineConstants>
+      ProductVersion=$(ProductVersion);
+      BinaryPath=$(BinaryPath);
+      ConfigPath=$(ConfigPath);
+      LicenseRtf=$(LicenseRtf);
+      Platform=$(Platform)
+    </DefineConstants>
+  </PropertyGroup>
+
+  <!-- Validate required binaries exist before attempting a build -->
+  <Target Name="ValidateBinaries" BeforeTargets="Build">
+    <Error Text="p2l.exe not found: $(BinaryPath)\p2l.exe — run 'dotnet publish' for win-$(Platform) first."
+           Condition="!Exists('$(BinaryPath)\p2l.exe')" />
+    <Error Text="p2l-client.exe not found: $(BinaryPath)\p2l-client.exe — run deploy\build-client.sh first."
+           Condition="!Exists('$(BinaryPath)\p2l-client.exe')" />
+    <Error Text="e_sqlite3.dll not found: $(BinaryPath)\e_sqlite3.dll — required for SQLite support."
+           Condition="!Exists('$(BinaryPath)\e_sqlite3.dll')" />
+    <Error Text="appsettings.json not found: $(ConfigPath)\appsettings.json — copy from deploy\appsettings.template.json."
+           Condition="!Exists('$(ConfigPath)\appsettings.json')" />
+    <Error Text="License.rtf not found: $(LicenseRtf) — create Assets\License.rtf."
+           Condition="!Exists('$(LicenseRtf)')" />
   </Target>
+
 </Project>

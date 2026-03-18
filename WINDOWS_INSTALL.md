@@ -1,10 +1,22 @@
-# Windows Installation Guide for Pick2Light (P2L)
+# Windows Installation Guide — Pick2Light (P2L)
 
-This guide covers installing P2L on Windows systems (x64 and arm64).
+## What Gets Installed
+
+| Item | Location |
+|---|---|
+| `p2l.exe` — Bridge service | `C:\Program Files\P2L\` |
+| `p2l-client.exe` — Web dashboard | `C:\Program Files\P2L\` |
+| `e_sqlite3.dll` — SQLite runtime | `C:\Program Files\P2L\` |
+| `appsettings.json` — Config | `C:\ProgramData\P2L\` |
+| Logs | `C:\ProgramData\P2L\logs\` |
+| **P2L** Windows Service | Auto-start, restarts on failure |
+| **P2LClient** Windows Service | Auto-start, dashboard on http://localhost:8765 |
+
+---
 
 ## Installation Methods
 
-### Option 1: Simple Batch Installer (Recommended - No external tools required)
+### Option 1: MSI Installer (Recommended)
 
 **Easiest method** — includes binary directly, works on any Windows 10/11 system.
 

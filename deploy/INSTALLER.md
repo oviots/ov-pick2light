@@ -1,302 +1,284 @@
-# P2L Installer Package
+# P2L Windows MSI Installer — WiX 4/5 Guide
 
-This directory contains installation tools and packages for Pick2Light (P2L) on Windows systems.
+## What You Get
 
-## Contents
+A professional Windows MSI that:
+- Installs `p2l.exe` (bridge), `p2l-client.exe` (dashboard), `e_sqlite3.dll`
+- Registers both as **Windows Services** (auto-start, restart-on-failure)
+- Writes `appsettings.json` to `C:\ProgramData\P2L\` (never overwritten on upgrade)
+- Adds install dir to `PATH`
+- Creates Start Menu shortcuts
+- Handles clean **upgrades** (remove old, install new) and clean **uninstall**
 
-```
-deploy/
-├── publish.sh              # Build script (macOS/Linux)
-├── publish.ps1             # Build script (Windows)
-├── build-msi.ps1           # MSI builder (requires WiX 4.0+)
-├── p2l-install.bat         # Simple batch installer
-├── P2L.Installer/          # WiX project directory
-│   ├── P2L.Installer.wixproj
-│   ├── Product.wxs
-│   ├── Features.wxs
-│   └── UI.wxs
-├── install-linux.sh        # Linux systemd installer
-└── check-gateway.sh        # Gateway connectivity checker
-```
+---
 
-## Quick Start
+## 1. Prerequisites (One-Time Setup)
 
-### Option 1: Simple Installer (No dependencies)
-
-```cmd
-REM On Windows, run as Administrator:
-p2l-install.bat install
-
-REM Verify:
-p2l --help
-```
-
-### Option 2: Professional MSI (Requires WiX)
+### 1a. Install WiX toolset
 
 ```powershell
-# First, build P2L binary:
-.\publish.ps1 -RID win-x64
-
-# Then build MSI:
-.\build-msi.ps1 -Platform x64
-
-# Install:
-msiexec /i P2L-1.0.0-x64.msi
+dotnet tool install --global wix
+wix extension add WixToolset.UI.wixext
+wix extension add WixToolset.Util.wixext
 ```
 
-### Option 3: Docker / Portable
+Verify:
+```powershell
+wix --version   # should print 5.x.x
+```
 
-See [`WINDOWS_INSTALL.md`](../WINDOWS_INSTALL.md) for Docker and portable installation methods.
-
----
-
-## Building Installers
-
-### Build Native Binary First
+### 1b. Install PyInstaller (for client binary)
 
 ```powershell
-# Windows binary
-.\publish.ps1 -RID win-x64
-
-# For arm64:
-.\publish.ps1 -RID win-arm64
+pip install pyinstaller
 ```
 
-Binary will be at: `artifacts/win-x64/p2l.exe`
+### 1c. .NET SDK 8+ (for dotnet publish)
 
-### Create Batch Installer Package
+Download: https://dot.net
 
-```cmd
-REM Copy binary alongside batch script
-copy artifacts\win-x64\p2l.exe deploy\
-REM Then distribute: deploy\p2l.exe + deploy\p2l-install.bat
+---
+
+## 2. Build Platform Notes
+
+> ⚠️ **WiX 5 only compiles MSIs on Windows** (limitation of the toolset).
+> On macOS/Linux: use the GitHub Actions workflow (Option A) or a Windows VM.
+
+| Where you build | Supported? | Method |
+|---|---|---|
+| Windows (native) | ✅ | `build-msi.ps1` (Option B) |
+| macOS / Linux | ✅ via CI | `build-msi.sh` → GitHub Actions |
+| macOS / Linux (local) | ❌ | WiX 5 is Windows-only |
+
+---
+
+## 3. Build Steps
+
+### Option A: From macOS/Linux via GitHub Actions (recommended)
+
+**Prerequisites:**
+```bash
+brew install gh   # GitHub CLI
+gh auth login
 ```
 
-### Create Professional MSI
+**Trigger build:**
+```bash
+./deploy/build-msi.sh              # x64, version 1.0.0
+./deploy/build-msi.sh 1.2.3        # custom version, x64
+./deploy/build-msi.sh 1.2.3 arm64  # ARM64
+```
+
+**Monitor and download:**
+```bash
+gh run watch                        # live progress
+./deploy/build-msi.sh --download    # download MSI to dist/
+```
+
+Or trigger from GitHub UI: **Actions → Build P2L Windows MSI → Run workflow**
+
+---
+
+### Option B: Automated on Windows (recommended on Windows)
 
 ```powershell
-cd deploy
+# From repo root:
+.\deploy\build-msi.ps1                          # x64
+.\deploy\build-msi.ps1 -Platform arm64          # ARM64
+.\deploy\build-msi.ps1 -Version 1.2.3 -Platform x64
 
-# Requirements:
-# - WiX Toolset 4.0+: https://wixtoolset.org/
-# - Visual Studio 2022 or Build Tools
+# Skip rebuild if binaries already in artifacts\win-x64\
+.\deploy\build-msi.ps1 -SkipDotnetPublish -SkipClientBuild
+```
 
-# Build for x64:
-.\build-msi.ps1 -Platform x64 -OutputPath .\releases
+Output: `dist\P2L-<version>-<platform>.msi`
 
-# Build for arm64:
-.\build-msi.ps1 -Platform arm64 -OutputPath .\releases
+### Option C: Manual Step-by-Step (Windows)
 
-# Output: releases\P2L-1.0.0-x64.msi, etc.
+**Step 1 — Build .NET binary (cross-platform, runs on Windows/macOS/Linux):**
+```powershell
+dotnet publish src\P2L.CLI -c Release -r win-x64 --self-contained true `
+    -p:PublishAot=true -p:PublishSingleFile=false -o artifacts\win-x64
+```
+
+**Step 2 — Build client binary:**
+```powershell
+cd client
+pyinstaller --onefile --name p2l-client --distpath ..\artifacts\win-x64 main.py
+```
+
+**Step 3 — Build MSI:**
+```powershell
+dotnet build deploy\P2L.Installer\P2L.Installer.wixproj `
+    -c Release `
+    -p:Platform=x64 `
+    -p:ProductVersion=1.0.0 `
+    -o dist
 ```
 
 ---
 
-## Installer Features
+## 3. Install / Uninstall
 
-### Batch Installer (p2l-install.bat)
-
-✓ Simple, lightweight  
-✓ No external dependencies  
-✓ Works on Windows 7+  
-✓ Adds to system PATH  
-✓ Creates config directory  
-✓ Creates registry uninstall entry  
-
+### Interactive (with UI):
 ```cmd
-p2l-install.bat install     # Install
-p2l-install.bat uninstall   # Remove
-p2l-install.bat help        # Show help
+msiexec /i dist\P2L-1.0.0-x64.msi
 ```
 
-### MSI Installer (WiX-based)
-
-✓ Professional Windows experience  
-✓ Standard Add/Remove Programs entry  
-✓ Start Menu shortcuts  
-✓ System PATH integration  
-✓ Optional service registration  
-✓ Automatic upgrades/repairs  
-✓ Silent/automated deployment support  
-
+### Silent install:
 ```cmd
-msiexec /i P2L-1.0.0-x64.msi              # Interactive
-msiexec /i P2L-1.0.0-x64.msi /qn          # Silent
-msiexec /i P2L-1.0.0-x64.msi /l*v log.txt # With logging
+msiexec /i dist\P2L-1.0.0-x64.msi /qn
+
+# Custom install directory:
+msiexec /i dist\P2L-1.0.0-x64.msi /qn INSTALLFOLDER="D:\Warehouse\P2L\"
+```
+
+### Silent uninstall:
+```cmd
+msiexec /x dist\P2L-1.0.0-x64.msi /qn
+# or via Product Code:
+msiexec /x {87654321-4321-4321-4321-210987654321} /qn
+```
+
+### Upgrade (replace old version):
+```cmd
+msiexec /i dist\P2L-1.2.0-x64.msi /qn
+# MajorUpgrade in Product.wxs automatically removes the old version first.
 ```
 
 ---
 
-## Installation Directories
+## 4. After Installation
 
+| Resource | Location |
+|---|---|
+| Binaries | `C:\Program Files\P2L\` |
+| Config | `C:\ProgramData\P2L\appsettings.json` |
+| Logs | `C:\ProgramData\P2L\logs\` |
+| Dashboard | http://localhost:8765 |
+
+### Check services:
+```powershell
+Get-Service P2L, P2LClient
+sc.exe query P2L
+sc.exe query P2LClient
 ```
-Windows:
-  Binary:       C:\Program Files\Pick2Light\bin\p2l.exe
-  Config:       %ProgramData%\Pick2Light\config\
-  Registry:     HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\
 
-Linux:
-  Binary:       /usr/local/bin/p2l
-  Config:       /etc/pick2light/config/
-  Systemd:      /etc/systemd/system/p2l.service
-  Service user: p2l
+### Start/Stop manually:
+```powershell
+Start-Service P2L; Start-Service P2LClient
+Stop-Service P2LClient; Stop-Service P2L
+```
 
-macOS:
-  Binary:       /usr/local/bin/p2l
-  Config:       ~/.config/p2l/
-  LaunchAgent:  ~/.local/share/launchd/
+### View live logs:
+```powershell
+Get-Content "C:\ProgramData\P2L\logs\p2l.log" -Wait -Tail 50
 ```
 
 ---
 
-## Deployment Scenarios
+## 5. Customization
 
-### Single Workstation
+### Change the UpgradeCode (IMPORTANT for production)
 
-```cmd
-p2l-install.bat install
-```
-
-### Multiple Workstations (SCCM, Group Policy)
-
-1. Create MSI package
-2. Deploy via SCCM: `msiexec /i P2L-1.0.0-x64.msi /qn`
-3. Or via Group Policy logon script
-
-### Docker Container
-
-```dockerfile
-FROM mcr.microsoft.com/windows/servercore:ltsc2022
-COPY artifacts/win-x64/p2l.exe /p2l/
-ENV PATH="${PATH};C:\p2l"
-ENTRYPOINT ["p2l"]
-```
-
-### Warehouse Handhelds
-
-1. Build for arm64: `.\publish.ps1 -RID win-arm64`
-2. Create MSI: `.\build-msi.ps1 -Platform arm64`
-3. Deploy to fleet via MDM or manual installation
-
----
-
-## Troubleshooting
-
-### "Administrator privileges required"
-
-```cmd
-REM Right-click Command Prompt and select "Run as administrator"
-REM Or use:
-runas /user:Administrator "cmd.exe"
-```
-
-### "p2l is not recognized"
-
-```cmd
-REM Close and reopen Command Prompt to reload PATH
-REM Or run from full path:
-"C:\Program Files\Pick2Light\bin\p2l.exe" --help
-```
-
-### MSI build fails with "WiX Toolset not found"
+Each **product** must have a unique UpgradeCode GUID that **never changes**.
+Generate one and replace in `Product.wxs`:
 
 ```powershell
-# Install WiX 4.0:
-winget install WiXToolset
-
-# Or download:
-# https://wixtoolset.org/releases/v4.0.x/wix4-latest.exe
+[System.Guid]::NewGuid()   # generates a new GUID
 ```
 
-### Service fails to start
-
-```cmd
-sc query P2LWarehouseService
-Get-EventLog -LogName System -Source P2LWarehouseService -Newest 10
-```
-
----
-
-## Files Reference
-
-| File | Purpose | Requires |
-|------|---------|----------|
-| `publish.ps1` | Build native binary | .NET 10 SDK |
-| `publish.sh` | Build native binary | .NET 10 SDK, bash |
-| `p2l-install.bat` | Simple installer | p2l.exe in same dir |
-| `build-msi.ps1` | Build MSI package | WiX 4.0+, binary built |
-| `P2L.Installer/` | WiX project files | WiX 4.0+, Visual Studio |
-| `install-linux.sh` | Linux systemd setup | bash, sudo |
-| `check-gateway.sh` | Test gateway | bash, nc/netcat |
-
----
-
-## Advanced Configuration
-
-### Custom Installation Path (Batch)
-
-Edit `p2l-install.bat` and change:
-```batch
-set "INSTALL_DIR=%ProgramFiles%\Pick2Light\bin"
-REM To:
-set "INSTALL_DIR=C:\Custom\P2L\Path"
-```
-
-### Custom WiX Properties (MSI)
-
-Modify `Product.wxs`:
+Replace line in `Product.wxs`:
 ```xml
-<Directory Id="INSTALLFOLDER" Name="Pick2Light">
-  <!-- Change to desired location -->
-</Directory>
+UpgradeCode="YOUR-NEW-GUID-HERE"
 ```
 
-### Service Configuration
+### Change component GUIDs
 
-Edit `Features.wxs` to customize service:
+Each `<Component>` in `Components.wxs` and `Services.wxs` needs a stable GUID.
+Generate unique GUIDs and replace the placeholder values.
+
+> ⚠️ Never reuse or change Component GUIDs after shipping a version.
+> WiX uses them to track installed components for repair/uninstall.
+
+### Change version
+
+```powershell
+.\deploy\build-msi.ps1 -Version 2.0.0
+```
+
+or in `P2L.Installer.wixproj`:
 ```xml
-<ServiceInstall
-  DisplayName="My Custom Name"
-  Description="My custom description"
-/>
+<ProductVersion>2.0.0</ProductVersion>
+```
+
+### Change dashboard port
+
+In `Services.wxs`, edit the Registry multiString value:
+```xml
+Value="P2L_CLIENT_HOST=0.0.0.0[~]P2L_CLIENT_PORT=8765"
+```
+
+### Custom branding (banner/dialog images)
+
+1. Create `Assets\banner.bmp`  (493×58 pixels)
+2. Create `Assets\dialog.bmp`  (493×312 pixels)
+3. Uncomment in `Product.wxs`:
+   ```xml
+   <WixVariable Id="WixUIBannerBmp"  Value="Assets\banner.bmp"  />
+   <WixVariable Id="WixUIDialogBmp"  Value="Assets\dialog.bmp"  />
+   ```
+
+---
+
+## 6. Signing the MSI (Optional but Recommended)
+
+```powershell
+# Sign with a code-signing certificate
+signtool sign `
+    /fd SHA256 `
+    /tr http://timestamp.digicert.com `
+    /td SHA256 `
+    /f your-cert.pfx `
+    /p your-password `
+    dist\P2L-1.0.0-x64.msi
+
+# Verify signature
+signtool verify /pa dist\P2L-1.0.0-x64.msi
 ```
 
 ---
 
-## For Maintainers
+## 7. File Structure Reference
 
-### Release Checklist
+```
+deploy\P2L.Installer\
+├── Product.wxs          Main package: version, upgrade, features, UI
+├── Components.wxs       Files, config, shortcuts, registry
+├── Services.wxs         Windows Service install/control for both services
+├── P2L.Installer.wixproj  SDK-style WiX 5 project file
+└── Assets\
+    ├── License.rtf      License text shown in installer (edit as needed)
+    └── appsettings.json Default config copied to C:\ProgramData\P2L\
 
-- [ ] Update version in `P2L.Installer.wixproj`
-- [ ] Build binaries: `.\publish.ps1 -RID win-x64`
-- [ ] Create MSI: `.\build-msi.ps1 -Platform x64`
-- [ ] Test batch installer: `p2l-install.bat install`
-- [ ] Test MSI: `msiexec /i P2L-1.0.0-x64.msi`
-- [ ] Create release notes
-- [ ] Sign binaries (optional): `signtool sign /f cert.pfx p2l.exe`
-- [ ] Create GitHub release with both installers
-
-### Batch Installer Update
-
-When updating `p2l-install.bat`:
-1. Increment `VERSION` in script
-2. Test install/uninstall
-3. Verify PATH integration
-4. Verify config directory creation
-
-### MSI Update
-
-When updating MSI:
-1. Increment version in `P2L.Installer.wixproj`
-2. Update `UpgradeCode` if major version change
-3. Run `build-msi.ps1`
-4. Test upgrade: `msiexec /i old.msi` → `msiexec /i new.msi`
+deploy\build-msi.ps1     Automated build script (dotnet publish + PyInstaller + wix build)
+```
 
 ---
 
-## See Also
+## 8. Troubleshooting
 
-- [`WINDOWS_INSTALL.md`](../WINDOWS_INSTALL.md) — Detailed Windows installation guide
-- [`BUILD.md`](../BUILD.md) — Cross-platform build documentation
-- [`README.md`](../README.md) — Project overview
-- [`CLAUDE.md`](../CLAUDE.md) — Architecture & standards
+| Problem | Cause | Fix |
+|---|---|---|
+| `e_sqlite3.dll not found` | Not produced by dotnet publish | Ensure `Microsoft.Data.Sqlite` is referenced in `P2L.Mqtt.csproj` |
+| Service fails to start | Config not found | Check `C:\ProgramData\P2L\appsettings.json` exists |
+| Service fails to start | Port in use | Stop any existing P2L process; check port 8765 |
+| Upgrade blocked | Downgrade attempt | Uninstall old version manually first |
+| `wix` command not found | Not installed | Run `dotnet tool install --global wix` |
+| Build error: WXS namespace | Wrong namespace | Use `http://wixtoolset.org/schemas/v4/wxs` |
+
+### View MSI installer log:
+```cmd
+msiexec /i dist\P2L-1.0.0-x64.msi /l*v install.log
+notepad install.log
+```
