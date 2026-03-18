@@ -61,8 +61,6 @@
              Display="expand">
 
       <ComponentGroupRef Id="BinaryFiles" />
-      <ComponentGroupRef Id="BridgeService" />
-      <ComponentGroupRef Id="ClientService" />
       <ComponentGroupRef Id="ConfigFiles" />
       <ComponentGroupRef Id="ShortcutComponents" />
       <ComponentGroupRef Id="RegistryEntries" />

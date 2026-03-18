@@ -6,16 +6,22 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
 
-  <!-- ── Binaries: p2l.exe, p2l-client.exe, e_sqlite3.dll ─────────────── -->
+  <!-- ── Binaries + Service registration ──────────────────────────────── -->
+  <!--
+    ServiceInstall MUST be in the same Component as the service executable File.
+    WiX derives the service ImagePath from the Component's File KeyPath.
+    Components with only a RegistryValue KeyPath produce a NULL ImagePath →
+    service registered but invisible in services.msc and unable to start.
+  -->
   <Fragment>
     <ComponentGroup Id="BinaryFiles" Directory="INSTALLFOLDER">
 
-      <!-- p2l.exe — .NET AOT bridge -->
+      <!-- p2l.exe — .NET AOT bridge + P2L Windows service -->
       <Component Id="P2LExeComp" Guid="A1B2C3D4-0001-0001-0001-000000000001">
         <File Id="P2LExe"
               Source="$(var.BinaryPath)\p2l.exe"
               KeyPath="yes" />
-        <!-- Add install dir to PATH -->
+
         <Environment Id="P2LPath"
                      Name="PATH"
                      Value="[INSTALLFOLDER]"
@@ -23,13 +29,60 @@
                      Part="last"
                      Action="set"
                      System="yes" />
+
+        <ServiceInstall Id="P2LServiceInstall"
+                        Name="P2L"
+                        DisplayName="Pick2Light Warehouse Daemon"
+                        Description="Pick2Light bridge service — controls Aioi light modules via MQTT."
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="NT SERVICE\P2L"
+                        Arguments='run "[APPDATAFOLDER]tasks.csv"' />
+
+        <!--
+          util:ServiceConfig omitted — WiX 5.0.2 bug: Wix4ExecServiceConfig runs
+          before InstallServices in the deferred queue → service not found (0x80070424).
+          Configure failure-restart manually after install:
+            sc failure P2L reset= 86400 actions= restart/5000/restart/5000/restart/5000
+        -->
+
+        <ServiceControl Id="P2LServiceControl"
+                        Name="P2L"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
       </Component>
 
-      <!-- p2l-client.exe — Web dashboard (standalone PyInstaller binary) -->
+      <!-- p2l-client.exe — Web dashboard + P2LClient Windows service -->
       <Component Id="P2LClientExeComp" Guid="A1B2C3D4-0002-0002-0002-000000000002">
         <File Id="P2LClientExe"
               Source="$(var.BinaryPath)\p2l-client.exe"
               KeyPath="yes" />
+
+        <ServiceInstall Id="P2LClientServiceInstall"
+                        Name="P2LClient"
+                        DisplayName="Pick2Light Web Dashboard"
+                        Description="Pick2Light web dashboard — accessible at http://localhost:8765"
+                        Type="ownProcess"
+                        Start="auto"
+                        ErrorControl="normal"
+                        Account="NT SERVICE\P2LClient" />
+
+        <!-- sc failure P2LClient reset= 86400 actions= restart/5000/restart/5000/restart/5000 -->
+
+        <RegistryKey Root="HKLM"
+                     Key="SYSTEM\CurrentControlSet\Services\P2LClient">
+          <RegistryValue Name="Environment"
+                         Type="multiString"
+                         Value="P2L_CLIENT_HOST=0.0.0.0[~]P2L_CLIENT_PORT=8765" />
+        </RegistryKey>
+
+        <ServiceControl Id="P2LClientServiceControl"
+                        Name="P2LClient"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
       </Component>
 
       <!-- e_sqlite3.dll — SQLite native library required by p2l.exe -->
