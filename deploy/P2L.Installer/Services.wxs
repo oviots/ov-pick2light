@@ -4,10 +4,11 @@
 
   p2l.exe runs as NT SERVICE\P2L (virtual service account — no password needed).
   p2l-client.exe also runs as NT SERVICE\P2LClient.
-  Both services are set to auto-start and restart on failure.
+  Both services are set to auto-start. Failure restart actions must be configured
+  manually after install (util:ServiceConfig omitted — WiX 5.0.2 sequencing bug
+  causes ExecServiceConfig to run before InstallServices in the deferred queue).
 -->
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
 
   <!-- ── P2L Bridge Service (p2l.exe) ──────────────────────────────────── -->
   <Fragment>
@@ -33,13 +34,12 @@
                         Arguments='run "[APPDATAFOLDER]tasks.csv"' />
 
         <!-- Failure actions: restart after 5s, reset counter after 1 day -->
-        <util:ServiceConfig
-            ServiceName="P2L"
-            FirstFailureActionType="restart"
-            SecondFailureActionType="restart"
-            ThirdFailureActionType="restart"
-            RestartServiceDelayInSeconds="5"
-            ResetPeriodInDays="1" />
+        <!-- NOTE: util:ServiceConfig is omitted — in WiX 5.0.2 its deferred
+             custom action (Wix4ExecServiceConfig) executes before InstallServices
+             due to sequence ordering, so the service doesn't exist yet when it runs.
+             Configure failure actions manually after install:
+               sc failure P2L reset= 86400 actions= restart/5000
+        -->
 
         <ServiceControl Id="P2LServiceControl"
                         Name="P2L"
@@ -73,13 +73,10 @@
                         ErrorControl="normal"
                         Account="NT SERVICE\P2LClient" />
 
-        <util:ServiceConfig
-            ServiceName="P2LClient"
-            FirstFailureActionType="restart"
-            SecondFailureActionType="restart"
-            ThirdFailureActionType="restart"
-            RestartServiceDelayInSeconds="5"
-            ResetPeriodInDays="1" />
+        <!-- util:ServiceConfig omitted — same sequencing issue, see P2L service comment.
+             Configure failure actions manually:
+               sc failure P2LClient reset= 86400 actions= restart/5000
+        -->
 
         <!-- Set environment variables for the service via registry -->
         <RegistryKey Root="HKLM"
