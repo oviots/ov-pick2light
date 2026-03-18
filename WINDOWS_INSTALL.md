@@ -9,8 +9,168 @@
 | `e_sqlite3.dll` — SQLite runtime | `C:\Program Files\P2L\` |
 | `appsettings.json` — Config | `C:\ProgramData\P2L\` |
 | Logs | `C:\ProgramData\P2L\logs\` |
-| **P2L** Windows Service | Auto-start, restarts on failure |
+| **P2L** Windows Service | Auto-start (starts on next boot or manually) |
 | **P2LClient** Windows Service | Auto-start, dashboard on http://localhost:8765 |
+
+---
+
+## Installation
+
+```cmd
+REM Interactive install
+msiexec /i P2L-1.0.0-x64.msi
+
+REM Silent install (requires Administrator)
+msiexec /i P2L-1.0.0-x64.msi /qn
+
+REM With verbose log (for troubleshooting)
+msiexec /i P2L-1.0.0-x64.msi /l*v C:\Temp\p2l-install.log
+```
+
+---
+
+## Post-Install Setup
+
+Services are **registered but not started** after installation. Configure first, then start.
+
+### Step 1 — Edit Configuration
+
+```powershell
+notepad "C:\ProgramData\P2L\appsettings.json"
+```
+
+Set your Aioi gateway IP and MQTT broker address:
+
+```json
+{
+  "Gateway": {
+    "Host": "192.168.1.100",
+    "Port": 10000
+  },
+  "Mqtt": {
+    "Host": "localhost",
+    "Port": 1883
+  }
+}
+```
+
+### Step 2 — Start Services
+
+**PowerShell (Administrator):**
+```powershell
+Start-Service P2L
+Start-Service P2LClient
+```
+
+**CMD (Administrator):**
+```cmd
+sc start P2L
+sc start P2LClient
+```
+
+**GUI:** Win+R → `services.msc` → find "Pick2Light Warehouse Daemon" and "Pick2Light Web Dashboard" → Start.
+
+### Step 3 — Verify
+
+```powershell
+# Check service status
+Get-Service P2L, P2LClient | Select-Object Name, Status, StartType
+
+# Open dashboard in browser
+Start-Process "http://localhost:8765"
+```
+
+### Step 4 — Configure Failure Restart (Optional)
+
+The MSI does not configure auto-restart on failure (WiX 5.0.2 limitation). Set it manually:
+
+```cmd
+sc failure P2L     reset= 86400 actions= restart/5000/restart/5000/restart/5000
+sc failure P2LClient reset= 86400 actions= restart/5000/restart/5000/restart/5000
+```
+
+---
+
+## Service Management
+
+| Task | PowerShell | CMD |
+|---|---|---|
+| Start | `Start-Service P2L` | `sc start P2L` |
+| Stop | `Stop-Service P2L` | `sc stop P2L` |
+| Restart | `Restart-Service P2L` | `sc stop P2L && sc start P2L` |
+| Status | `Get-Service P2L` | `sc query P2L` |
+| Logs | `Get-EventLog -LogName Application -Source P2L -Newest 20` | — |
+
+View logs in file:
+```powershell
+Get-ChildItem "C:\ProgramData\P2L\logs\" | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Tail 50
+```
+
+---
+
+## Uninstall
+
+```cmd
+REM Interactive
+msiexec /x P2L-1.0.0-x64.msi
+
+REM Silent
+msiexec /x P2L-1.0.0-x64.msi /qn
+```
+
+> Config file `C:\ProgramData\P2L\appsettings.json` is preserved on uninstall (NeverOverwrite). Delete manually if you want a clean slate.
+
+---
+
+## Troubleshooting
+
+### Service fails to start
+
+```powershell
+# Check Windows Event Log
+Get-EventLog -LogName System -Source "Service Control Manager" -Newest 10 | Where-Object Message -match "P2L"
+
+# Check application log
+Get-EventLog -LogName Application -Newest 20 | Where-Object Source -match "P2L"
+
+# View P2L log files
+Get-Content "C:\ProgramData\P2L\logs\*.log" -Tail 50
+```
+
+### "Access Denied" installing MSI
+
+Run as Administrator: right-click MSI → "Run as administrator", or use an elevated CMD/PowerShell.
+
+### SmartScreen blocks the binary
+
+```powershell
+Unblock-File "C:\Program Files\P2L\p2l.exe"
+Unblock-File "C:\Program Files\P2L\p2l-client.exe"
+```
+
+### Dashboard not accessible at http://localhost:8765
+
+```powershell
+# Verify P2LClient service is running
+Get-Service P2LClient
+
+# Check firewall
+netsh advfirewall firewall add rule name="P2LClient" dir=in action=allow protocol=TCP localport=8765
+
+# Check if port is bound
+netstat -ano | findstr :8765
+```
+
+### Upgrade to new version
+
+The MSI handles upgrades automatically (MajorUpgrade). Simply run the new MSI:
+
+```cmd
+msiexec /i P2L-2.0.0-x64.msi
+```
+
+Config (`appsettings.json`) is preserved.
+
 
 ---
 
