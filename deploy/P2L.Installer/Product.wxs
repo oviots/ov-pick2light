@@ -65,6 +65,7 @@
 
       <ComponentGroupRef Id="BinaryFiles" />
       <ComponentGroupRef Id="P2LClientDirFiles" />
+      <ComponentGroupRef Id="ClientService" />
       <ComponentGroupRef Id="BridgeService" />
       <ComponentGroupRef Id="ConfigFiles" />
       <ComponentGroupRef Id="ShortcutComponents" />
