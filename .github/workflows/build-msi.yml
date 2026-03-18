@@ -36,6 +36,7 @@ jobs:
     env:
       PLATFORM: ${{ github.event.inputs.platform || 'x64' }}
       VERSION:  ${{ github.event.inputs.version  || '1.0.0' }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - uses: actions/checkout@v4

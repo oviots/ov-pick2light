@@ -36,6 +36,7 @@ env:
   VERSION: ${{ github.event.inputs.version || '1.0.0' }}
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ── Linux x64 ──────────────────────────────────────────────────────────────
