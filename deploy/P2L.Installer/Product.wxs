@@ -39,7 +39,10 @@
 
     <!-- ── Install directories ─────────────────────────────────────────── -->
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="P2L" />
+      <Directory Id="INSTALLFOLDER" Name="P2L">
+        <!-- Onedir PyInstaller output — avoids %TEMP% extraction/AV blocking -->
+        <Directory Id="P2LCLIENTFOLDER" Name="p2l-client" />
+      </Directory>
     </StandardDirectory>
 
     <StandardDirectory Id="CommonAppDataFolder">
@@ -61,8 +64,8 @@
              Display="expand">
 
       <ComponentGroupRef Id="BinaryFiles" />
+      <ComponentGroupRef Id="P2LClientDirFiles" />
       <ComponentGroupRef Id="BridgeService" />
-      <ComponentGroupRef Id="ClientService" />
       <ComponentGroupRef Id="ConfigFiles" />
       <ComponentGroupRef Id="ShortcutComponents" />
       <ComponentGroupRef Id="RegistryEntries" />

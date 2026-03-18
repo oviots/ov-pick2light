@@ -1,11 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for P2L web client (single-file binary).
+# PyInstaller spec for P2L web client.
 #
-# Build with:
-#   cd client/
-#   pyinstaller p2l-client.spec
+# Build with (from repo root):
+#   pyinstaller client/p2l-client.spec --distpath <out> --workpath .pyinstaller-work
 #
-# Output: dist/p2l-client  (or dist/p2l-client.exe on Windows)
+# Output:
+#   Linux/macOS  → <out>/p2l-client      (single file)
+#   Windows      → <out>/p2l-client/     (onedir — avoids AV/DEP temp-extraction block)
+
+import sys
+
+IS_WINDOWS = sys.platform == "win32"
 
 block_cipher = None
 
@@ -82,22 +87,52 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name="p2l-client",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=True,
-    upx=False,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
+if IS_WINDOWS:
+    # Windows: onedir mode — no extraction to %TEMP%, avoids AV/DEP blocking
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        name="p2l-client",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,       # strip is Unix-only; on Windows it corrupts PE files
+        upx=False,
+        console=True,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=False,
+        upx_exclude=[],
+        name="p2l-client",
+    )
+else:
+    # Linux / macOS: single-file binary for easy distribution
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        [],
+        name="p2l-client",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=True,
+        upx=False,
+        console=True,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )

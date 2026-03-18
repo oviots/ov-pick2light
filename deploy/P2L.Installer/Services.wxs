@@ -52,53 +52,5 @@
     </ComponentGroup>
   </Fragment>
 
-  <!-- ── P2L Client Service (p2l-client.exe) ───────────────────────────── -->
-  <Fragment>
-    <ComponentGroup Id="ClientService" Directory="INSTALLFOLDER">
-
-      <Component Id="ClientServiceComp" Guid="B1C2D3E4-0002-0002-0002-000000000002">
-        <!-- KeyPath via registry — file is already installed by BinaryFiles -->
-        <RegistryValue Root="HKLM"
-                       Key="Software\P2L\Services"
-                       Name="ClientInstalled"
-                       Value="1"
-                       Type="integer"
-                       KeyPath="yes" />
-
-        <ServiceInstall Id="P2LClientServiceInstall"
-                        Name="P2LClient"
-                        DisplayName="Pick2Light Web Dashboard"
-                        Description="Pick2Light web dashboard — accessible at http://localhost:8765"
-                        Type="ownProcess"
-                        Start="auto"
-                        ErrorControl="normal"
-                        Account="NT SERVICE\P2LClient" />
-
-        <util:ServiceConfig
-            ServiceName="P2LClient"
-            FirstFailureActionType="restart"
-            SecondFailureActionType="restart"
-            ThirdFailureActionType="restart"
-            RestartServiceDelayInSeconds="5"
-            ResetPeriodInDays="1" />
-
-        <!-- Set environment variables for the service via registry -->
-        <RegistryKey Root="HKLM"
-                     Key="SYSTEM\CurrentControlSet\Services\P2LClient">
-          <RegistryValue Name="Environment"
-                         Type="multiString"
-                         Value="P2L_CLIENT_HOST=0.0.0.0[~]P2L_CLIENT_PORT=8765" />
-        </RegistryKey>
-
-        <ServiceControl Id="P2LClientServiceControl"
-                        Name="P2LClient"
-                        Start="install"
-                        Stop="both"
-                        Remove="uninstall"
-                        Wait="yes" />
-      </Component>
-
-    </ComponentGroup>
-  </Fragment>
 
 </Wix>
