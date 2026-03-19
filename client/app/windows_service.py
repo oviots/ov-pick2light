@@ -109,7 +109,8 @@ def _service_main(argc: int, argv) -> None:  # noqa: ANN001
     port = int(os.environ.get("P2L_CLIENT_PORT", "8765"))
 
     _server_ref = uvicorn.Server(
-        uvicorn.Config(fastapi_app, host=host, port=port, log_level="info")
+        uvicorn.Config(fastapi_app, host=host, port=port, log_level="info",
+                       loop="none")   # prevents uvicorn from forcing ProactorEventLoop
     )
     server_thread = threading.Thread(target=_server_ref.run, daemon=True)
     server_thread.start()
