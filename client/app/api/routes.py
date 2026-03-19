@@ -273,9 +273,150 @@ async def service_stop(request: Request):
     return {"status": "stopped"}
 
 
-# ─── Device management ────────────────────────────────────────────────────────
+@router.post("/api/self/restart")
+async def self_restart():
+    """Schedule a restart of the P2LClient service itself (cross-platform)."""
+    import asyncio
+    import sys
 
-@router.get("/api/devices")
+    async def _do_restart():
+        await asyncio.sleep(1.5)   # let the HTTP response reach the browser first
+        _restart_self()
+
+    asyncio.get_event_loop().create_task(_do_restart())
+    return {"status": "restarting"}
+
+
+def _restart_self() -> None:
+    """Restart the P2LClient process/service on any platform."""
+    import subprocess
+    import sys
+
+    plat = sys.platform
+
+    if plat == "win32":
+        # Running as Windows SCM service → net stop/start; fallback to re-exec
+        try:
+            subprocess.run(["net", "stop", "P2LClient"], check=False,
+                           capture_output=True, timeout=30)
+            subprocess.run(["net", "start", "P2LClient"], check=False,
+                           capture_output=True, timeout=30)
+            return
+        except Exception:
+            pass
+
+    elif plat == "darwin":
+        try:
+            subprocess.run(
+                ["launchctl", "kickstart", "-k", "system/com.p2l.client"],
+                check=False, capture_output=True, timeout=15,
+            )
+            return
+        except Exception:
+            pass
+
+    else:  # Linux
+        try:
+            subprocess.run(
+                ["systemctl", "restart", "p2l-client"],
+                check=False, capture_output=True, timeout=30,
+            )
+            return
+        except Exception:
+            pass
+
+    # Universal fallback: re-exec this process (works when run directly)
+    import os
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+# ─── P2L Bridge service control (cross-platform) ─────────────────────────────
+
+def _p2l_svc_status() -> dict:
+    """Return running state of the P2L bridge service on any platform."""
+    import subprocess
+    import sys
+
+    plat = sys.platform
+    try:
+        if plat == "win32":
+            r = subprocess.run(
+                ["sc", "query", "P2L"], capture_output=True, text=True, timeout=5
+            )
+            running = "RUNNING" in r.stdout
+        elif plat == "darwin":
+            r = subprocess.run(
+                ["launchctl", "list", "com.p2l.service"],
+                capture_output=True, text=True, timeout=5,
+            )
+            running = r.returncode == 0
+        else:
+            r = subprocess.run(
+                ["systemctl", "is-active", "--quiet", "p2l"],
+                capture_output=True, timeout=5,
+            )
+            running = r.returncode == 0
+    except Exception:
+        running = False
+
+    return {"running": running}
+
+
+@router.get("/api/p2l-service/status")
+async def p2l_service_status():
+    return _p2l_svc_status()
+
+
+@router.post("/api/p2l-service/start")
+async def p2l_service_start(request: Request):
+    import subprocess, sys
+    plat = sys.platform
+    cfg = _config(request)
+    try:
+        if plat == "win32":
+            subprocess.run(["net", "start", "P2L"], check=False,
+                           capture_output=True, timeout=30)
+        elif plat == "darwin":
+            subprocess.run(
+                ["launchctl", "kickstart", "system/com.p2l.service"],
+                check=False, capture_output=True, timeout=15,
+            )
+        else:
+            subprocess.run(["systemctl", "start", "p2l"],
+                           check=False, capture_output=True, timeout=30)
+    except Exception as exc:
+        # Fallback: launch binary directly if configured
+        if cfg.service.binary_path:
+            from .. import service as svc
+            await svc.start(cfg.service.binary_path, cfg.service.args,
+                            cfg.service.working_dir)
+        else:
+            raise HTTPException(status_code=500, detail=str(exc))
+    return _p2l_svc_status()
+
+
+@router.post("/api/p2l-service/stop")
+async def p2l_service_stop():
+    import subprocess, sys
+    plat = sys.platform
+    try:
+        if plat == "win32":
+            subprocess.run(["net", "stop", "P2L"], check=False,
+                           capture_output=True, timeout=30)
+        elif plat == "darwin":
+            subprocess.run(
+                ["launchctl", "stop", "com.p2l.service"],
+                check=False, capture_output=True, timeout=15,
+            )
+        else:
+            subprocess.run(["systemctl", "stop", "p2l"],
+                           check=False, capture_output=True, timeout=30)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return _p2l_svc_status()
+
+
+
 async def list_devices(request: Request):
     return {"devices": [m.to_dict() for m in _registry(request).all]}
 

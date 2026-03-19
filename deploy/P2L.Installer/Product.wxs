@@ -66,26 +66,12 @@
       <ComponentGroupRef Id="RegistryEntries" />
     </Feature>
 
-    <!-- ── Pre-uninstall: stop services via sc.exe before StopServices ─────────
-         ServiceControl Stop="both" Wait="yes" (in Components.wxs) already
-         schedules the standard MSI StopServices action. These custom actions run
-         first, giving the services extra time for a graceful shutdown before
-         Windows Installer's forced stop takes over.
-         Return="ignore" — safe even if the service is already stopped.
+    <!-- ── Pre-uninstall: stop services before StopServices ──────────────────
+         Uses "net stop" which WAITS for each service to fully stop before
+         returning. Return="ignore" — safe if the service is already stopped.
     -->
-    <SetProperty Id="StopP2LSvc"
-                 Value='"[SystemFolder]sc.exe" stop P2L'
-                 Before="StopP2LSvc"
-                 Sequence="execute" />
-    <CustomAction Id="StopP2LSvc"
-                  BinaryRef="Wix4UtilCA_X64"
-                  DllEntry="WixQuietExec64"
-                  Execute="deferred"
-                  Impersonate="no"
-                  Return="ignore" />
-
     <SetProperty Id="StopP2LClientSvc"
-                 Value='"[SystemFolder]sc.exe" stop P2LClient'
+                 Value='"[SystemFolder]cmd.exe" /c "net stop P2LClient 2&gt;nul &amp; exit /b 0"'
                  Before="StopP2LClientSvc"
                  Sequence="execute" />
     <CustomAction Id="StopP2LClientSvc"
@@ -95,10 +81,21 @@
                   Impersonate="no"
                   Return="ignore" />
 
+    <SetProperty Id="StopP2LSvc"
+                 Value='"[SystemFolder]cmd.exe" /c "net stop P2L 2&gt;nul &amp; exit /b 0"'
+                 Before="StopP2LSvc"
+                 Sequence="execute" />
+    <CustomAction Id="StopP2LSvc"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec64"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
     <InstallExecuteSequence>
-      <!-- Run before standard StopServices — only on uninstall/upgrade -->
-      <Custom Action="StopP2LSvc"       Before="StopServices" Condition='REMOVE="ALL"' />
+      <!-- Stop P2LClient first (depends on P2L), then P2L, then MSI StopServices -->
       <Custom Action="StopP2LClientSvc" Before="StopP2LSvc"   Condition='REMOVE="ALL"' />
+      <Custom Action="StopP2LSvc"       Before="StopServices" Condition='REMOVE="ALL"' />
     </InstallExecuteSequence>
 
     <!-- ── UI (WiX standard InstallDir dialog) ───────────────────────── -->

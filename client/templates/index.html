@@ -680,7 +680,6 @@
                   <strong>Restart the service</strong> to apply changes.
                 </p>
 
-                <!-- Gateway -->
                 <div
                   class="card-title"
                   style="
@@ -1027,6 +1026,13 @@
                     id="appsettings-save-status"
                     style="font-size: 0.8rem; color: var(--text-muted)"
                   ></span>
+                </div>
+
+                <div style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--border);display:flex;align-items:center;gap:0.75rem;">
+                  <span style="font-size:0.8rem;color:var(--text-muted);flex:1;">P2L Bridge Service</span>
+                  <span id="p2l-svc-badge" class="status-badge STANDBY">Checking…</span>
+                  <button id="btn-p2l-svc-start" class="btn btn-sm btn-primary" style="display:none" onclick="p2lServiceAction('start')">Start</button>
+                  <button id="btn-p2l-svc-stop"  class="btn btn-sm btn-danger"  style="display:none" onclick="p2lServiceAction('stop')">Stop</button>
                 </div>
               </div>
             </div>

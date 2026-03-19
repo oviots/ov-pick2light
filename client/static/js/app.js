@@ -50,7 +50,7 @@ function initTabs() {
       document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
       btn.classList.add('active');
       $('pane-' + tab).classList.add('active');
-      if (tab === 'settings') refreshServiceBadge();
+      if (tab === 'settings') { refreshServiceBadge(); refreshP2lServiceBadge(); }
       // Hide overlay on settings/about tabs so users can configure even when disconnected
       const overlay = $('disconnected-overlay');
       if (overlay) {
@@ -565,6 +565,43 @@ async function refreshServiceBadge() {
   } catch { /* ignore */ }
 }
 
+// ── P2L Bridge service control ─────────────────────────────────────────────
+async function refreshP2lServiceBadge() {
+  if (!$('p2l-svc-badge')) return;
+  try {
+    const s = await api('GET', '/api/p2l-service/status');
+    _applyP2lSvcUI(s.running);
+  } catch { /* ignore */ }
+}
+
+function _applyP2lSvcUI(running) {
+  const badge    = $('p2l-svc-badge');
+  const btnStart = $('btn-p2l-svc-start');
+  const btnStop  = $('btn-p2l-svc-stop');
+  if (!badge) return;
+  badge.textContent = running ? 'Running' : 'Stopped';
+  badge.className   = `status-badge ${running ? 'OPERATING' : 'STANDBY'}`;
+  if (btnStart) { btnStart.style.display = running ? 'none' : ''; btnStart.disabled = false; }
+  if (btnStop)  { btnStop.style.display  = running ? ''     : 'none'; btnStop.disabled = false; }
+}
+
+async function p2lServiceAction(action) {
+  const btnStart = $('btn-p2l-svc-start');
+  const btnStop  = $('btn-p2l-svc-stop');
+  if (btnStart) btnStart.disabled = true;
+  if (btnStop)  btnStop.disabled  = true;
+  try {
+    await api('POST', `/api/p2l-service/${action}`);
+    toast(`P2L service ${action}ping…`, 'success');
+    await new Promise(r => setTimeout(r, 2500));
+    await refreshP2lServiceBadge();
+  } catch (e) {
+    toast(e.message, 'error');
+    await refreshP2lServiceBadge();
+  }
+}
+
+
 async function disconnect() {
   try {
     await api('POST', '/api/disconnect');
@@ -968,7 +1005,10 @@ async function saveConfig() {
   };
   try {
     await api('PUT', '/api/config', body);
-    toast('Settings saved', 'success');
+    toast('Settings saved — restarting service…', 'success');
+    try {
+      await api('POST', '/api/self/restart');
+    } catch (_) { /* service is restarting, connection will drop */ }
   } catch (e) {
     toast(e.message, 'error');
   }
