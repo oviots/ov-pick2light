@@ -3,7 +3,14 @@
 import os
 import sys
 
+# ── Windows: force SelectorEventLoop so aiomqtt/paho-mqtt can use add_reader/add_writer.
+# ProactorEventLoop (Windows default) does NOT support these socket primitives.
+if sys.platform == "win32":
+    import asyncio
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 if __name__ == "__main__":
+
     # ── Windows PyInstaller binary: try SCM dispatcher first ─────────────────
     # StartServiceCtrlDispatcher blocks when run by SCM and returns only after
     # the service stops.  When run interactively it returns immediately with

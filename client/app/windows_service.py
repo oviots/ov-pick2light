@@ -97,8 +97,13 @@ def _service_main(argc: int, argv) -> None:  # noqa: ANN001
     _set_status(SERVICE_RUNNING, controls_accepted=SERVICE_ACCEPT_STOP)
 
     # Import deferred to here so module-level import is fast (no uvicorn startup).
+    import asyncio
     import uvicorn
     from app.main import app as fastapi_app  # noqa: PLC0415
+
+    # Force SelectorEventLoop — ProactorEventLoop (Windows default) does not
+    # support add_reader/add_writer which aiomqtt/paho-mqtt requires.
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     host = os.environ.get("P2L_CLIENT_HOST", "0.0.0.0")
     port = int(os.environ.get("P2L_CLIENT_PORT", "8765"))
