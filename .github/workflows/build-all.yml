@@ -88,7 +88,7 @@ jobs:
           cp artifacts/linux-x64/p2l            "$STAGING/bin/"
           cp artifacts/linux-x64/p2l-client     "$STAGING/bin/"
           cp artifacts/linux-x64/libe_sqlite3.so "$STAGING/bin/" 2>/dev/null || true
-          cp appsettings.json                    "$STAGING/config/"
+          cp config/p2l_config.json                    "$STAGING/config/"
           cp deploy/install.sh                   "$STAGING/deploy/" 2>/dev/null || true
           cp deploy/p2l.service                  "$STAGING/deploy/" 2>/dev/null || true
           cp deploy/p2l-client.service           "$STAGING/deploy/" 2>/dev/null || true
@@ -151,7 +151,7 @@ jobs:
           cp artifacts/linux-arm64/p2l            "$STAGING/bin/"
           cp artifacts/linux-arm64/p2l-client     "$STAGING/bin/"
           cp artifacts/linux-arm64/libe_sqlite3.so "$STAGING/bin/" 2>/dev/null || true
-          cp appsettings.json                      "$STAGING/config/"
+          cp config/p2l_config.json                      "$STAGING/config/"
           cp deploy/install.sh                     "$STAGING/deploy/" 2>/dev/null || true
           cp deploy/p2l.service                    "$STAGING/deploy/" 2>/dev/null || true
           cp deploy/p2l-client.service             "$STAGING/deploy/" 2>/dev/null || true
@@ -214,7 +214,7 @@ jobs:
           cp artifacts/osx-arm64/p2l           "$STAGING/bin/"
           cp artifacts/osx-arm64/p2l-client    "$STAGING/bin/"
           cp artifacts/osx-arm64/libe_sqlite3.dylib "$STAGING/bin/" 2>/dev/null || true
-          cp appsettings.json                   "$STAGING/config/"
+          cp config/p2l_config.json                   "$STAGING/config/"
           mkdir -p dist
           tar -czf "dist/p2l-${VERSION}-osx-arm64.tar.gz" -C "dist/staging" "p2l-${VERSION}-osx-arm64"
           ls -lh dist/
@@ -276,7 +276,7 @@ jobs:
   #         cp artifacts/osx-x64/p2l              "$STAGING/bin/"
   #         cp artifacts/osx-x64/p2l-client       "$STAGING/bin/"
   #         cp artifacts/osx-x64/libe_sqlite3.dylib "$STAGING/bin/" 2>/dev/null || true
-  #         cp appsettings.json                    "$STAGING/config/"
+  #         cp config/p2l_config.json                    "$STAGING/config/"
   #         mkdir -p dist
   #         tar -czf "dist/p2l-${VERSION}-osx-x64.tar.gz" -C "dist/staging" "p2l-${VERSION}-osx-x64"
   #         ls -lh dist/
@@ -358,7 +358,7 @@ jobs:
           Copy-Item artifacts/win-x64/p2l.exe        "$staging/bin/"
           Copy-Item artifacts/win-x64/p2l-client.exe "$staging/bin/"
           Copy-Item artifacts/win-x64/e_sqlite3.dll  "$staging/bin/"
-          Copy-Item appsettings.json                 "$staging/config/"
+          Copy-Item config/p2l_config.json                 "$staging/config/"
           Compress-Archive -Path $staging -DestinationPath "dist/p2l-$v-win-x64.zip" -Force
           Get-ChildItem dist -File | ForEach-Object { "$($_.Name) — $([math]::Round($_.Length/1MB,1)) MB" }
 
