@@ -203,9 +203,9 @@ async def example_batch_dispatch():
     raw_json = """{
         "batch_id": "jklklkj1212",
         "items": [
-            {"sku": "SKU-001", "label": "CH.XXX", "quantity": 10, "color": "Green",  "ledMode": "Flash","buzMode": "Off"},
+            {"sku": "SKU-001", "label": "CH.001", "quantity": 10, "color": "Green",  "ledMode": "Flash","buzMode": "Off"},
             {"sku": "SKU-002", "label": "CH.002", "quantity": 5,  "color": "Yellow", "ledMode": "Flash", "buzMode": "Off"},
-            {"sku": "SKU-003", "label": "CH.XXX", "quantity": 15, "color": "Green",  "ledMode": "Flash", "buzMode": "Off"},
+            {"sku": "SKU-003", "label": "CH.001", "quantity": 15, "color": "Green",  "ledMode": "Flash", "buzMode": "Off"},
             {"sku": "SKU-004", "label": "CH.002", "quantity": 1,  "color": "Red",    "ledMode": "Flash", "buzMode": "Off"}
         ]
     }"""

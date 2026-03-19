@@ -422,8 +422,8 @@
 
         <!-- ── Settings Tab ───────────────────────────────────────────────────── -->
         <div id="pane-settings" class="tab-pane">
+          <!-- Sub-tab bar (constrained width) -->
           <div style="max-width: 520px">
-            <!-- Sub-tab bar -->
             <div class="sub-tab-bar">
               <button class="sub-tab-btn active" data-subtab="client">
                 <svg
@@ -466,10 +466,11 @@
                 Scan Devices
               </button>
             </div>
+          </div>
 
-            <!-- ── Sub-pane: Client Settings ─────────────────────────────── -->
-            <div id="sub-pane-client" class="sub-tab-pane active">
-              <!-- MQTT -->
+          <!-- ── Sub-pane: Client Settings ─────────────────────────────── -->
+          <div id="sub-pane-client" class="sub-tab-pane active" style="max-width:520px">
+            <!-- MQTT -->
               <div class="card mb-2">
                 <div
                   class="card-title"
@@ -671,15 +672,15 @@
               <button id="btn-save-config" class="btn btn-primary">
                 Save Settings
               </button>
-            </div>
-            <!-- /sub-pane-client -->
+          </div>
+          <!-- /sub-pane-client -->
 
-            <!-- ── Sub-pane: Bridge Config ───────────────────────────────── -->
-            <div
-              id="sub-pane-bridge"
-              class="sub-tab-pane"
-              style="display: none"
-            >
+          <!-- ── Sub-pane: Bridge Config ───────────────────────────────── -->
+          <div
+            id="sub-pane-bridge"
+            class="sub-tab-pane"
+            style="display:none;max-width:520px"
+          >
               <div class="card mb-2">
                 <p
                   style="
@@ -1047,34 +1048,34 @@
                   <button id="btn-p2l-svc-stop"  class="btn btn-sm btn-danger"  style="display:none" onclick="p2lServiceAction('stop')">Stop</button>
                 </div>
               </div>
-            </div>
-            <!-- /sub-pane-bridge -->
+          </div>
+          <!-- /sub-pane-bridge -->
 
-            <!-- ── Sub-pane: Scan Devices ─────────────────────────────── -->
-            <div id="sub-pane-scan" class="sub-tab-pane">
-              <div class="card">
+          <!-- ── Sub-pane: Scan Devices ─────────────────────────────── -->
+          <div id="sub-pane-scan" class="sub-tab-pane" style="display:none">
+            <div style="display:flex;gap:1rem;align-items:flex-start;">
+
+              <!-- Left: controls + progress -->
+              <div class="card" style="width:260px;flex-shrink:0;">
                 <div class="card-title">Scan Devices</div>
                 <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">
                   Probe the gateway for light modules in the given address range (1–9999).
                 </p>
-
-                <!-- Controls row -->
-                <div style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:1rem;">
+                <div style="display:flex;flex-direction:column;gap:0.75rem;margin-bottom:1rem;">
                   <div>
                     <label class="form-label">From address</label>
-                    <input id="scan-from" type="number" class="form-input" style="width:6rem" min="1" max="9999" value="1">
+                    <input id="scan-from" type="number" class="form-input" style="width:100%" min="1" max="9999" value="1">
                   </div>
                   <div>
                     <label class="form-label">To address</label>
-                    <input id="scan-to" type="number" class="form-input" style="width:6rem" min="1" max="9999" value="99">
+                    <input id="scan-to" type="number" class="form-input" style="width:100%" min="1" max="9999" value="99">
                   </div>
-                  <button id="btn-scan-devices" class="btn btn-primary" onclick="scanDevices()">
-                    Start Scan
-                  </button>
                 </div>
-
+                <button id="btn-scan-devices" class="btn btn-primary" style="width:100%" onclick="scanDevices()">
+                  Start Scan
+                </button>
                 <!-- Progress bar (shown while scanning) -->
-                <div id="scan-progress-wrap" style="display:none;margin-bottom:0.75rem;">
+                <div id="scan-progress-wrap" style="display:none;margin-top:1rem;">
                   <div style="display:flex;justify-content:space-between;font-size:0.78rem;color:var(--text-muted);margin-bottom:0.35rem;">
                     <span id="scan-info-text">Scanning…</span>
                     <span id="scan-elapsed">0s</span>
@@ -1083,29 +1084,25 @@
                     <div id="scan-progress-fill" style="height:100%;width:0%;background:var(--accent);border-radius:3px;transition:width 1s linear;"></div>
                   </div>
                 </div>
+              </div>
 
-                <!-- Results (shown after scan) -->
-                <div id="scan-results-wrap" style="display:none;">
-                  <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.5rem;" id="scan-result-summary"></div>
-                  <div style="overflow-x:auto;">
-                    <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
-                      <thead>
-                        <tr style="border-bottom:1px solid var(--border);text-align:left;">
-                          <th style="padding:0.35rem 0.5rem;">Address</th>
-                          <th style="padding:0.35rem 0.5rem;">Label</th>
-                          <th style="padding:0.35rem 0.5rem;">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody id="scan-result-tbody"></tbody>
-                    </table>
+              <!-- Right: results panel -->
+              <div class="card" style="flex:1;min-width:0;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
+                  <div class="card-title" style="margin:0;">Results</div>
+                  <span id="scan-result-summary" style="font-size:0.78rem;color:var(--text-muted);"></span>
+                </div>
+                <div id="scan-results-wrap">
+                  <div class="empty-state" style="padding:2rem 0;">
+                    <p style="color:var(--text-muted);font-size:0.85rem;">Run a scan to discover devices.</p>
                   </div>
                 </div>
-
               </div>
-            </div>
-            <!-- /sub-pane-scan -->
 
+            </div>
           </div>
+          <!-- /sub-pane-scan -->
+
         </div>
 
         <!-- ── Data Processing Tab ───────────────────────────────────────────── -->

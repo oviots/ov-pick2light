@@ -66,7 +66,7 @@ function initSubTabs() {
     btn.addEventListener('click', () => {
       const subtab = btn.dataset.subtab;
       const bar = btn.closest('.sub-tab-bar');
-      const container = bar.parentElement;
+      const container = bar.closest('.tab-pane');
       // Toggle button active state
       bar.querySelectorAll('.sub-tab-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
@@ -630,19 +630,32 @@ function _scanOnStateUpdate(devices) {
 }
 
 function _renderScanResultsLive() {
-  const wrap = $('scan-results-wrap');
-  const tbody = $('scan-result-tbody');
+  const wrap    = $('scan-results-wrap');
   const summary = $('scan-result-summary');
-  if (!wrap || !tbody) return;
-  wrap.style.display = '';
+  if (!wrap) return;
   const entries = [..._scan.found.values()].sort((a, b) => a.address.localeCompare(b.address));
-  summary.textContent = `${entries.length} device${entries.length !== 1 ? 's' : ''} found so far…`;
-  tbody.innerHTML = entries.map(d => `
-    <tr style="border-bottom:1px solid var(--border)">
-      <td style="padding:0.3rem 0.5rem;font-family:monospace">${d.address}</td>
-      <td style="padding:0.3rem 0.5rem">${d.label || '—'}</td>
-      <td style="padding:0.3rem 0.5rem"><span class="status-badge ${d.status ?? 'STANDBY'}" style="font-size:0.72rem">${d.status ?? 'Unknown'}</span></td>
-    </tr>`).join('');
+  const count   = entries.length;
+  if (summary) summary.textContent = `${count} device${count !== 1 ? 's' : ''} found so far…`;
+  wrap.innerHTML = `
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);text-align:left;">
+            <th style="padding:0.35rem 0.5rem;">Address</th>
+            <th style="padding:0.35rem 0.5rem;">Label</th>
+            <th style="padding:0.35rem 0.5rem;">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${entries.map(d => `
+            <tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:0.3rem 0.5rem;font-family:monospace">${d.address}</td>
+              <td style="padding:0.3rem 0.5rem">${d.label || '—'}</td>
+              <td style="padding:0.3rem 0.5rem"><span class="status-badge ${d.status ?? 'STANDBY'}" style="font-size:0.72rem">${d.status ?? 'Unknown'}</span></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
 }
 
 function _finalizeScan() {
@@ -666,10 +679,7 @@ function _finalizeScan() {
   // Show empty-state if nothing found
   const wrap = $('scan-results-wrap');
   if (wrap && count === 0) {
-    wrap.style.display = '';
-    const tbody = $('scan-result-tbody');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="3" style="padding:0.75rem 0.5rem;color:var(--text-muted)">No devices found in this range.</td></tr>';
-    if (summary) summary.textContent = 'Scan complete — no devices found';
+    wrap.innerHTML = '<div class="empty-state" style="padding:2rem 0;"><p style="color:var(--text-muted);font-size:0.85rem;">No devices found in this range.</p></div>';
   }
 
   if (btn) { btn.disabled = false; btn.textContent = 'Start Scan'; }
@@ -695,11 +705,9 @@ async function scanDevices() {
   const infoTxt  = $('scan-info-text');
   const elapsed  = $('scan-elapsed');
   const wrap     = $('scan-results-wrap');
-  const tbody    = $('scan-result-tbody');
   const summary  = $('scan-result-summary');
 
-  if (wrap)    { wrap.style.display = 'none'; }
-  if (tbody)   tbody.innerHTML = '';
+  if (wrap)    { wrap.innerHTML = '<div class="empty-state" style="padding:2rem 0;"><p style="color:var(--text-muted);font-size:0.85rem;">Scanning…</p></div>'; }
   if (summary) summary.textContent = '';
   if (fill)    fill.style.transition = 'none';
   if (fill)    { fill.style.width = '0%'; }
