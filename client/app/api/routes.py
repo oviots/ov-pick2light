@@ -417,8 +417,10 @@ async def p2l_service_stop():
 
 
 @router.post("/api/scan-devices")
-async def scan_devices(request: Request):
-    await _publish(request, {"type": "scan_devices"})
+async def scan_devices(request: Request, addr_from: int = 1, addr_to: int = 99):
+    if addr_from < 1 or addr_to < addr_from or addr_to > 9999:
+        raise HTTPException(status_code=400, detail="Address range must be 1–9999 with from ≤ to")
+    await _publish(request, {"type": "scan_devices", "from": addr_from, "to": addr_to})
     return {"status": "scanning"}
 
 

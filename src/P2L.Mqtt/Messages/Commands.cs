@@ -76,7 +76,13 @@ public sealed record BatchFinishCmd : MqttCommand
 public sealed record TerminateAllCmd : MqttCommand { }
 
 /// <summary>Triggers a gateway scan to rediscover all connected light modules.</summary>
-public sealed record ScanDevicesCmd : MqttCommand { }
+public sealed record ScanDevicesCmd : MqttCommand
+{
+    /// <summary>First address to probe (1–9999). Defaults to 1.</summary>
+    public int From { get; init; } = 1;
+    /// <summary>Last address to probe inclusive (1–9999). Defaults to 99.</summary>
+    public int To   { get; init; } = 99;
+}
 
 // ─── get_snapshot ───────────────────────────────────────────────────────────
 

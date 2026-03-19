@@ -182,8 +182,10 @@ internal sealed class MqttCommandDispatcher
 
                 case "scan_devices":
                 {
-                    _log.LogInformation("[MQTT] scan_devices — triggering gateway scan");
-                    await _scanService.ScanAsync(ct: ct).ConfigureAwait(false);
+                    var cmd = JsonSerializer.Deserialize(payload, P2LMqttJsonContext.Default.ScanDevicesCmd)
+                              ?? new ScanDevicesCmd { Type = "scan_devices" };
+                    _log.LogInformation("[MQTT] scan_devices {From}–{To}", cmd.From, cmd.To);
+                    await _scanService.ScanAsync(startAddr: cmd.From, endAddr: cmd.To, ct: ct).ConfigureAwait(false);
                     break;
                 }
 

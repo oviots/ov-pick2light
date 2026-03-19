@@ -205,6 +205,25 @@
               </div>
             </div>
 
+            <!-- Scan Devices -->
+            <div class="card">
+              <div class="card-title">Scan Devices</div>
+              <div style="display:flex;gap:0.5rem;align-items:flex-end;flex-wrap:wrap;">
+                <div>
+                  <label style="font-size:0.78rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">From</label>
+                  <input id="scan-from" type="number" class="form-input" style="width:5rem" min="1" max="9999" value="1">
+                </div>
+                <div>
+                  <label style="font-size:0.78rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">To</label>
+                  <input id="scan-to" type="number" class="form-input" style="width:5rem" min="1" max="9999" value="99">
+                </div>
+                <button id="btn-scan-devices" class="btn btn-secondary" onclick="scanDevices()" title="Scan gateway for connected light modules">Scan Devices</button>
+              </div>
+              <div style="margin-top:0.75rem;font-size:0.8rem;color:var(--text-muted);">
+                Probes the gateway for light modules in the given address range.
+              </div>
+            </div>
+
             <!-- Recent Events -->
             <div class="card" style="flex: 1">
               <div class="card-title">Recent Confirmations</div>
@@ -1033,7 +1052,6 @@
                   <span id="p2l-svc-badge" class="status-badge STANDBY">Checking…</span>
                   <button id="btn-p2l-svc-start" class="btn btn-sm btn-primary" style="display:none" onclick="p2lServiceAction('start')">Start</button>
                   <button id="btn-p2l-svc-stop"  class="btn btn-sm btn-danger"  style="display:none" onclick="p2lServiceAction('stop')">Stop</button>
-                  <button id="btn-scan-devices"   class="btn btn-sm btn-secondary" style="display:none" onclick="scanDevices()" title="Scan gateway for connected light modules">Scan Devices</button>
                 </div>
               </div>
             </div>
