@@ -164,6 +164,7 @@ function handleWsMessage(msg) {
         pushEvent('light_changed', d);
         state.devices[d.address] = d;
       });
+      _scanOnStateUpdate(msg.data);  // feed into active scan session if any
       // Remove devices no longer in the full registry (e.g. stale DB entries cleared by server)
       Object.keys(_addrMap).forEach(addr => {
         if (!incoming.has(addr)) {
@@ -227,6 +228,19 @@ function updateConnectionUI() {
     const DATA_TABS = new Set(['dashboard', 'devices', 'batch', 'events', 'logs']);
     if (state.mqttConnected || !DATA_TABS.has(activeTab)) overlay.classList.add('hidden');
     else overlay.classList.remove('hidden');
+  }
+
+  // Show "Scan Devices" sub-tab only when MQTT is connected
+  const scanTabBtn = $('sub-tab-btn-scan');
+  if (scanTabBtn) {
+    scanTabBtn.style.display = state.mqttConnected ? '' : 'none';
+    // If scan sub-tab is active but we just disconnected, switch back to client sub-tab
+    if (!state.mqttConnected && scanTabBtn.classList.contains('active')) {
+      scanTabBtn.classList.remove('active');
+      document.querySelector('#sub-pane-scan')?.classList.remove('active');
+      document.querySelector('.sub-tab-btn[data-subtab="client"]')?.classList.add('active');
+      document.querySelector('#sub-pane-client')?.classList.add('active');
+    }
   }
 
   // Update bridge status badge
@@ -601,23 +615,123 @@ async function p2lServiceAction(action) {
   }
 }
 
+// ── Scan Session State ────────────────────────────────────────────────────
+let _scan = null; // { fromAddr, toAddr, found: Map<addr,device>, timer, tickTimer, startMs, durationMs }
+
+function _scanOnStateUpdate(devices) {
+  if (!_scan) return;
+  devices.forEach(d => {
+    const n = parseInt(d.address, 10);
+    if (n >= _scan.fromAddr && n <= _scan.toAddr) {
+      _scan.found.set(d.address, d);
+      _renderScanResultsLive();
+    }
+  });
+}
+
+function _renderScanResultsLive() {
+  const wrap = $('scan-results-wrap');
+  const tbody = $('scan-result-tbody');
+  const summary = $('scan-result-summary');
+  if (!wrap || !tbody) return;
+  wrap.style.display = '';
+  const entries = [..._scan.found.values()].sort((a, b) => a.address.localeCompare(b.address));
+  summary.textContent = `${entries.length} device${entries.length !== 1 ? 's' : ''} found so far…`;
+  tbody.innerHTML = entries.map(d => `
+    <tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:0.3rem 0.5rem;font-family:monospace">${d.address}</td>
+      <td style="padding:0.3rem 0.5rem">${d.label || '—'}</td>
+      <td style="padding:0.3rem 0.5rem"><span class="status-badge ${d.status ?? 'STANDBY'}" style="font-size:0.72rem">${d.status ?? 'Unknown'}</span></td>
+    </tr>`).join('');
+}
+
+function _finalizeScan() {
+  if (!_scan) return;
+  clearInterval(_scan.tickTimer);
+  _scan.tickTimer = null;
+
+  const btn     = $('btn-scan-devices');
+  const progWrap = $('scan-progress-wrap');
+  const fill    = $('scan-progress-fill');
+  const infoTxt = $('scan-info-text');
+  const summary = $('scan-result-summary');
+
+  if (fill) fill.style.width = '100%';
+  if (infoTxt) infoTxt.textContent = 'Scan complete';
+  setTimeout(() => { if (progWrap) progWrap.style.display = 'none'; }, 800);
+
+  const count = _scan.found.size;
+  if (summary) summary.textContent = `Scan complete — ${count} device${count !== 1 ? 's' : ''} found`;
+
+  // Show empty-state if nothing found
+  const wrap = $('scan-results-wrap');
+  if (wrap && count === 0) {
+    wrap.style.display = '';
+    const tbody = $('scan-result-tbody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="3" style="padding:0.75rem 0.5rem;color:var(--text-muted)">No devices found in this range.</td></tr>';
+    if (summary) summary.textContent = 'Scan complete — no devices found';
+  }
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Start Scan'; }
+  _scan = null;
+}
+
 async function scanDevices() {
   const btn  = $('btn-scan-devices');
   const from = parseInt($('scan-from')?.value ?? '1',  10) || 1;
   const to   = parseInt($('scan-to')?.value   ?? '99', 10) || 99;
+
   if (from < 1 || to < from || to > 9999) {
     toast('Invalid address range (1–9999, from ≤ to)', 'error');
     return;
   }
+
+  // Estimated duration: ceil(range / concurrency=4) batches × 1.5s + 4s buffer
+  const durationMs = Math.ceil((to - from + 1) / 4) * 1500 + 4000;
+
+  // Reset UI
+  const progWrap = $('scan-progress-wrap');
+  const fill     = $('scan-progress-fill');
+  const infoTxt  = $('scan-info-text');
+  const elapsed  = $('scan-elapsed');
+  const wrap     = $('scan-results-wrap');
+  const tbody    = $('scan-result-tbody');
+  const summary  = $('scan-result-summary');
+
+  if (wrap)    { wrap.style.display = 'none'; }
+  if (tbody)   tbody.innerHTML = '';
+  if (summary) summary.textContent = '';
+  if (fill)    fill.style.transition = 'none';
+  if (fill)    { fill.style.width = '0%'; }
+  if (progWrap) progWrap.style.display = '';
+  if (infoTxt) infoTxt.textContent = `Scanning ${from}–${to}…`;
   if (btn) { btn.disabled = true; btn.textContent = 'Scanning…'; }
+
+  _scan = { fromAddr: from, toAddr: to, found: new Map(), startMs: Date.now(), durationMs, timer: null, tickTimer: null };
+
   try {
     await api('POST', `/api/scan-devices?addr_from=${from}&addr_to=${to}`);
-    toast(`Scan triggered for addresses ${from}–${to}`, 'success');
   } catch (e) {
     toast(e.message, 'error');
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Scan Devices'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Start Scan'; }
+    if (progWrap) progWrap.style.display = 'none';
+    _scan = null;
+    return;
   }
+
+  // Animate progress bar
+  requestAnimationFrame(() => {
+    if (fill) { fill.style.transition = `width ${durationMs}ms linear`; fill.style.width = '100%'; }
+  });
+
+  // Tick: update elapsed time every second
+  _scan.tickTimer = setInterval(() => {
+    if (!_scan) return;
+    const sec = Math.round((Date.now() - _scan.startMs) / 1000);
+    if (elapsed) elapsed.textContent = `${sec}s`;
+  }, 1000);
+
+  _scan.timer = setTimeout(_finalizeScan, durationMs);
 }
 
 

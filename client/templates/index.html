@@ -205,25 +205,6 @@
               </div>
             </div>
 
-            <!-- Scan Devices -->
-            <div class="card">
-              <div class="card-title">Scan Devices</div>
-              <div style="display:flex;gap:0.5rem;align-items:flex-end;flex-wrap:wrap;">
-                <div>
-                  <label style="font-size:0.78rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">From</label>
-                  <input id="scan-from" type="number" class="form-input" style="width:5rem" min="1" max="9999" value="1">
-                </div>
-                <div>
-                  <label style="font-size:0.78rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">To</label>
-                  <input id="scan-to" type="number" class="form-input" style="width:5rem" min="1" max="9999" value="99">
-                </div>
-                <button id="btn-scan-devices" class="btn btn-secondary" onclick="scanDevices()" title="Scan gateway for connected light modules">Scan Devices</button>
-              </div>
-              <div style="margin-top:0.75rem;font-size:0.8rem;color:var(--text-muted);">
-                Probes the gateway for light modules in the given address range.
-              </div>
-            </div>
-
             <!-- Recent Events -->
             <div class="card" style="flex: 1">
               <div class="card-title">Recent Confirmations</div>
@@ -471,6 +452,18 @@
                   />
                 </svg>
                 P2L/Bridge Settings
+              </button>
+              <button id="sub-tab-btn-scan" class="sub-tab-btn" data-subtab="scan" style="display:none">
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 16 16"
+                  fill="currentColor"
+                  style="vertical-align: -0.15em"
+                >
+                  <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001q.044.06.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1 1 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0"/>
+                </svg>
+                Scan Devices
               </button>
             </div>
 
@@ -1057,6 +1050,61 @@
             </div>
             <!-- /sub-pane-bridge -->
 
+            <!-- ── Sub-pane: Scan Devices ─────────────────────────────── -->
+            <div id="sub-pane-scan" class="sub-tab-pane">
+              <div class="card">
+                <div class="card-title">Scan Devices</div>
+                <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">
+                  Probe the gateway for light modules in the given address range (1–9999).
+                </p>
+
+                <!-- Controls row -->
+                <div style="display:flex;gap:0.75rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:1rem;">
+                  <div>
+                    <label class="form-label">From address</label>
+                    <input id="scan-from" type="number" class="form-input" style="width:6rem" min="1" max="9999" value="1">
+                  </div>
+                  <div>
+                    <label class="form-label">To address</label>
+                    <input id="scan-to" type="number" class="form-input" style="width:6rem" min="1" max="9999" value="99">
+                  </div>
+                  <button id="btn-scan-devices" class="btn btn-primary" onclick="scanDevices()">
+                    Start Scan
+                  </button>
+                </div>
+
+                <!-- Progress bar (shown while scanning) -->
+                <div id="scan-progress-wrap" style="display:none;margin-bottom:0.75rem;">
+                  <div style="display:flex;justify-content:space-between;font-size:0.78rem;color:var(--text-muted);margin-bottom:0.35rem;">
+                    <span id="scan-info-text">Scanning…</span>
+                    <span id="scan-elapsed">0s</span>
+                  </div>
+                  <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
+                    <div id="scan-progress-fill" style="height:100%;width:0%;background:var(--accent);border-radius:3px;transition:width 1s linear;"></div>
+                  </div>
+                </div>
+
+                <!-- Results (shown after scan) -->
+                <div id="scan-results-wrap" style="display:none;">
+                  <div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.5rem;" id="scan-result-summary"></div>
+                  <div style="overflow-x:auto;">
+                    <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+                      <thead>
+                        <tr style="border-bottom:1px solid var(--border);text-align:left;">
+                          <th style="padding:0.35rem 0.5rem;">Address</th>
+                          <th style="padding:0.35rem 0.5rem;">Label</th>
+                          <th style="padding:0.35rem 0.5rem;">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody id="scan-result-tbody"></tbody>
+                    </table>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+            <!-- /sub-pane-scan -->
+
           </div>
         </div>
 
@@ -1138,13 +1186,11 @@
         <!-- ── About Tab ─────────────────────────────────────────────────────── -->
         <div id="pane-about" class="tab-pane">
           <div class="card">
-            <div class="card-title">About</div>
+            <div class="card-title">OVTeam AI IOT space platform</div>
             <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.8">
-              <strong>P2L/Client</strong> — Python/FastAPI<br />
-              Commands → MQTT → P2L/Bridge → Aioi hardware<br />
-              Topics: <code>p2l/commands</code> · <code>p2l/events</code> ·
-              <code>p2l/devices/#</code>
+              <strong>Namspace: OVTeleport/PTM/P2L Client</strong>
             </p>
+            <p>Version: 3.0.7 (OVTeleport)</p>
             <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem">
               ©
               <script>document.write(new Date().getFullYear());</script>
