@@ -42,6 +42,7 @@ function toast(msg, type = 'info') {
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
 function initTabs() {
+  const DATA_TABS = new Set(['dashboard', 'devices', 'batch', 'events', 'logs']);
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const tab = btn.dataset.tab;
@@ -50,6 +51,12 @@ function initTabs() {
       btn.classList.add('active');
       $('pane-' + tab).classList.add('active');
       if (tab === 'settings') refreshServiceBadge();
+      // Hide overlay on settings/about tabs so users can configure even when disconnected
+      const overlay = $('disconnected-overlay');
+      if (overlay) {
+        if (!state.mqttConnected && DATA_TABS.has(tab)) overlay.classList.remove('hidden');
+        else overlay.classList.add('hidden');
+      }
     });
   });
 }
@@ -212,6 +219,15 @@ function updateConnectionUI() {
 
   $('btn-connect').disabled = state.mqttConnected;
   $('btn-disconnect').disabled = !state.mqttConnected;
+
+  // Show/hide disconnected overlay — hide on settings/about tabs or when MQTT connected
+  const overlay = $('disconnected-overlay');
+  if (overlay) {
+    const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab ?? 'dashboard';
+    const DATA_TABS = new Set(['dashboard', 'devices', 'batch', 'events', 'logs']);
+    if (state.mqttConnected || !DATA_TABS.has(activeTab)) overlay.classList.add('hidden');
+    else overlay.classList.remove('hidden');
+  }
 
   // Update bridge status badge
   const mqttBadge = $('mqtt-status-badge');
@@ -900,50 +916,55 @@ async function clearLogs() {
 async function loadConfig() {
   try {
     const cfg = await api('GET', '/api/config');
-    $('cfg-block').value = cfg.block_no || '00';
+    const set = (id, val) => { const el = $(id); if (el) el.value = val; };
+    const chk = (id, val) => { const el = $(id); if (el) el.checked = val; };
+
+    set('cfg-block', cfg.block_no || '00');
 
     const mq = cfg.mqtt || {};
-    $('cfg-mqtt-host').value = mq.host || '';
-    $('cfg-mqtt-port').value = mq.port || 8883;
-    $('cfg-mqtt-client-id').value = mq.client_id || '';
-    $('cfg-mqtt-username').value = mq.username || '';
-    $('cfg-mqtt-cmd-topic').value = mq.command_topic || 'p2l/commands';
-    $('cfg-mqtt-event-topic').value = mq.event_topic || 'p2l/events';
-    $('cfg-mqtt-devices-topic').value = mq.devices_topic || 'p2l/devices';
-    $('cfg-mqtt-tls').checked = mq.tls?.enabled ?? true;
-    $('cfg-mqtt-tls-untrusted').checked = mq.tls?.allow_untrusted_certs || false;
-    $('cfg-mqtt-ca-cert').value = mq.tls?.ca_cert_path || '';
+    set('cfg-mqtt-host',         mq.host || '');
+    set('cfg-mqtt-port',         mq.port || 8883);
+    set('cfg-mqtt-client-id',    mq.client_id || '');
+    set('cfg-mqtt-username',     mq.username || '');
+    set('cfg-mqtt-cmd-topic',    mq.command_topic || 'p2l/commands');
+    set('cfg-mqtt-event-topic',  mq.event_topic || 'p2l/events');
+    set('cfg-mqtt-devices-topic',mq.devices_topic || 'p2l/devices');
+    chk('cfg-mqtt-tls',          mq.tls?.enabled ?? true);
+    chk('cfg-mqtt-tls-untrusted',mq.tls?.allow_untrusted_certs || false);
+    set('cfg-mqtt-ca-cert',      mq.tls?.ca_cert_path || '');
 
     const svc = cfg.service || {};
-    $('cfg-svc-path').value = svc.binary_path || '';
-    $('cfg-svc-args').value = (svc.args || []).join(' ');
-    $('cfg-svc-workdir').value = svc.working_dir || '';
-    $('cfg-svc-autostart').checked = svc.auto_start !== false;
+    set('cfg-svc-path',    svc.binary_path || '');
+    set('cfg-svc-args',    (svc.args || []).join(' '));
+    set('cfg-svc-workdir', svc.working_dir || '');
+    chk('cfg-svc-autostart', svc.auto_start !== false);
   } catch (e) {
     toast(e.message, 'error');
   }
 }
 
 async function saveConfig() {
-  const argsRaw = $('cfg-svc-args').value.trim();
+  const val = id => $(id)?.value ?? '';
+  const chkd = id => $(id)?.checked ?? false;
+  const argsRaw = val('cfg-svc-args').trim();
   const body = {
-    block_no: $('cfg-block').value,
+    block_no: val('cfg-block'),
     auto_connect: false,
-    mqtt_host: $('cfg-mqtt-host').value,
-    mqtt_port: parseInt($('cfg-mqtt-port').value) || 8883,
-    mqtt_client_id: $('cfg-mqtt-client-id').value,
-    mqtt_username: $('cfg-mqtt-username').value || null,
-    mqtt_password: $('cfg-mqtt-password').value || null,
-    mqtt_command_topic: $('cfg-mqtt-cmd-topic').value,
-    mqtt_event_topic: $('cfg-mqtt-event-topic').value,
-    mqtt_devices_topic: $('cfg-mqtt-devices-topic').value,
-    mqtt_tls_enabled: $('cfg-mqtt-tls').checked,
-    mqtt_tls_allow_untrusted: $('cfg-mqtt-tls-untrusted').checked,
-    mqtt_tls_ca_cert_path: $('cfg-mqtt-ca-cert').value || null,
-    service_binary_path: $('cfg-svc-path').value || null,
+    mqtt_host: val('cfg-mqtt-host'),
+    mqtt_port: parseInt(val('cfg-mqtt-port')) || 8883,
+    mqtt_client_id: val('cfg-mqtt-client-id'),
+    mqtt_username: val('cfg-mqtt-username') || null,
+    mqtt_password: val('cfg-mqtt-password') || null,
+    mqtt_command_topic: val('cfg-mqtt-cmd-topic'),
+    mqtt_event_topic: val('cfg-mqtt-event-topic'),
+    mqtt_devices_topic: val('cfg-mqtt-devices-topic'),
+    mqtt_tls_enabled: chkd('cfg-mqtt-tls'),
+    mqtt_tls_allow_untrusted: chkd('cfg-mqtt-tls-untrusted'),
+    mqtt_tls_ca_cert_path: val('cfg-mqtt-ca-cert') || null,
+    service_binary_path: val('cfg-svc-path') || null,
     service_args: argsRaw ? argsRaw.split(/\s+/) : [],
-    service_working_dir: $('cfg-svc-workdir').value || null,
-    service_auto_start: $('cfg-svc-autostart').checked,
+    service_working_dir: val('cfg-svc-workdir') || null,
+    service_auto_start: chkd('cfg-svc-autostart'),
   };
   try {
     await api('PUT', '/api/config', body);
@@ -957,42 +978,45 @@ async function saveConfig() {
 async function loadAppsettings() {
   try {
     const d = await api('GET', '/api/appsettings');
-    $('appsettings-path').textContent = d.path || '—';
+    const set = (id, val) => { const el = $(id); if (el) el.value = val; };
+    const chk = (id, val) => { const el = $(id); if (el) el.checked = val; };
+
+    if ($('appsettings-path')) $('appsettings-path').textContent = d.path || '—';
 
     const gw = d.gateway || {};
-    $('as-gw-host').value = gw.host || '';
-    $('as-gw-port').value = gw.port ?? '';
-    $('as-gw-block').value = gw.block_no || '';
+    set('as-gw-host',  gw.host || '');
+    set('as-gw-port',  gw.port ?? '');
+    set('as-gw-block', gw.block_no || '');
 
     const mq = d.mqtt || {};
-    $('as-mqtt-enabled').checked = mq.enabled ?? true;
-    $('as-mqtt-host').value = mq.host || '';
-    $('as-mqtt-port').value = mq.port ?? '';
-    $('as-mqtt-client-id').value = mq.client_id || '';
-    $('as-mqtt-username').value = mq.username || '';
-    $('as-mqtt-password').value = '';   // never pre-fill passwords
-    $('as-mqtt-db-path').value = mq.client_db_path || '';
-    $('as-mqtt-cmd-topic').value = mq.command_topic || '';
-    $('as-mqtt-event-topic').value = mq.event_topic || '';
+    chk('as-mqtt-enabled',    mq.enabled ?? true);
+    set('as-mqtt-host',       mq.host || '');
+    set('as-mqtt-port',       mq.port ?? '');
+    set('as-mqtt-client-id',  mq.client_id || '');
+    set('as-mqtt-username',   mq.username || '');
+    set('as-mqtt-password',   '');   // never pre-fill passwords
+    set('as-mqtt-db-path',    mq.client_db_path || '');
+    set('as-mqtt-cmd-topic',  mq.command_topic || '');
+    set('as-mqtt-event-topic',mq.event_topic || '');
 
     const tls = mq.tls || {};
-    $('as-mqtt-tls').checked = tls.enabled ?? false;
-    $('as-mqtt-tls-untrusted').checked = tls.allow_untrusted ?? false;
-    $('as-mqtt-ca-cert').value = tls.ca_cert_path || '';
+    chk('as-mqtt-tls',          tls.enabled ?? false);
+    chk('as-mqtt-tls-untrusted',tls.allow_untrusted ?? false);
+    set('as-mqtt-ca-cert',      tls.ca_cert_path || '');
 
     const sh = d.selfheal || {};
-    $('as-sh-enabled').checked = sh.enabled ?? true;
-    $('as-state-persist').checked = d.enable_state_persistence ?? false;
-    $('as-sh-max-restarts').value = sh.max_restarts ?? '';
-    $('as-sh-window').value = sh.restart_window_minutes ?? '';
-    $('as-sh-backoff').value = sh.backoff_seconds ?? '';
+    chk('as-sh-enabled',      sh.enabled ?? true);
+    chk('as-state-persist',   d.enable_state_persistence ?? false);
+    set('as-sh-max-restarts', sh.max_restarts ?? '');
+    set('as-sh-window',       sh.restart_window_minutes ?? '');
+    set('as-sh-backoff',      sh.backoff_seconds ?? '');
 
     const lvlSel = $('as-log-level');
     if (lvlSel) lvlSel.value = d.log_level || 'Information';
 
-    $('appsettings-save-status').textContent = '';
+    if ($('appsettings-save-status')) $('appsettings-save-status').textContent = '';
   } catch (e) {
-    $('appsettings-save-status').textContent = 'Load failed: ' + e.message;
+    if ($('appsettings-save-status')) $('appsettings-save-status').textContent = 'Load failed: ' + e.message;
   }
 }
 

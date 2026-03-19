@@ -23,8 +23,9 @@
     <RdXmlFile Include="rd.xml" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="appsettings.json">
+    <Content Include="config\p2l_config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>config\p2l_config.json</Link>
     </Content>
   </ItemGroup>
   <ItemGroup>

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ._paths import app_data_dir
 
-CONFIG_PATH = app_data_dir() / "p2l_config.json"
+CONFIG_PATH = app_data_dir() / "config" / "p2l_client_config.json"
 
 
 @dataclass
@@ -80,13 +80,14 @@ class AppConfig:
             "block_no": self.block_no,
             "auto_connect": self.auto_connect,
         }
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         CONFIG_PATH.write_text(json.dumps(data, indent=2))
 
     @classmethod
     def load(cls) -> "AppConfig":
         if not CONFIG_PATH.exists():
-            # Bootstrap from main project appsettings.json if present
-            project_settings = Path(__file__).parent.parent.parent / "appsettings.json"
+            # Bootstrap from main project config/p2l_config.json if present
+            project_settings = Path(__file__).parent.parent.parent / "config" / "p2l_config.json"
             if project_settings.exists():
                 try:
                     data = json.loads(project_settings.read_text())

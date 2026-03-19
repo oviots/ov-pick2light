@@ -476,14 +476,14 @@ async def update_config(request: Request, body: ConfigRequest):
 # ─── appsettings.json (P2L .NET bridge config) ───────────────────────────────
 
 def _appsettings_path(request: Request) -> Path:
-    """Locate appsettings.json: next to p2l binary, or next to p2l_config.json."""
+    """Locate p2l_config.json: config/ subdir next to p2l binary, or in ProgramData/P2L/config/."""
     from .._paths import app_data_dir
     cfg = _config(request)
     if cfg.service.binary_path:
-        candidate = Path(cfg.service.binary_path).parent / "appsettings.json"
+        candidate = Path(cfg.service.binary_path).parent / "config" / "p2l_config.json"
         if candidate.exists():
             return candidate
-    return app_data_dir() / "appsettings.json"
+    return app_data_dir() / "config" / "p2l_config.json"
 
 
 def _read_appsettings(path: Path) -> dict:

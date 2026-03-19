@@ -131,6 +131,7 @@ html, body {
 .content {
   overflow-y: auto;
   padding: 1.5rem;
+  position: relative;
 }
 
 .tab-pane { display: none; }
@@ -910,4 +911,24 @@ html, body {
   border-radius: 50%;
   display: inline-block;
   flex-shrink: 0;
+}
+
+/* ── Disconnected overlay ──────────────────────────────────────────────────── */
+#disconnected-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+#disconnected-overlay.hidden { display: none; }
+.disconnected-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
 }

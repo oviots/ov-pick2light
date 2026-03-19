@@ -15,16 +15,14 @@ using Spectre.Console.Cli;
 
 // ─── Configuration ────────────────────────────────────────────────────────
 
-// ProgramData\P2L — writable by NT SERVICE\* accounts; used for config, logs, DB.
-// Windows installer places appsettings.json here; on Linux/macOS, falls back to exe dir.
+// ProgramData\P2L — writable by NT SERVICE\* accounts; used for logs and DB.
 var appDataBase = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
     "P2L");
 
 var config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
-    .AddJsonFile("appsettings.json", optional: true)                                       // exe-dir defaults
-    .AddJsonFile(Path.Combine(appDataBase, "appsettings.json"), optional: true)            // ProgramData user config (overrides)
+    .AddJsonFile(Path.Combine("config", "p2l_config.json"), optional: true)   // exe-dir config
     .AddEnvironmentVariables("P2L_")
     .Build();
 

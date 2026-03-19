@@ -21,7 +21,7 @@
     "ClientDbPath": "client/p2l_devices.db",
     "Tls": {
       "Enabled": true,
-      "CaCertPath": null,
+      "CaCertPath": "config/mqttca.crt",
       "ClientCertPath": null,
       "ClientKeyPath": null,
       "CertPassword": null,
