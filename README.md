@@ -6,6 +6,17 @@ Fully self-contained binaries — **no .NET runtime or Python required** on depl
 
 ---
 
+## Documentation
+
+- [One-Page Summary](docs/ONE_PAGE_SUMMARY.md)
+- [One-Page Summary (Vietnamese)](docs/ONE_PAGE_SUMMARY.vi.md)
+- [Executive Overview](docs/EXECUTIVE_OVERVIEW.md)
+- [Executive Overview (Vietnamese)](docs/EXECUTIVE_OVERVIEW.vi.md)
+- [Architecture Guide](docs/ARCHITECTURE.md)
+- [Architecture Guide (Vietnamese)](docs/ARCHITECTURE.vi.md)
+- [Usage Guide](docs/USAGE.md)
+- [Usage Guide (Vietnamese)](docs/USAGE.vi.md)
+
 ## Table of Contents
 
 1. [Prerequisites](#1-prerequisites)
