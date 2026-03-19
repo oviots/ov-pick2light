@@ -46,6 +46,10 @@ logs: deque = deque(maxlen=500)
 # Used to reconcile the registry against stale SQLite-loaded entries.
 _mqtt_seen_addrs: set[str] = set()
 
+# Idle disconnect: if no WebSocket client is connected for this long, MQTT is stopped.
+_IDLE_TIMEOUT_S: int = 15 * 60   # 15 minutes
+_idle_timer: Optional[asyncio.TimerHandle] = None
+
 BASE_DIR = bundle_dir()
 TEMPLATES_DIR = str(BASE_DIR / "templates")
 STATIC_DIR = str(BASE_DIR / "static")
@@ -195,6 +199,43 @@ def _append_log(level: str, message: str) -> None:
     asyncio.create_task(ws_manager.broadcast({"type": "log", "data": entry}))
 
 
+# ─── Idle disconnect timer ─────────────────────────────────────────────────────
+
+def _cancel_idle_timer() -> None:
+    global _idle_timer
+    if _idle_timer is not None:
+        _idle_timer.cancel()
+        _idle_timer = None
+
+
+def _on_ws_empty() -> None:
+    """All browser clients disconnected — start the idle timer."""
+    global _idle_timer
+    _cancel_idle_timer()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    logger.info("No WebSocket clients — MQTT will disconnect in %ds if idle", _IDLE_TIMEOUT_S)
+    _idle_timer = loop.call_later(_IDLE_TIMEOUT_S, lambda: asyncio.create_task(_idle_disconnect()))
+
+
+def _on_ws_nonempty() -> None:
+    """A browser client reconnected — cancel any pending idle disconnect."""
+    if _idle_timer is not None:
+        logger.info("WebSocket client reconnected — idle timer cancelled")
+        _cancel_idle_timer()
+
+
+async def _idle_disconnect() -> None:
+    """Called after idle timeout with no WebSocket clients — stop MQTT."""
+    global _idle_timer
+    _idle_timer = None
+    if mqtt_client and mqtt_client.is_connected:
+        logger.info("Idle timeout (%ds) — disconnecting MQTT", _IDLE_TIMEOUT_S)
+        await _do_disconnect()
+
+
 # ─── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -204,8 +245,11 @@ async def lifespan(app: FastAPI):
     for dev in load_devices():
         registry.add_device(dev["address"], dev["label"], dev.get("order_no", 0))
     _setup_registry_callbacks()
+    ws_manager.on_empty    = _on_ws_empty
+    ws_manager.on_nonempty = _on_ws_nonempty
     logger.info("P2L Web Dashboard → http://127.0.0.1:8765")
     yield
+    _cancel_idle_timer()
     if mqtt_client:
         await mqtt_client.stop()
 

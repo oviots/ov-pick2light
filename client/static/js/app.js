@@ -1554,10 +1554,3 @@ $('btn-clear-events')?.addEventListener('click', () => {
 }
 
 document.addEventListener('DOMContentLoaded', init);
-
-// Disconnect MQTT immediately when the browser tab/window closes.
-window.addEventListener('beforeunload', () => {
-  if (state.mqttConnected || state.connected) {
-    navigator.sendBeacon('/api/disconnect');
-  }
-});
