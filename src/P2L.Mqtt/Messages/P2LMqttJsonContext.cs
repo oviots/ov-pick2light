@@ -14,6 +14,7 @@ namespace P2L.Mqtt.Messages;
 [JsonSerializable(typeof(List<BatchItemDto>))]
 [JsonSerializable(typeof(BatchFinishCmd))]
 [JsonSerializable(typeof(TerminateAllCmd))]
+[JsonSerializable(typeof(ScanDevicesCmd))]
 [JsonSerializable(typeof(GetSnapshotCmd))]
 [JsonSerializable(typeof(TaskEvt))]
 [JsonSerializable(typeof(CsvRunCmd))]

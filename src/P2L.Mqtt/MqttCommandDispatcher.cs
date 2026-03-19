@@ -20,18 +20,20 @@ internal sealed class MqttCommandDispatcher
     private readonly PreemptionGate      _gate;
     private readonly CsvPickTaskRunner?  _csvRunner;
     private readonly DeviceLabelStore    _labels;
+    private readonly DeviceScanService   _scanService;
 
     public MqttCommandDispatcher(PickingEngine engine, MqttEventPublisher publisher,
                                   PreemptionGate gate, CsvPickTaskRunner? csvRunner,
-                                  DeviceLabelStore labels,
+                                  DeviceLabelStore labels, DeviceScanService scanService,
                                   ILogger<MqttCommandDispatcher> log)
     {
-        _engine    = engine;
-        _publisher = publisher;
-        _gate      = gate;
-        _csvRunner = csvRunner;
-        _labels    = labels;
-        _log       = log;
+        _engine      = engine;
+        _publisher   = publisher;
+        _gate        = gate;
+        _csvRunner   = csvRunner;
+        _labels      = labels;
+        _scanService = scanService;
+        _log         = log;
     }
 
     public async Task HandleAsync(byte[] payload, CancellationToken ct)
@@ -175,6 +177,13 @@ internal sealed class MqttCommandDispatcher
                             _log.LogInformation("[MQTT] csv_control cancel");
                             break;
                     }
+                    break;
+                }
+
+                case "scan_devices":
+                {
+                    _log.LogInformation("[MQTT] scan_devices — triggering gateway scan");
+                    await _scanService.ScanAsync(ct: ct).ConfigureAwait(false);
                     break;
                 }
 

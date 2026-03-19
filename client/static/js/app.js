@@ -575,14 +575,16 @@ async function refreshP2lServiceBadge() {
 }
 
 function _applyP2lSvcUI(running) {
-  const badge    = $('p2l-svc-badge');
-  const btnStart = $('btn-p2l-svc-start');
-  const btnStop  = $('btn-p2l-svc-stop');
+  const badge      = $('p2l-svc-badge');
+  const btnStart   = $('btn-p2l-svc-start');
+  const btnStop    = $('btn-p2l-svc-stop');
+  const btnScan    = $('btn-scan-devices');
   if (!badge) return;
   badge.textContent = running ? 'Running' : 'Stopped';
   badge.className   = `status-badge ${running ? 'OPERATING' : 'STANDBY'}`;
   if (btnStart) { btnStart.style.display = running ? 'none' : ''; btnStart.disabled = false; }
   if (btnStop)  { btnStop.style.display  = running ? ''     : 'none'; btnStop.disabled = false; }
+  if (btnScan)  { btnScan.style.display  = running ? ''     : 'none'; }
 }
 
 async function p2lServiceAction(action) {
@@ -598,6 +600,19 @@ async function p2lServiceAction(action) {
   } catch (e) {
     toast(e.message, 'error');
     await refreshP2lServiceBadge();
+  }
+}
+
+async function scanDevices() {
+  const btn = $('btn-scan-devices');
+  if (btn) { btn.disabled = true; btn.textContent = 'Scanning…'; }
+  try {
+    await api('POST', '/api/scan-devices');
+    toast('Device scan triggered — check devices tab for results', 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Scan Devices'; }
   }
 }
 

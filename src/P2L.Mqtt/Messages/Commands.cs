@@ -75,6 +75,9 @@ public sealed record BatchFinishCmd : MqttCommand
 /// <summary>Emergency: terminate all modules immediately.</summary>
 public sealed record TerminateAllCmd : MqttCommand { }
 
+/// <summary>Triggers a gateway scan to rediscover all connected light modules.</summary>
+public sealed record ScanDevicesCmd : MqttCommand { }
+
 // ─── get_snapshot ───────────────────────────────────────────────────────────
 
 /// <summary>

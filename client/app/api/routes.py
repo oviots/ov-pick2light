@@ -416,6 +416,12 @@ async def p2l_service_stop():
     return _p2l_svc_status()
 
 
+@router.post("/api/scan-devices")
+async def scan_devices(request: Request):
+    await _publish(request, {"type": "scan_devices"})
+    return {"status": "scanning"}
+
+
 @router.get("/api/devices")
 async def list_devices(request: Request):
     return {"devices": [m.to_dict() for m in _registry(request).all]}
