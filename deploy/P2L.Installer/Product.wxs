@@ -39,7 +39,9 @@
 
     <!-- ── Install directories ─────────────────────────────────────────── -->
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="P2L" />
+      <Directory Id="INSTALLFOLDER" Name="P2L">
+        <Directory Id="SVCCONFIGFOLDER" Name="config" />
+      </Directory>
     </StandardDirectory>
 
     <StandardDirectory Id="CommonAppDataFolder">

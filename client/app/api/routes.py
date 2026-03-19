@@ -416,7 +416,7 @@ async def p2l_service_stop():
     return _p2l_svc_status()
 
 
-
+@router.get("/api/devices")
 async def list_devices(request: Request):
     return {"devices": [m.to_dict() for m in _registry(request).all]}
 

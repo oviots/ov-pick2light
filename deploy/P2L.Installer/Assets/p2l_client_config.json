@@ -1,0 +1,34 @@
+{
+  "_comment": "Pick2Light web dashboard default config. Edit via the Settings tab in the dashboard UI.",
+
+  "mqtt": {
+    "enabled": true,
+    "host": "localhost",
+    "port": 8883,
+    "client_id": "p2l-webclient",
+    "username": null,
+    "password": null,
+    "command_topic": "p2l/commands",
+    "event_topic": "p2l/events",
+    "devices_topic": "p2l/devices",
+    "status_topic": "p2l/status",
+    "tls": {
+      "enabled": true,
+      "ca_cert_path": null,
+      "client_cert_path": null,
+      "client_key_path": null,
+      "cert_password": null,
+      "allow_untrusted_certs": false
+    }
+  },
+
+  "service": {
+    "binary_path": "C:\\Program Files\\P2L\\p2l.exe",
+    "args": ["serve"],
+    "working_dir": "C:\\Program Files\\P2L",
+    "auto_start": false
+  },
+
+  "block_no": "00",
+  "auto_connect": true
+}

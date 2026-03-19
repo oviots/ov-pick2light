@@ -359,6 +359,7 @@ jobs:
           Copy-Item artifacts/win-x64/p2l-client.exe "$staging/bin/"
           Copy-Item artifacts/win-x64/e_sqlite3.dll  "$staging/bin/"
           Copy-Item config/p2l_config.json                 "$staging/config/"
+          Copy-Item deploy/P2L.Installer/Assets/p2l_client_config.json "$staging/config/"
           Compress-Archive -Path $staging -DestinationPath "dist/p2l-$v-win-x64.zip" -Force
           Get-ChildItem dist -File | ForEach-Object { "$($_.Name) — $([math]::Round($_.Length/1MB,1)) MB" }
 

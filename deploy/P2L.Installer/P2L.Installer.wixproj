@@ -47,6 +47,8 @@
            Condition="!Exists('$(BinaryPath)\p2l-client.exe')" />
     <Error Text="e_sqlite3.dll not found: $(BinaryPath)\e_sqlite3.dll — required for SQLite support."
            Condition="!Exists('$(BinaryPath)\e_sqlite3.dll')" />
+    <Error Text="config\p2l_config.json not found: $(BinaryPath)\config\p2l_config.json — run 'dotnet publish' first."
+           Condition="!Exists('$(BinaryPath)\config\p2l_config.json')" />
     <Error Text="License.rtf not found: $(LicenseRtf) — create Assets\License.rtf."
            Condition="!Exists('$(LicenseRtf)')" />
   </Target>

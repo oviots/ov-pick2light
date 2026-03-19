@@ -92,6 +92,24 @@
               KeyPath="yes" />
       </Component>
 
+      <!-- config\p2l_config.json — P2L bridge default config (NeverOverwrite = user edits survive upgrade) -->
+      <Component Id="P2LConfigJsonComp" Guid="A1B2C3D4-0007-0007-0007-000000000007"
+                 Directory="SVCCONFIGFOLDER"
+                 NeverOverwrite="yes">
+        <File Id="P2LConfigJson"
+              Source="$(var.BinaryPath)\config\p2l_config.json"
+              KeyPath="yes" />
+      </Component>
+
+      <!-- config\p2l_client_config.json — Web dashboard default config (NeverOverwrite) -->
+      <Component Id="P2LClientConfigJsonComp" Guid="A1B2C3D4-0008-0008-0008-000000000008"
+                 Directory="SVCCONFIGFOLDER"
+                 NeverOverwrite="yes">
+        <File Id="P2LClientConfigJson"
+              Source="$(var.ConfigPath)\p2l_client_config.json"
+              KeyPath="yes" />
+      </Component>
+
     </ComponentGroup>
   </Fragment>
 
@@ -153,7 +171,7 @@
   <Fragment>
     <ComponentGroup Id="RegistryEntries" Directory="INSTALLFOLDER">
 
-      <Component Id="RegistryComp" Guid="A1B2C3D4-0007-0007-0007-000000000007">
+      <Component Id="RegistryComp" Guid="A1B2C3D4-0009-0009-0009-000000000009">
         <!-- Record install path for other tools to discover -->
         <RegistryKey Root="HKLM" Key="Software\P2L">
           <RegistryValue Name="InstallPath"   Value="[INSTALLFOLDER]"   Type="string" />
