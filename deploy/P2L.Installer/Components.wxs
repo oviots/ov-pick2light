@@ -37,7 +37,7 @@
                         Type="ownProcess"
                         Start="auto"
                         ErrorControl="normal"
-                        Account="NT SERVICE\P2L"
+                        Account="LocalSystem"
                         Arguments="serve" />
 
         <!--
@@ -67,7 +67,7 @@
                         Type="ownProcess"
                         Start="auto"
                         ErrorControl="normal"
-                        Account="NT SERVICE\P2LClient" />
+                        Account="LocalSystem" />
 
         <!-- sc failure P2LClient reset= 86400 actions= restart/5000/restart/5000/restart/5000 -->
 
@@ -121,13 +121,7 @@
       <Component Id="LogsFolderComp" Guid="A1B2C3D4-0005-0005-0005-000000000005"
                  Directory="LOGSFOLDER">
         <CreateFolder Directory="LOGSFOLDER">
-          <!--
-            Grant SYSTEM and Administrators full control.
-            NT SERVICE\P2L (virtual account) inherits SYSTEM rights automatically.
-          -->
-          <util:PermissionEx
-              User="SYSTEM"
-              GenericAll="yes" />
+          <!-- LocalSystem (both services) has full access; Administrators granted explicitly. -->
           <util:PermissionEx
               User="Administrators"
               GenericAll="yes" />
