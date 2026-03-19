@@ -39,7 +39,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     private          Task?                   _connectLoop;
     private          TaskCompletionSource    _disconnectedTcs = new();
     private          int                     _gatewayEverConnected; // Interlocked — 0=never, 1=connected at least once
-    private          int                     _scanDone;             // Interlocked — 0=not yet, 1=scan completed
+    private          int                     _startupDone;          // Interlocked — 0=not yet, 1=startup sequence run
 
     // Network-restore wake-up: cancelled when NetworkAvailabilityChanged fires IsAvailable=true.
     private volatile CancellationTokenSource? _backoffCts;
@@ -78,9 +78,9 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
             if (connected)
             {
                 Interlocked.Exchange(ref _gatewayEverConnected, 1);
-                // Trigger scan only if not already done (e.g. MQTT may not be up yet —
+                // Trigger startup cleanup only if not already done (e.g. MQTT may not be up yet —
                 // OnConnectedAsync will retry when MQTT eventually connects).
-                if (Interlocked.CompareExchange(ref _scanDone, 0, 0) == 0 && _client.IsConnected)
+                if (Interlocked.CompareExchange(ref _startupDone, 0, 0) == 0 && _client.IsConnected)
                 {
                     var scanTask = Task.Run(() => RunStartupSequenceAsync(_cts.Token));
                 }
@@ -208,13 +208,13 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
 
     private async Task RunStartupSequenceAsync(CancellationToken ct)
     {
-        // Guard: only one scan ever runs (concurrent calls from gateway + MQTT events).
-        if (Interlocked.CompareExchange(ref _scanDone, 1, 0) != 0)
+        // Guard: only one startup sequence ever runs.
+        if (Interlocked.CompareExchange(ref _startupDone, 1, 0) != 0)
             return;
 
         try
         {
-            _log.LogInformation("[Startup] Running startup sequence (clear retained + device scan)...");
+            _log.LogInformation("[Startup] Running startup sequence (clearing retained topics)...");
 
             // ── Step 1: Collect existing retained device topics ───────────
             var retainedTopics = new System.Collections.Generic.HashSet<string>();
@@ -271,25 +271,18 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                 }
             }
 
-            // ── Step 3: Auto-scan all light modules ───────────────────────
-            // ScanAsync registers found devices in LightModuleRegistry, which triggers
-            // LightModuleRegistry.StateChanged → MqttEventPublisher.OnStateChanged
-            // → publishes fresh retained LightChangedEvt per device automatically.
-            _log.LogInformation("[Startup] Starting device scan...");
-            var found = await _scanService.ScanAsync(ct: ct).ConfigureAwait(false);
-            _log.LogInformation("[Startup] Scan complete — {Count} device(s) found.", found.Count);
-
-            // Publish fresh bridge status after scan
+            // Publish fresh bridge status
             _publisher.EnqueueStatus(online: true, gatewayConnected: _gateway.IsConnected);
+            _log.LogInformation("[Startup] Startup sequence complete.");
         }
         catch (OperationCanceledException)
         {
-            Interlocked.Exchange(ref _scanDone, 0); // allow retry if cancelled before scan
+            Interlocked.Exchange(ref _startupDone, 0); // allow retry if cancelled
             _log.LogDebug("[Startup] Startup sequence cancelled.");
         }
         catch (Exception ex)
         {
-            Interlocked.Exchange(ref _scanDone, 0); // allow retry on unexpected failure
+            Interlocked.Exchange(ref _startupDone, 0); // allow retry on unexpected failure
             _log.LogError(ex, "[Startup] Startup sequence failed.");
         }
     }
@@ -309,13 +302,13 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
         // Publish online status
         _publisher.EnqueueStatus(online: true, gatewayConnected: _gateway.IsConnected);
 
-        // If the gateway was already connected before MQTT came up, the startup scan was
-        // skipped (RunStartupSequenceAsync timed out waiting for MQTT). Trigger it now.
+        // If the gateway was already connected before MQTT came up, the startup cleanup was
+        // skipped. Trigger it now.
         if (_gateway.IsConnected &&
             Interlocked.Exchange(ref _gatewayEverConnected, 1) == 1 &&
-            Interlocked.CompareExchange(ref _scanDone, 0, 0) == 0)
+            Interlocked.CompareExchange(ref _startupDone, 0, 0) == 0)
         {
-            _log.LogInformation("[MQTT] Connected late — triggering deferred startup scan.");
+            _log.LogInformation("[MQTT] Connected late — triggering deferred startup cleanup.");
             var scanTask = Task.Run(() => RunStartupSequenceAsync(_cts.Token));
         }
     }
