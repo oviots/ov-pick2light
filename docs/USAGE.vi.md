@@ -48,6 +48,7 @@ Các nhóm setting quan trọng:
 - host, port, username, password, TLS của MQTT
 - tên các topic commands, events, status, devices
 - log directory và self-heal settings
+- `StartMinimizedOnWindows`: khi `true`, mở `p2l.exe` không kèm subcommand sẽ tự vào trạng thái minimize trên Windows
 
 ---
 

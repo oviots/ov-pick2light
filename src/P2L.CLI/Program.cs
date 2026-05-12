@@ -44,6 +44,7 @@ var appSettings = new AppSettings
     LogDirectory        = Cfg_String(config, "LogDirectory",        Path.Combine(appDataBase, "logs")),
     MaxLogFileSizeBytes = Cfg_Long  (config, "MaxLogFileSizeBytes", 10 * 1024 * 1024),
     EnableStatePersistence = Cfg_Bool(config, "EnableStatePersistence", false),
+    StartMinimizedOnWindows = Cfg_Bool(config, "StartMinimizedOnWindows", true),
     Mqtt = new MqttSettings
     {
         Enabled           = Cfg_Bool  (config, "Mqtt:Enabled",           false),
@@ -77,6 +78,14 @@ var appSettings = new AppSettings
         WatchdogTimeoutMinutes= Cfg_Int (config, "SelfHeal:WatchdogTimeoutMinutes", 5),
     },
 };
+
+if (OperatingSystem.IsWindows() &&
+    Environment.UserInteractive &&
+    args.Length == 0 &&
+    appSettings.StartMinimizedOnWindows)
+{
+    WindowsConsoleWindow.MinimizeIfPresent();
+}
 
 // ─── Self-heal crash handlers (installed as early as possible) ────────────
 

@@ -48,6 +48,7 @@ Key bridge settings include:
 - MQTT host, port, username, password, TLS
 - topic names for commands, events, status, and devices
 - log directory and self-heal settings
+- `StartMinimizedOnWindows`: when `true`, opening `p2l.exe` without a subcommand starts the Windows console minimized
 
 Client-side settings typically include:
 

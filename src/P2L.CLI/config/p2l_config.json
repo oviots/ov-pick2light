@@ -29,6 +29,7 @@
     }
   },
   "EnableStatePersistence": false,
+  "StartMinimizedOnWindows": true,
   "SelfHeal": {
     "Enabled": true,
     "MaxRestarts": 5,

@@ -28,6 +28,12 @@ public sealed class AppSettings
     /// remain known across one-shot CLI invocations. Default: false.
     /// </summary>
     public bool EnableStatePersistence { get; init; } = false;
+
+    /// <summary>
+    /// Minimize the Windows console window when the app is launched without a subcommand.
+    /// Default: true.
+    /// </summary>
+    public bool StartMinimizedOnWindows { get; init; } = true;
 }
 
 public sealed class GatewaySettings
