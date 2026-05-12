@@ -23,12 +23,13 @@ public sealed class PickingEngine : IDisposable
 
     private readonly HashSet<string>    _pendingAddresses = new();
     private readonly object             _lock             = new();
+    private string? _activeBatchCorrelationId;
 
     /// <summary>Fires when an operator presses CONFIRM on any module in the current batch.</summary>
     public event Action<ConfirmationEvent, LightModuleState?>? ItemConfirmed;
 
     /// <summary>Fires when every module in the active batch has been confirmed.</summary>
-    public event Action? BatchCompleted;
+    public event Action<string?>? BatchCompleted;
 
     public bool IsBatchActive   { get; private set; }
     public bool IsBatchComplete => IsBatchActive && _pendingAddresses.Count == 0;
@@ -62,6 +63,11 @@ public sealed class PickingEngine : IDisposable
         }
 
         IsBatchActive = true;
+        _activeBatchCorrelationId = instructions
+            .Select(i => i.CorrelationId)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .SingleOrDefault();
 
         // Update registry before sending (optimistic)
         foreach (var inst in instructions)
@@ -87,6 +93,7 @@ public sealed class PickingEngine : IDisposable
         }
 
         IsBatchActive = false;
+        _activeBatchCorrelationId = null;
         _log.LogInformation("Batch finished");
     }
 
@@ -100,6 +107,8 @@ public sealed class PickingEngine : IDisposable
                                       LightColor color   = LightColor.Green,
                                       LightState ledMode = LightState.On,
                                       LightState buzMode = LightState.Off,
+                                      string? label = null,
+                                      string? correlationId = null,
                                       CancellationToken ct = default)
     {
         var inst = new PickingInstruction
@@ -109,6 +118,8 @@ public sealed class PickingEngine : IDisposable
             Color    = color,
             LedMode  = ledMode,
             BuzMode  = buzMode,
+            Label    = label,
+            CorrelationId = correlationId,
         };
         _registry.SetInstructed(inst);
 
@@ -121,6 +132,7 @@ public sealed class PickingEngine : IDisposable
                 Color    = m.Color,
                 LedMode  = m.LedMode,
                 BuzMode  = m.BuzMode,
+                CorrelationId = m.CorrelationId,
             })
             .ToList();
 
@@ -186,11 +198,13 @@ public sealed class PickingEngine : IDisposable
 
         if (IsBatchActive && removed && _pendingAddresses.Count == 0)
         {
+            var correlationId = _activeBatchCorrelationId;
             // Auto-reset so the next batch_start is accepted without requiring
             // an explicit FinishBatchAsync call from the WMS after batch_completed.
             IsBatchActive = false;
+            _activeBatchCorrelationId = null;
             _log.LogInformation("All modules confirmed — batch complete");
-            BatchCompleted?.Invoke();
+            BatchCompleted?.Invoke(correlationId);
         }
     }
 

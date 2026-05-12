@@ -34,6 +34,7 @@ public sealed record ConfirmedEvt : MqttEvent
 public sealed record LightChangedEvt : MqttEvent
 {
     public required string  Address           { get; init; }
+    public string?          CorrelationId     { get; init; }
     public ModuleStatus     ModuleStatus      { get; init; }
     public LightColor       Color             { get; init; }
     public LightState       LedMode           { get; init; }
@@ -54,7 +55,10 @@ public sealed record LightChangedEvt : MqttEvent
 // ─── batch_completed ───────────────────────────────────────────────────────
 
 /// <summary>Published when every module in the active batch is confirmed.</summary>
-public sealed record BatchCompletedEvt : MqttEvent { }
+public sealed record BatchCompletedEvt : MqttEvent
+{
+    public string? CorrelationId { get; init; }
+}
 
 // ─── bridge_status ─────────────────────────────────────────────────────────
 

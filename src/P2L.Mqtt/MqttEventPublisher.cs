@@ -101,12 +101,17 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
             Status           = evt.Status,
             AdjustedQuantity = state?.AdjustedQuantity,
             AdjustedDisplay  = evt.AdjustedDisplay,
+            CorrelationId    = state?.CorrelationId,
             DisplayData      = state?.DisplayData,
             Label            = _labels.GetLabel(evt.Address) is { Length: > 0 } l ? l : null,
         });
 
-    private void OnBatchCompleted()
-        => _queue.Writer.TryWrite(new BatchCompletedEvt { Type = "batch_completed" });
+    private void OnBatchCompleted(string? correlationId)
+        => _queue.Writer.TryWrite(new BatchCompletedEvt
+        {
+            Type = "batch_completed",
+            CorrelationId = correlationId,
+        });
 
     // ─── Snapshot / task events ───────────────────────────────────────────
 
@@ -140,6 +145,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
     {
         Type              = "light_changed",
         Address           = s.Address,
+        CorrelationId     = s.CorrelationId,
         ModuleStatus      = s.Status,
         Color             = s.Color,
         LedMode           = s.LedMode,

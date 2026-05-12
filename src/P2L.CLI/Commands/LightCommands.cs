@@ -59,7 +59,7 @@ public sealed class LightOnCommand : AsyncCommand<LightOnCommand.Settings>
         var buzMode = s.NoBuzz ? LightState.Off : s.LedMode;
         try
         {
-            await _engine.QuickLightAsync(s.Address, s.Quantity, s.Color, s.LedMode, buzMode, cts.Token);
+            await _engine.QuickLightAsync(s.Address, s.Quantity, s.Color, s.LedMode, buzMode, ct: cts.Token);
             AnsiConsole.MarkupLine($"[green]Light ON:[/] addr=[bold]{s.Address}[/] qty=[bold]{s.Quantity}[/] color=[bold]{s.Color}[/] mode=[bold]{s.LedMode}[/] buzz=[bold]{!s.NoBuzz}[/]");
             return 0;
         }

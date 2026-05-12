@@ -261,7 +261,7 @@ Each item may include `address` directly, or use `label` and let the bridge reso
 }
 ```
 
-The bridge responds by publishing `light_changed` payloads on `p2l/devices/{address}` for tracked modules.
+The bridge responds by publishing `light_changed` payloads on `p2l/devices/{address}` for tracked modules. When present on the command, `correlationId` is echoed into `light_changed`, `confirmed`, and `batch_completed`.
 
 #### `csv_run`
 

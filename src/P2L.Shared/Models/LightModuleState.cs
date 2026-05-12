@@ -41,6 +41,11 @@ public sealed class LightModuleState
     /// <summary>Block number this module belongs to ("00"–"99").</summary>
     public string BlockNo { get; set; } = "00";
 
+    /// <summary>
+    /// Caller-supplied trace ID for the currently active pick/batch session.
+    /// </summary>
+    public string? CorrelationId { get; set; }
+
     public override string ToString() =>
         $"[{Address}] {Status} | {Color}/{LedMode} | \"{DisplayData}\"";
 }

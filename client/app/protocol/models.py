@@ -17,6 +17,7 @@ class LightModuleState:
     last_confirmed_at: Optional[datetime] = None
     adjusted_quantity: Optional[str] = None
     block_no: str = "00"
+    correlation_id: Optional[str] = None
     label: str = ""
     order_no: int = 0
 
@@ -33,6 +34,7 @@ class LightModuleState:
             "last_confirmed_at": self.last_confirmed_at.isoformat() if self.last_confirmed_at else None,
             "adjusted_quantity": self.adjusted_quantity,
             "block_no": self.block_no,
+            "correlation_id": self.correlation_id,
             "label": self.label,
             "order_no": self.order_no,
         }
@@ -63,6 +65,7 @@ class ConfirmationEvent:
     adjusted_display: Optional[str]
     received_at: datetime
     seq_no: int
+    correlation_id: Optional[str] = None
     label: Optional[str] = None
     display_data: Optional[str] = None
 
@@ -72,6 +75,7 @@ class ConfirmationEvent:
             "status":           self.status.name,
             "adjusted_display": self.adjusted_display,
             "received_at":      self.received_at.isoformat(),
+            "correlation_id":   self.correlation_id,
             "label":            self.label,
             "display_data":     self.display_data,
         }

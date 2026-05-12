@@ -135,7 +135,7 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
             TaskEvent?.Invoke(new CsvTaskEvent("task_confirmed", row));
         }
 
-        void OnBatchCompleted() => batchDone.TrySetResult();
+        void OnBatchCompleted(string? _) => batchDone.TrySetResult();
 
         _engine.ItemConfirmed  += OnConfirmed;
         _engine.BatchCompleted += OnBatchCompleted;

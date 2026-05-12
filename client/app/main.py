@@ -105,6 +105,7 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
             adjusted_display=payload.get("adjustedDisplay"),
             received_at=datetime.now(timezone.utc),
             seq_no=0,
+            correlation_id=payload.get("correlationId"),
             label=payload.get("label"),
             display_data=payload.get("displayData"),
         )
@@ -130,6 +131,7 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
         module.led_mode = mqtt_to_state(payload.get("ledMode", "Off"))
         module.display_data = payload.get("displayData") or "00000"
         module.block_no = payload.get("blockNo") or "00"
+        module.correlation_id = payload.get("correlationId")
         if payload.get("lastInstructionAt"):
             try:
                 module.last_instruction_at = datetime.fromisoformat(

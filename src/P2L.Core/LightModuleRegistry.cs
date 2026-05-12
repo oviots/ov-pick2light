@@ -39,6 +39,7 @@ public sealed class LightModuleRegistry
                 LedMode           = instruction.LedMode,
                 BuzMode           = instruction.BuzMode,
                 BlockNo           = instruction.BlockNo,
+                CorrelationId     = instruction.CorrelationId,
                 LastInstructionAt = DateTime.UtcNow,
             },
             (_, existing) =>
@@ -49,6 +50,7 @@ public sealed class LightModuleRegistry
                 existing.LedMode           = instruction.LedMode;
                 existing.BuzMode           = instruction.BuzMode;
                 existing.BlockNo           = instruction.BlockNo;
+                existing.CorrelationId     = instruction.CorrelationId;
                 existing.LastInstructionAt = DateTime.UtcNow;
                 return existing;
             });
@@ -86,6 +88,7 @@ public sealed class LightModuleRegistry
             module.Status  = ModuleStatus.Standby;
             module.Color   = LightColor.Off;
             module.LedMode = LightState.Off;
+            module.CorrelationId = null;
             StateChanged?.Invoke(module);
         }
     }

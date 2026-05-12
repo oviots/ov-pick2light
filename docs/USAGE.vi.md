@@ -255,7 +255,7 @@ Ghi chú:
 }
 ```
 
-Bridge sẽ trả về các `light_changed` event trên `p2l/devices/{address}` cho toàn bộ module đang được track.
+Bridge sẽ trả về các `light_changed` event trên `p2l/devices/{address}` cho toàn bộ module đang được track. Nếu command có `correlationId`, giá trị này sẽ được echo lại trong `light_changed`, `confirmed` và `batch_completed`.
 
 #### Chạy CSV
 

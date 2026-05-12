@@ -31,6 +31,12 @@ public sealed class PickingInstruction
     /// <summary>Optional SKU or location label for dashboard display.</summary>
     public string? Label { get; init; }
 
+    /// <summary>
+    /// Optional caller-supplied trace ID carried through state and MQTT events.
+    /// Reuse the same value for every command in one pick/batch session.
+    /// </summary>
+    public string? CorrelationId { get; init; }
+
     /// <summary>Formats the quantity as the 5-character display data string.</summary>
     public string FormattedDisplay =>
         Quantity.ToString().PadLeft(AioiConstants.DisplayDataLength, '0');

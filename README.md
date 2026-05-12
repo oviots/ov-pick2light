@@ -944,7 +944,7 @@ All commands are JSON with a `type` discriminator field. Publish to `p2l/command
 | `color` | no | `Green` | See color values below |
 | `ledMode` | no | `On` | See ledMode values below |
 | `label` | no | null | Optional display label |
-| `correlationId` | no | null | Echoed back in `confirmed` event |
+| `correlationId` | no | null | Trace ID echoed into `light_changed`, `confirmed`, and batch-completion events |
 
 #### `light_off` — Extinguish a single module
 ```json
@@ -1029,7 +1029,8 @@ P2L publishes events to `p2l/events`. All events include `type` and `timestamp` 
 ```json
 {
   "type":      "batch_completed",
-  "timestamp": "2026-03-11T08:30:05.000Z"
+  "timestamp": "2026-03-11T08:30:05.000Z",
+  "correlationId": "order-42"
 }
 ```
 
@@ -1084,6 +1085,7 @@ P2L publishes events to `p2l/events`. All events include `type` and `timestamp` 
   "type":             "light_changed",
   "timestamp":        "2026-03-11T08:30:00.000Z",
   "address":          "0003",
+  "correlationId":    "order-42",
   "moduleStatus":     "Active",
   "color":            "Green",
   "ledMode":          "On",
@@ -1096,6 +1098,8 @@ P2L publishes events to `p2l/events`. All events include `type` and `timestamp` 
   "lastConfirmedAt":  null
 }
 ```
+
+Reuse the same `correlationId` across every `light_on` and `batch_start` call that belongs to one operational session if you need end-to-end tracing.
 
 #### `bridge_status` — Bridge health / Last Will Testament (published to `p2l/status`)
 ```json

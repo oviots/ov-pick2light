@@ -83,6 +83,7 @@ public sealed class OfflineBufferService : IAsyncDisposable
         {
             Type              = "light_changed",
             Address           = state.Address,
+            CorrelationId     = state.CorrelationId,
             ModuleStatus      = state.Status,
             Color             = state.Color,
             LedMode           = state.LedMode,
@@ -98,7 +99,7 @@ public sealed class OfflineBufferService : IAsyncDisposable
                JsonSerializer.SerializeToUtf8Bytes(evt, P2LMqttJsonContext.Default.LightChangedEvt));
     }
 
-    private void OnItemConfirmed(ConfirmationEvent evt, LightModuleState? _)
+    private void OnItemConfirmed(ConfirmationEvent evt, LightModuleState? state)
     {
         var e = new ConfirmedEvt
         {
@@ -106,14 +107,19 @@ public sealed class OfflineBufferService : IAsyncDisposable
             Address         = evt.Address,
             Status          = evt.Status,
             AdjustedDisplay = evt.AdjustedDisplay,
+            CorrelationId   = state?.CorrelationId,
         };
         Append(_settings.EventTopic, retain: false,
                JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.ConfirmedEvt));
     }
 
-    private void OnBatchCompleted()
+    private void OnBatchCompleted(string? correlationId)
     {
-        var e = new BatchCompletedEvt { Type = "batch_completed" };
+        var e = new BatchCompletedEvt
+        {
+            Type = "batch_completed",
+            CorrelationId = correlationId,
+        };
         Append(_settings.EventTopic, retain: false,
                JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.BatchCompletedEvt));
     }

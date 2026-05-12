@@ -180,6 +180,7 @@ class P2LClient {
         address:         data.address,
         status:          data.status ?? 'Normal',
         adjustedDisplay: data.adjustedDisplay ?? null,
+        correlationId:   data.correlationId ?? null,
         label:           data.label ?? null,
         displayData:     data.displayData ?? null,
       };
@@ -194,10 +195,10 @@ class P2LClient {
     } else if (kind === 'batch_completed') {
       if (this._batchWaiter) {
         clearTimeout(this._batchWaiter.timer);
-        this._batchWaiter.resolve();
+        this._batchWaiter.resolve({ correlationId: data.correlationId ?? null });
         this._batchWaiter = null;
       }
-      this._onBatchComplete?.();
+      this._onBatchComplete?.({ correlationId: data.correlationId ?? null });
 
     } else if (kind === 'task_started' || kind === 'task_confirmed' ||
                kind === 'task_error'   || kind === 'csv_completed') {
@@ -225,6 +226,7 @@ class P2LClient {
     } else if (kind === 'light_changed') {
       const state = {
         address:      data.address,
+        correlationId: data.correlationId ?? null,
         moduleStatus: data.moduleStatus,
         color:        data.color,
         ledMode:      data.ledMode,
@@ -248,10 +250,10 @@ class P2LClient {
   // Event subscriptions
   // -------------------------------------------------------------------------
 
-  /** @param {(event: {address, status, adjustedDisplay}) => void} fn */
+  /** @param {(event: {address, status, adjustedDisplay, correlationId}) => void} fn */
   onConfirm(fn)       { this._onConfirm = fn; }
 
-  /** @param {() => void} fn */
+  /** @param {(event: {correlationId}) => void} fn */
   onBatchComplete(fn) { this._onBatchComplete = fn; }
 
   /** @param {(state: object) => void} fn */
@@ -300,7 +302,7 @@ class P2LClient {
    * Wait until the operator presses the button on *address*.
    * @param {string} address
    * @param {number} [timeoutMs=30000]
-   * @returns {Promise<{address, status, adjustedDisplay}>}
+   * @returns {Promise<{address, status, adjustedDisplay, correlationId}>}
    */
   waitConfirm(address, timeoutMs = 30_000) {
     return new Promise((resolve, reject) => {
@@ -315,7 +317,7 @@ class P2LClient {
   /**
    * Wait until all items in the current batch are confirmed.
    * @param {number} [timeoutMs=120000]
-   * @returns {Promise<void>}
+   * @returns {Promise<{correlationId}>}
    */
   waitBatchComplete(timeoutMs = 120_000) {
     return new Promise((resolve, reject) => {
@@ -360,6 +362,7 @@ class P2LClient {
    * @param {string}    [opts.ledMode=LightMode.ON]
    * @param {string}    [opts.buzMode]   - omit to mirror ledMode
    * @param {string}    [opts.label]
+   * @param {string}    [opts.correlationId]
    */
   lightOn(address, opts = {}) {
     const cmd = {
@@ -371,6 +374,7 @@ class P2LClient {
     };
     if (opts.buzMode !== undefined) cmd.buzMode = opts.buzMode;
     if (opts.label)                 cmd.label   = opts.label;
+    if (opts.correlationId)         cmd.correlationId = opts.correlationId;
     this._publish(cmd);
   }
 
@@ -391,6 +395,7 @@ class P2LClient {
    * @param {object} [opts]
    * @param {string} [opts.ledMode=LightMode.ON]
    * @param {string} [opts.buzMode]  - omit to mirror ledMode
+   * @param {string} [opts.correlationId]
    */
   batchStart(items, opts = {}) {
     const cmd = {
@@ -409,6 +414,7 @@ class P2LClient {
       }),
     };
     if (opts.buzMode !== undefined) cmd.buzMode = opts.buzMode;
+    if (opts.correlationId)         cmd.correlationId = opts.correlationId;
     this._publish(cmd);
   }
 
@@ -557,13 +563,14 @@ class WaveDispatcher {
     }
     const item = this._queue.shift();
     this._active[address] = item;
-    this._client.lightOn(address, {
-      quantity: item.quantity,
-      color:    item.color   ?? LightColor.GREEN,
-      ledMode:  item.ledMode ?? LightMode.ON,
-      ...(item.buzMode !== undefined ? { buzMode: item.buzMode } : {}),
-      label:    item.sku,
-    });
+      this._client.lightOn(address, {
+        quantity: item.quantity,
+        color:    item.color   ?? LightColor.GREEN,
+        ledMode:  item.ledMode ?? LightMode.ON,
+        ...(item.buzMode !== undefined ? { buzMode: item.buzMode } : {}),
+        label:    item.sku,
+        correlationId: item.batchId ?? null,
+      });
     this.onItemSent?.(address, item);
   }
 
@@ -697,13 +704,14 @@ class BatchDispatcher {
         color:    item.color   ?? LightColor.GREEN,
         label:    item.sku,
         ledMode:  item.ledMode ?? LightMode.ON,
+        correlationId: this._batchId,
         ...(item.buzMode !== undefined ? { buzMode: item.buzMode } : {}),
       });
       this.onItemSent?.(addr, item);
     }
 
     if (initial.length > 0) {
-      this._client.batchStart(initial);
+      this._client.batchStart(initial, { correlationId: this._batchId });
     }
   }
 
@@ -760,6 +768,7 @@ class BatchDispatcher {
       ledMode:  item.ledMode ?? LightMode.ON,
       ...(item.buzMode !== undefined ? { buzMode: item.buzMode } : {}),
       label:    item.sku,
+      correlationId: this._batchId,
     });
     this.onItemSent?.(address, item);
   }
@@ -819,4 +828,3 @@ module.exports = {
   P2LClient, LightColor, LightMode, CompletionStatus,
   WaveDispatcher, BatchDispatch, BatchDispatcher,
 };
-

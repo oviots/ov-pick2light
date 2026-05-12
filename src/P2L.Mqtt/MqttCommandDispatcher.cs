@@ -64,7 +64,7 @@ internal sealed class MqttCommandDispatcher
                     if (cmd is null) break;
                     var buzMode = cmd.BuzMode ?? cmd.LedMode;
                     await _engine.QuickLightAsync(cmd.Address, cmd.Quantity,
-                        cmd.Color, cmd.LedMode, buzMode, ct);
+                        cmd.Color, cmd.LedMode, buzMode, cmd.Label, cmd.CorrelationId, ct);
                     _log.LogInformation("[MQTT] light_on addr={A} qty={Q} color={C} mode={M} buz={B}",
                         cmd.Address, cmd.Quantity, cmd.Color, cmd.LedMode, buzMode);
                     break;
@@ -113,6 +113,7 @@ internal sealed class MqttCommandDispatcher
                             LedMode  = itemLedMode,
                             BuzMode  = itemBuzMode,
                             Label    = i.Label,
+                            CorrelationId = cmd.CorrelationId,
                         });
                     }
                     if (instructions.Count == 0)
