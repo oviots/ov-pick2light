@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using P2L.Hardware;
 using P2L.Shared.Enums;
@@ -8,31 +9,32 @@ namespace P2L.Core;
 /// <summary>
 /// Orchestrates picking sessions: sends batch instructions to the gateway,
 /// tracks confirmations, and provides completion callbacks.
-///
-/// Typical flow:
-///   1. Build a list of <see cref="PickingInstruction"/> objects.
-///   2. Call <see cref="StartBatchAsync"/> — lights up all modules.
-///   3. Operators pick items and press CONFIRM; <see cref="ItemConfirmed"/> fires.
-///   4. When <see cref="IsBatchComplete"/> is true, call <see cref="FinishBatchAsync"/>.
+/// Supports multiple concurrent batches indexed by BlockNo.
 /// </summary>
 public sealed class PickingEngine : IDisposable
 {
+    private sealed class BatchState
+    {
+        public required string BlockNo { get; init; }
+        public required string? CorrelationId { get; init; }
+        public HashSet<string> PendingAddresses { get; } = new();
+    }
+
     private readonly AioiGateway         _gateway;
     private readonly LightModuleRegistry _registry;
     private readonly ILogger<PickingEngine> _log;
 
-    private readonly HashSet<string>    _pendingAddresses = new();
+    private readonly ConcurrentDictionary<string, BatchState> _activeBatches = new();
     private readonly object             _lock             = new();
-    private string? _activeBatchCorrelationId;
 
-    /// <summary>Fires when an operator presses CONFIRM on any module in the current batch.</summary>
+    /// <summary>Fires when an operator presses CONFIRM on any module in any active batch.</summary>
     public event Action<ConfirmationEvent, LightModuleState?>? ItemConfirmed;
 
-    /// <summary>Fires when every module in the active batch has been confirmed.</summary>
+    /// <summary>Fires when every module in a specific batch has been confirmed.</summary>
     public event Action<string?>? BatchCompleted;
 
-    public bool IsBatchActive   { get; private set; }
-    public bool IsBatchComplete => IsBatchActive && _pendingAddresses.Count == 0;
+    /// <summary>True if any batch is currently active.</summary>
+    public bool IsBatchActive => !_activeBatches.IsEmpty;
 
     public PickingEngine(AioiGateway gateway, LightModuleRegistry registry, ILogger<PickingEngine> logger)
     {
@@ -47,27 +49,34 @@ public sealed class PickingEngine : IDisposable
 
     /// <summary>
     /// Lights up a batch of modules and begins tracking confirmations.
-    /// If a batch is already active, throws <see cref="InvalidOperationException"/>.
+    /// If a batch for the specified block is already active, throws <see cref="InvalidOperationException"/>.
     /// </summary>
     public async Task StartBatchAsync(IReadOnlyList<PickingInstruction> instructions,
                                       CancellationToken ct = default)
     {
-        if (IsBatchActive)
-            throw new InvalidOperationException("A batch is already active. Call FinishBatchAsync first.");
+        if (instructions.Count == 0) return;
+
+        var blockNo = instructions[0].BlockNo;
+        if (_activeBatches.ContainsKey(blockNo))
+            throw new InvalidOperationException($"A batch for block {blockNo} is already active. Call FinishBatchAsync first.");
+
+        var batch = new BatchState
+        {
+            BlockNo = blockNo,
+            CorrelationId = instructions
+                .Select(i => i.CorrelationId)
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.Ordinal)
+                .SingleOrDefault()
+        };
 
         lock (_lock)
         {
-            _pendingAddresses.Clear();
             foreach (var inst in instructions)
-                _pendingAddresses.Add(inst.Address.PadLeft(4, '0'));
+                batch.PendingAddresses.Add(inst.Address.PadLeft(4, '0'));
         }
 
-        IsBatchActive = true;
-        _activeBatchCorrelationId = instructions
-            .Select(i => i.CorrelationId)
-            .Where(id => !string.IsNullOrWhiteSpace(id))
-            .Distinct(StringComparer.Ordinal)
-            .SingleOrDefault();
+        _activeBatches[blockNo] = batch;
 
         // Update registry before sending (optimistic)
         foreach (var inst in instructions)
@@ -75,39 +84,52 @@ public sealed class PickingEngine : IDisposable
 
         await _gateway.InstructBatchAsync(instructions, ct);
 
-        _log.LogInformation("Batch started: {Count} modules", instructions.Count);
+        _log.LogInformation("Batch started for block {Block}: {Count} modules", blockNo, instructions.Count);
     }
 
     /// <summary>
-    /// Terminates the active batch (turns off all lights) and resets state.
+    /// Terminates the active batch for the specified block (turns off all lights) and resets state.
     /// </summary>
     public async Task FinishBatchAsync(string blockNo = "00", CancellationToken ct = default)
     {
         await _gateway.TerminateBlockAsync(blockNo, ct);
 
-        lock (_lock)
+        if (_activeBatches.TryRemove(blockNo, out var batch))
         {
-            foreach (var addr in _pendingAddresses)
-                _registry.SetTerminated(addr);
-            _pendingAddresses.Clear();
+            lock (_lock)
+            {
+                foreach (var addr in batch.PendingAddresses)
+                    _registry.SetTerminated(addr);
+            }
+        }
+        else if (blockNo == "00")
+        {
+            // If global terminate "00" is sent, clear everything
+            foreach (var b in _activeBatches.Values)
+            {
+                lock (_lock)
+                {
+                    foreach (var addr in b.PendingAddresses)
+                        _registry.SetTerminated(addr);
+                }
+            }
+            _activeBatches.Clear();
         }
 
-        IsBatchActive = false;
-        _activeBatchCorrelationId = null;
-        _log.LogInformation("Batch finished");
+        _log.LogInformation("Batch finished for block {Block}", blockNo);
     }
 
     /// <summary>
     /// Lights a single module without turning off other active modules.
-    /// Re-sends P1 with all currently active modules plus this one so the
-    /// block replace does not extinguish lights that are already on.
-    /// Does not affect active batch tracking.
+    /// Re-sends P1/P5 with all currently active modules plus this one.
+    /// Does not affect active batch tracking unless the module is already in a batch.
     /// </summary>
     public async Task QuickLightAsync(string address, int quantity,
                                       LightColor color   = LightColor.Green,
                                       LightState ledMode = LightState.On,
                                       LightState buzMode = LightState.Off,
                                       string? label = null,
+                                      string? blockNo = "00",
                                       string? correlationId = null,
                                       CancellationToken ct = default)
     {
@@ -119,6 +141,7 @@ public sealed class PickingEngine : IDisposable
             LedMode  = ledMode,
             BuzMode  = buzMode,
             Label    = label,
+            BlockNo  = blockNo ?? "00",
             CorrelationId = correlationId,
         };
         _registry.SetInstructed(inst);
@@ -133,17 +156,13 @@ public sealed class PickingEngine : IDisposable
                 LedMode  = m.LedMode,
                 BuzMode  = m.BuzMode,
                 CorrelationId = m.CorrelationId,
+                BlockNo  = m.BlockNo ?? "00",
             })
             .ToList();
 
         if (!batch.Any(i => i.Address == inst.Address))
             batch.Add(inst);
 
-        // Per Aioi spec §3.4: P1 can only instruct standby modules. If one or
-        // more modules are already under instruction, P1 is NACKed and we must
-        // retry with P5 (rewritable overwrite). Trying P1 first is correct for
-        // the common case (fresh start / after Z), avoiding an unnecessary P5
-        // round-trip when all modules are in standby.
         try
         {
             await _gateway.InstructBatchAsync(batch, ct);
@@ -157,9 +176,6 @@ public sealed class PickingEngine : IDisposable
 
     /// <summary>
     /// Reconfigures a module's lighting and display parameters in-place using M + L commands.
-    /// If <paramref name="newQuantity"/> is null the currently displayed quantity is preserved;
-    /// if the module is not yet in the registry, the display defaults to zero.
-    /// Does not affect active batch tracking.
     /// </summary>
     public async Task ConfigureModuleAsync(string           address,
                                            int?             newQuantity,
@@ -189,22 +205,32 @@ public sealed class PickingEngine : IDisposable
     private void OnConfirmed(ConfirmationEvent evt)
     {
         var state = _registry.SetConfirmed(evt);
-
-        bool removed;
-        lock (_lock)
-            removed = _pendingAddresses.Remove(evt.Address.PadLeft(4, '0'));
+        var addr = evt.Address.PadLeft(4, '0');
 
         ItemConfirmed?.Invoke(evt, state);
 
-        if (IsBatchActive && removed && _pendingAddresses.Count == 0)
+        // Track batches that just completed
+        var completedBatches = new List<BatchState>();
+
+        lock (_lock)
         {
-            var correlationId = _activeBatchCorrelationId;
-            // Auto-reset so the next batch_start is accepted without requiring
-            // an explicit FinishBatchAsync call from the WMS after batch_completed.
-            IsBatchActive = false;
-            _activeBatchCorrelationId = null;
-            _log.LogInformation("All modules confirmed — batch complete");
-            BatchCompleted?.Invoke(correlationId);
+            foreach (var batch in _activeBatches.Values)
+            {
+                if (batch.PendingAddresses.Remove(addr))
+                {
+                    if (batch.PendingAddresses.Count == 0)
+                        completedBatches.Add(batch);
+                }
+            }
+        }
+
+        foreach (var batch in completedBatches)
+        {
+            if (_activeBatches.TryRemove(batch.BlockNo, out _))
+            {
+                _log.LogInformation("Batch {Block} complete", batch.BlockNo);
+                BatchCompleted?.Invoke(batch.CorrelationId);
+            }
         }
     }
 

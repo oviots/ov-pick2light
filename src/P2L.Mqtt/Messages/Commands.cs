@@ -17,6 +17,7 @@ public sealed record LightOnCmd : MqttCommand
 {
     public required string  Address  { get; init; }
     public required int     Quantity { get; init; }
+    public string           BlockNo  { get; init; } = "00";
     public LightColor       Color    { get; init; } = LightColor.Green;
     public LightState       LedMode  { get; init; } = LightState.On;
     /// <summary>Buzzer mode. Null = mirrors LedMode (beeps when flashing).</summary>
@@ -37,6 +38,7 @@ public sealed record LightOffCmd : MqttCommand
 /// <summary>Start a picking batch across multiple modules.</summary>
 public sealed record BatchStartCmd : MqttCommand
 {
+    public string                     BlockNo { get; init; } = "00";
     public LightColor                 Color   { get; init; } = LightColor.Green;
     public LightState                 LedMode { get; init; } = LightState.On;
     /// <summary>Buzzer mode. Null = mirrors LedMode (beeps when flashing).</summary>

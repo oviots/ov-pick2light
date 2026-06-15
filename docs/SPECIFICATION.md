@@ -316,6 +316,7 @@ All commands are JSON objects with a required `type` field and optional `correla
   "quantity": 5,
   "color": "Green",
   "ledMode": "On",
+  "blockNo": "01",
   "buzMode": null,
   "label": "Shelf A1"
 }
@@ -325,6 +326,7 @@ All commands are JSON objects with a required `type` field and optional `correla
 |-------|------|----------|---------|--------|
 | `address` | string | ✅ | — | 4-digit module address |
 | `quantity` | int | ✅ | — | Display number (0–99999) |
+| `blockNo` | string | — | `"00"` | 2-digit block ID for grouped control |
 | `color` | string | — | `"Green"` | `Off, Red, Green, Blue, Yellow, Cyan, Magenta, White` |
 | `ledMode` | string | — | `"On"` | `On, Off, Flash, HighFlash, NoChange` |
 | `buzMode` | string\|null | — | mirrors ledMode | Same as ledMode |
@@ -349,6 +351,7 @@ All commands are JSON objects with a required `type` field and optional `correla
 {
   "type": "batch_start",
   "correlationId": "batch-uuid",
+  "blockNo": "01",
   "color": "Green",
   "ledMode": "On",
   "items": [
@@ -359,6 +362,8 @@ All commands are JSON objects with a required `type` field and optional `correla
 }
 ```
 
+> **Note on Concurrent Batches:** You can run multiple batches simultaneously by assigning them different `blockNo` values (e.g., `01`, `02`, `03`). This allows independent picking lanes to operate on the same controller without interfering with each other's completion events.
+
 > Items can be addressed by `address` (4-digit) or by `label` (resolved from the client SQLite DB). Items where neither resolves to a known address are silently skipped.
 
 ---
@@ -368,9 +373,11 @@ All commands are JSON objects with a required `type` field and optional `correla
 ```json
 {
   "type": "batch_finish",
-  "blockNo": "00"
+  "blockNo": "01"
 }
 ```
+
+> If `blockNo` is `"00"`, all active modules across all blocks are extinguished.
 
 ---
 
