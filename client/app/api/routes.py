@@ -486,6 +486,7 @@ async def light_on(request: Request, address: str, body: LightRequest):
         "quantity": body.quantity,
         "color":    _COLOR_TO_MQTT.get(c, "Green"),
         "ledMode":  _STATE_TO_MQTT.get(s, "On"),
+        "blockNo":  body.block_no or "00",
         "label":    body.label or None,
     }
     if not body.buzz:
@@ -526,8 +527,9 @@ async def start_batch(request: Request, body: BatchRequest):
             entry["buzMode"] = "Off"
         items.append(entry)
     payload: dict = {
-        "type":  "batch_start",
-        "items": items,
+        "type":    "batch_start",
+        "blockNo": body.block_no or "00",
+        "items":   items,
     }
     await _publish(request, payload)
     return {"status": "sent", "count": len(items)}
