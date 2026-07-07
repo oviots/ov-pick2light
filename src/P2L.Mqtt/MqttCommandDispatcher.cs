@@ -19,6 +19,7 @@ internal sealed class MqttCommandDispatcher
     private readonly DeviceLabelStore    _labels;
     private readonly DeviceScanService   _scanService;
     private readonly ILogger             _log;
+    private readonly SemaphoreSlim        _commandLock = new(1, 1);
 
     public MqttCommandDispatcher(PickingEngine engine,
                                  MqttEventPublisher publisher,
@@ -51,9 +52,13 @@ internal sealed class MqttCommandDispatcher
             return;
         }
 
+        var lockTaken = false;
         _gate.Preempt();
         try
         {
+            await _commandLock.WaitAsync(ct);
+            lockTaken = true;
+
             switch (type)
             {
                 case "light_on":
@@ -165,7 +170,7 @@ internal sealed class MqttCommandDispatcher
                     {
                         case "pause":  _csvRunner.Pause();  break;
                         case "resume": _csvRunner.Resume(); break;
-                        case "cancel": _ = _csvRunner.CancelAsync(); break;
+                        case "cancel": await _csvRunner.CancelAsync(); break;
                     }
                     _log.LogInformation("[MQTT] csv_control action={A}", cmd.Action);
                     break;
@@ -177,7 +182,7 @@ internal sealed class MqttCommandDispatcher
                         P2LMqttJsonContext.Default.ScanDevicesCmd);
                     if (cmd is null) break;
 
-                    _ = _scanService.ScanAsync(cmd.From, cmd.To, ct: ct);
+                    await _scanService.ScanAsync(cmd.From, cmd.To, ct: ct);
                     _log.LogInformation("[MQTT] scan_devices from={F} to={T}", cmd.From, cmd.To);
                     break;
                 }
@@ -187,8 +192,18 @@ internal sealed class MqttCommandDispatcher
                     break;
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _log.LogInformation("[MQTT] Command dispatch cancelled: {T}", type);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "[MQTT] Command dispatch failed: {T}", type);
+        }
         finally
         {
+            if (lockTaken)
+                _commandLock.Release();
             _gate.Release();
         }
     }

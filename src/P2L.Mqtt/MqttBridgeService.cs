@@ -216,12 +216,12 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
         return Task.CompletedTask;
     }
 
-    private Task OnMessageReceivedAsync(MqttApplicationMessageReceivedEventArgs args)
+    private async Task OnMessageReceivedAsync(MqttApplicationMessageReceivedEventArgs args)
     {
         var payload = args.ApplicationMessage.Payload.ToArray();
-        // Fire-and-forget dispatch; errors are caught inside HandleAsync
-        _ = _dispatcher.HandleAsync(payload, _cts.Token);
-        return Task.CompletedTask;
+        // MQTT QoS acknowledgements should happen after command dispatch, not when
+        // the payload is merely accepted into this process.
+        await _dispatcher.HandleAsync(payload, _cts.Token);
     }
 
     // ─── Options builder ─────────────────────────────────────────────────

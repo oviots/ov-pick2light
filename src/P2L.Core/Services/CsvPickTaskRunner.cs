@@ -90,6 +90,7 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
 
         _log.LogInformation("[CSV] Lighting {Count} modules at once.", rows.Count);
 
+        var correlationId = $"csv:{Guid.NewGuid():N}";
         var instructions = rows
             .Select(r => new PickingInstruction
             {
@@ -97,16 +98,56 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
                 Quantity = r.Quantity,
                 Color    = r.Color,
                 LedMode  = LightState.On,
+                CorrelationId = correlationId,
             })
             .ToList();
+
+        // Track confirmations before sending the batch so a very fast operator
+        // confirmation cannot race ahead of event subscription.
+        var addrToRow = rows.ToDictionary(r => r.Address);
+        var confirmed = new List<CsvPickRow>();
+        var batchDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var confirmedLock = new object();
+
+        void OnConfirmed(ConfirmationEvent evt, LightModuleState? _)
+        {
+            var addr = evt.Address.PadLeft(4, '0');
+            if (!addrToRow.TryGetValue(addr, out var row)) return;
+
+            lock (confirmedLock)
+            {
+                if (confirmed.Any(r => r.Address == addr)) return;
+                confirmed.Add(row);
+            }
+
+            _log.LogInformation("[CSV] Confirmed: addr={A}", addr);
+            TaskEvent?.Invoke(new CsvTaskEvent("task_confirmed", row));
+        }
+
+        void OnBatchCompleted(string? id)
+        {
+            if (id == correlationId)
+                batchDone.TrySetResult();
+        }
+
+        _engine.ItemConfirmed  += OnConfirmed;
+        _engine.BatchCompleted += OnBatchCompleted;
 
         try
         {
             await _engine.StartBatchAsync(instructions, ct);
         }
-        catch (OperationCanceledException) { _log.LogInformation("[CSV] Runner stopped."); return; }
+        catch (OperationCanceledException)
+        {
+            _engine.ItemConfirmed  -= OnConfirmed;
+            _engine.BatchCompleted -= OnBatchCompleted;
+            _log.LogInformation("[CSV] Runner stopped.");
+            return;
+        }
         catch (Exception ex)
         {
+            _engine.ItemConfirmed  -= OnConfirmed;
+            _engine.BatchCompleted -= OnBatchCompleted;
             _log.LogError(ex, "[CSV] Failed to start batch.");
             TaskEvent?.Invoke(new CsvTaskEvent("task_error", null));
             _log.LogInformation("[CSV] Runner stopped.");
@@ -120,33 +161,17 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
             TaskEvent?.Invoke(new CsvTaskEvent("task_started", row));
         }
 
-        // Track confirmations — keyed by padded address
-        var addrToRow = rows.ToDictionary(r => r.Address);
-        var confirmed = new List<CsvPickRow>();
-        var batchDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        void OnConfirmed(ConfirmationEvent evt, LightModuleState? _)
-        {
-            var addr = evt.Address.PadLeft(4, '0');
-            if (!addrToRow.TryGetValue(addr, out var row)) return;
-
-            confirmed.Add(row);
-            _log.LogInformation("[CSV] Confirmed: addr={A}", addr);
-            TaskEvent?.Invoke(new CsvTaskEvent("task_confirmed", row));
-        }
-
-        void OnBatchCompleted(string? _) => batchDone.TrySetResult();
-
-        _engine.ItemConfirmed  += OnConfirmed;
-        _engine.BatchCompleted += OnBatchCompleted;
-
         try
         {
             await batchDone.Task.WaitAsync(ct);
             await _engine.FinishBatchAsync(ct: ct);
 
             // Delete confirmed rows in reverse line order so earlier line numbers stay valid
-            foreach (var row in confirmed.OrderByDescending(r => r.SourceLine))
+            CsvPickRow[] confirmedSnapshot;
+            lock (confirmedLock)
+                confirmedSnapshot = confirmed.ToArray();
+
+            foreach (var row in confirmedSnapshot.OrderByDescending(r => r.SourceLine))
                 DeleteRow(csvPath, row.SourceLine);
 
             _log.LogInformation("[CSV] All tasks completed.");

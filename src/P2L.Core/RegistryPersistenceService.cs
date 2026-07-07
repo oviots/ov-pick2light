@@ -82,6 +82,10 @@ public sealed class RegistryPersistenceService : IDisposable
                             Quantity = e.Quantity,
                             Color    = e.Color,
                             LedMode  = e.LedMode,
+                            SegMode  = e.SegMode,
+                            BuzMode  = e.BuzMode,
+                            BlockNo  = e.BlockNo,
+                            CorrelationId = e.CorrelationId,
                         });
                         loaded++;
                     }
@@ -126,6 +130,10 @@ public sealed class RegistryPersistenceService : IDisposable
                     Quantity           = int.TryParse(m.DisplayData.Trim(), out int q) ? q : 0,
                     Color              = m.Color,
                     LedMode            = m.LedMode,
+                    SegMode            = m.SegMode,
+                    BuzMode            = m.BuzMode,
+                    BlockNo            = m.BlockNo,
+                    CorrelationId      = m.CorrelationId,
                     LastInstructionAt  = m.LastInstructionAt ?? DateTime.UtcNow,
                 })
                 .ToList();
@@ -165,6 +173,10 @@ public sealed class PersistedModuleEntry
     public int       Quantity          { get; set; }
     public LightColor Color            { get; set; } = LightColor.Green;
     public LightState LedMode          { get; set; } = LightState.On;
+    public LightState SegMode          { get; set; } = LightState.On;
+    public LightState BuzMode          { get; set; } = LightState.Off;
+    public string     BlockNo          { get; set; } = "00";
+    public string?    CorrelationId    { get; set; }
     public DateTime  LastInstructionAt { get; set; }
 }
 

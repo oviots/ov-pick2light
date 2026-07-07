@@ -17,6 +17,7 @@ public sealed class PickingEngine : IDisposable
     {
         public required string BlockNo { get; init; }
         public required string? CorrelationId { get; init; }
+        public required string Signature { get; init; }
         public HashSet<string> PendingAddresses { get; } = new();
     }
 
@@ -57,12 +58,15 @@ public sealed class PickingEngine : IDisposable
         if (instructions.Count == 0) return;
 
         var blockNo = instructions[0].BlockNo;
-        if (_activeBatches.ContainsKey(blockNo))
-            throw new InvalidOperationException($"A batch for block {blockNo} is already active. Call FinishBatchAsync first.");
+        if (instructions.Any(i => i.BlockNo != blockNo))
+            throw new InvalidOperationException("All instructions in one batch must use the same block number.");
+
+        var signature = BuildBatchSignature(instructions);
 
         var batch = new BatchState
         {
             BlockNo = blockNo,
+            Signature = signature,
             CorrelationId = instructions
                 .Select(i => i.CorrelationId)
                 .Where(id => !string.IsNullOrWhiteSpace(id))
@@ -72,17 +76,42 @@ public sealed class PickingEngine : IDisposable
 
         lock (_lock)
         {
-            foreach (var inst in instructions)
-                batch.PendingAddresses.Add(inst.Address.PadLeft(4, '0'));
-        }
+            if (_activeBatches.TryGetValue(blockNo, out var existing))
+            {
+                if (existing.Signature == signature)
+                {
+                    _log.LogInformation("Duplicate batch_start ignored for block {Block}: {Count} modules",
+                        blockNo, instructions.Count);
+                    return;
+                }
 
-        _activeBatches[blockNo] = batch;
+                throw new InvalidOperationException($"A batch for block {blockNo} is already active. Call FinishBatchAsync first.");
+            }
+
+            foreach (var inst in instructions)
+                batch.PendingAddresses.Add(inst.Address.PadLeft(4, '0')[^4..]);
+
+            _activeBatches[blockNo] = batch;
+        }
 
         // Update registry before sending (optimistic)
         foreach (var inst in instructions)
             _registry.SetInstructed(inst);
 
-        await _gateway.InstructBatchAsync(instructions, ct);
+        try
+        {
+            await _gateway.InstructBatchAsync(instructions, ct);
+        }
+        catch
+        {
+            RemoveBatchIfCurrent(blockNo, batch);
+            lock (_lock)
+            {
+                foreach (var addr in batch.PendingAddresses)
+                    _registry.SetTerminated(addr);
+            }
+            throw;
+        }
 
         _log.LogInformation("Batch started for block {Block}: {Count} modules", blockNo, instructions.Count);
     }
@@ -94,26 +123,18 @@ public sealed class PickingEngine : IDisposable
     {
         await _gateway.TerminateBlockAsync(blockNo, ct);
 
-        if (_activeBatches.TryRemove(blockNo, out var batch))
+        if (blockNo == "00")
         {
             lock (_lock)
             {
-                foreach (var addr in batch.PendingAddresses)
-                    _registry.SetTerminated(addr);
+                _activeBatches.Clear();
             }
+            _registry.SetTerminatedForBlock("00");
         }
-        else if (blockNo == "00")
+        else
         {
-            // If global terminate "00" is sent, clear everything
-            foreach (var b in _activeBatches.Values)
-            {
-                lock (_lock)
-                {
-                    foreach (var addr in b.PendingAddresses)
-                        _registry.SetTerminated(addr);
-                }
-            }
-            _activeBatches.Clear();
+            _activeBatches.TryRemove(blockNo, out _);
+            _registry.SetTerminatedForBlock(blockNo);
         }
 
         _log.LogInformation("Batch finished for block {Block}", blockNo);
@@ -233,6 +254,26 @@ public sealed class PickingEngine : IDisposable
             }
         }
     }
+
+    private void RemoveBatchIfCurrent(string blockNo, BatchState batch)
+    {
+        var pair = new KeyValuePair<string, BatchState>(blockNo, batch);
+        ((ICollection<KeyValuePair<string, BatchState>>)_activeBatches).Remove(pair);
+    }
+
+    private static string BuildBatchSignature(IReadOnlyList<PickingInstruction> instructions) =>
+        string.Join('|', instructions
+            .Select(i => string.Join(':',
+                i.BlockNo,
+                i.Address.PadLeft(4, '0')[^4..],
+                i.Quantity,
+                i.Color,
+                i.LedMode,
+                i.SegMode,
+                i.BuzMode,
+                i.Label ?? "",
+                i.CorrelationId ?? ""))
+            .Order(StringComparer.Ordinal));
 
     public void Dispose()
     {
