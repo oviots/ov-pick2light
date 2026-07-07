@@ -107,6 +107,7 @@ if (!OperatingSystem.IsWindows())
 // ─── Service registration ─────────────────────────────────────────────────
 
 var services = new ServiceCollection();
+var isDashboardMode = args.Length == 0;
 
 services.AddSingleton(appSettings);
 services.AddSingleton(appSettings.Gateway);
@@ -115,11 +116,14 @@ services.AddSingleton(appSettings.Gateway);
 services.AddLogging(builder =>
 {
     builder.AddConfiguration(config.GetSection("Logging"));
-    builder.AddSimpleConsole(o =>
+    if (!isDashboardMode)
     {
-        o.SingleLine      = true;
-        o.TimestampFormat = "HH:mm:ss ";
-    });
+        builder.AddSimpleConsole(o =>
+        {
+            o.SingleLine      = true;
+            o.TimestampFormat = "HH:mm:ss ";
+        });
+    }
     // Rotating file for hardware TX/RX audit (mis-pick investigation)
     builder.AddProvider(new RotatingFileLoggerProvider(
         appSettings.LogDirectory,

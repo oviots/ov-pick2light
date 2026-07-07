@@ -130,7 +130,7 @@ async def _publish(request: Request, command: dict) -> None:
 
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return _get_templates(request).TemplateResponse("index.html", {"request": request})
+    return _get_templates(request).TemplateResponse(request, "index.html", {"request": request})
 
 
 # ─── WebSocket ────────────────────────────────────────────────────────────────
