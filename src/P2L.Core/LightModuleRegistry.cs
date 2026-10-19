@@ -26,7 +26,7 @@ public sealed class LightModuleRegistry
     /// <summary>
     /// Registers or updates a module's state following a pick instruction being sent.
     /// </summary>
-    public LightModuleState SetInstructed(PickingInstruction instruction)
+    public LightModuleState SetInstructed(PickingInstruction instruction, DateTime? instructedAt = null)
     {
         var addr = Normalize(instruction.Address);
         var state = _modules.AddOrUpdate(addr,
@@ -41,7 +41,9 @@ public sealed class LightModuleRegistry
                 BuzMode           = instruction.BuzMode,
                 BlockNo           = instruction.BlockNo,
                 CorrelationId     = instruction.CorrelationId,
-                LastInstructionAt = DateTime.UtcNow,
+                CommandItemId     = instruction.CommandItemId,
+                PickingDetailId   = instruction.PickingDetailId,
+                LastInstructionAt = instructedAt ?? DateTime.UtcNow,
             },
             (_, existing) =>
             {
@@ -55,7 +57,9 @@ public sealed class LightModuleRegistry
                     existing.BuzMode           = instruction.BuzMode;
                     existing.BlockNo           = instruction.BlockNo;
                     existing.CorrelationId     = instruction.CorrelationId;
-                    existing.LastInstructionAt = DateTime.UtcNow;
+                    existing.CommandItemId     = instruction.CommandItemId;
+                    existing.PickingDetailId   = instruction.PickingDetailId;
+                    existing.LastInstructionAt = instructedAt ?? DateTime.UtcNow;
                 }
                 return existing;
             });
@@ -206,6 +210,8 @@ public sealed class LightModuleRegistry
             module.LedMode       = LightState.Off;
             module.BuzMode       = LightState.Off;
             module.CorrelationId = null;
+            module.CommandItemId = null;
+            module.PickingDetailId = null;
         }
         StateChanged?.Invoke(Clone(module));
     }
@@ -228,6 +234,8 @@ public sealed class LightModuleRegistry
                 AdjustedQuantity  = module.AdjustedQuantity,
                 BlockNo           = module.BlockNo,
                 CorrelationId     = module.CorrelationId,
+                CommandItemId     = module.CommandItemId,
+                PickingDetailId   = module.PickingDetailId,
             };
         }
     }

@@ -36,7 +36,7 @@ class MqttConfig:
 @dataclass
 class ServiceConfig:
     binary_path: str = ""        # Absolute path to the p2l binary
-    args: list = field(default_factory=list)   # Extra CLI arguments (e.g. ["run", "tasks.csv"])
+    args: list = field(default_factory=lambda: ["serve"])
     working_dir: str = ""        # Working directory; defaults to binary's parent dir
     auto_start: bool = True      # Start the service automatically before connecting MQTT
 
@@ -98,7 +98,7 @@ class AppConfig:
                             enabled=mq.get("Enabled", False),
                             host=mq.get("Host", "localhost"),
                             port=mq.get("Port", 8883),
-                            client_id=mq.get("ClientId", "p2l-webclient"),
+                            client_id=f"{mq.get('ClientId', 'p2l')}-webclient",
                             username=mq.get("Username"),
                             password=mq.get("Password"),
                             command_topic=mq.get("CommandTopic", "p2l/commands"),

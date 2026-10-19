@@ -29,6 +29,8 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         _pending = new();
 
     private int _initialized; // 0 = no, 1 = yes (Interlocked flag)
+    private readonly SemaphoreSlim _initializationLock = new(1, 1);
+    private int _protocolFaulted;
 
     /// <summary>True after a successful Z initialization command has been sent.</summary>
     public bool IsInitialized => _initialized == 1;
@@ -40,6 +42,15 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     public event Action<bool>? ConnectionChanged;
 
     public bool IsConnected => _transport.IsConnected;
+    /// <summary>A TCP connection with no outstanding protocol-health fault.</summary>
+    public bool IsHealthy => IsConnected && Volatile.Read(ref _protocolFaulted) == 0;
+
+    /// <summary>Reconnects the TCP link without resetting modules or replaying instructions.</summary>
+    public void RequestReconnect()
+    {
+        Volatile.Write(ref _protocolFaulted, 1);
+        _transport.ForceReconnect();
+    }
 
     public AioiGateway(string host, int port, ILogger logger)
     {
@@ -64,8 +75,18 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     /// </summary>
     public async Task InitializeAsync(CancellationToken ct = default)
     {
-        await SendAndWaitAsync(AioiEncoder.Initialize(), ct);
-        Interlocked.Exchange(ref _initialized, 1);
+        await _initializationLock.WaitAsync(ct);
+        try
+        {
+            await SendAndWaitAsync(AioiEncoder.Initialize(), ct);
+            Interlocked.Exchange(ref _initialized, 1);
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _initialized, 0);
+            throw;
+        }
+        finally { _initializationLock.Release(); }
     }
 
     /// <summary>
@@ -74,11 +95,15 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     /// </summary>
     public async Task EnsureInitializedAsync(CancellationToken ct = default)
     {
-        if (Interlocked.CompareExchange(ref _initialized, 1, 0) == 0)
+        await _initializationLock.WaitAsync(ct);
+        try
         {
+            if (IsInitialized) return;
             _log.LogInformation("Auto-initializing gateway (Z command)");
             await SendAndWaitAsync(AioiEncoder.Initialize(), ct);
+            Interlocked.Exchange(ref _initialized, 1);
         }
+        finally { _initializationLock.Release(); }
     }
 
     /// <summary>
@@ -115,6 +140,9 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
                                          CancellationToken ct = default)
     {
         if (instructions.Count == 0) return;
+        ValidateBatch(instructions);
+        var command = AioiEncoder.BlockInstruct(instructions[0].BlockNo, instructions, instructions[0].LedMode);
+        _ = new AioiPacket { Command = command }.ToBytes();
 
         // Am1 sets per-address color AND mode (On/Flash/HighFlash nibbles).
         // Am1's state nibbles are the authoritative "display status during instruction" —
@@ -128,7 +156,7 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
 
         var ledMode = instructions[0].LedMode;
         var blockNo = instructions[0].BlockNo;
-        await SendAndWaitAsync(AioiEncoder.BlockInstruct(blockNo, instructions, ledMode), ct);
+        await SendAndWaitAsync(command, ct);
 
         _log.LogInformation("Instructed {Count} modules (block {Block} mode {Mode})",
             instructions.Count, blockNo, ledMode);
@@ -142,6 +170,9 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
                                           CancellationToken ct = default)
     {
         if (instructions.Count == 0) return;
+        ValidateBatch(instructions);
+        var command = AioiEncoder.BlockInstructOverwrite(instructions[0].BlockNo, instructions, instructions[0].LedMode);
+        _ = new AioiPacket { Command = command }.ToBytes();
 
         foreach (var inst in instructions)
         {
@@ -150,9 +181,7 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
                 AioiEncoder.SetModeAm1(inst.Address, led2, led1, led0, LightState.On, inst.BuzMode), ct);
         }
 
-        var ledMode = instructions[0].LedMode;
-        var blockNo = instructions[0].BlockNo;
-        await SendAndWaitAsync(AioiEncoder.BlockInstructOverwrite(blockNo, instructions, ledMode), ct);
+        await SendAndWaitAsync(command, ct);
     }
 
     /// <summary>
@@ -202,6 +231,12 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
 
     // ─── Internal ─────────────────────────────────────────────────────────
 
+    private static void ValidateBatch(IReadOnlyList<PickingInstruction> instructions)
+    {
+        if (instructions.Any(i => i.BlockNo != instructions[0].BlockNo))
+            throw new ArgumentException("All instructions in one hardware batch must use the same block number.", nameof(instructions));
+    }
+
     private async Task<AioiDecoder.ParsedResponse> SendAndWaitAsync(string command,
                                                                       CancellationToken ct)
     {
@@ -212,14 +247,14 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         // If registration happens after SendAsync returns, a fast gateway ACK can arrive
         // in the receive loop before _pending[seq] is set → "Unmatched response" → 5 s timeout.
         int seq = _transport.AllocateSeqNo();
-        _pending[seq] = tcs;
-        await _transport.EnqueueAsync(command, seq, ct);
-
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(AioiConstants.EthernetResponseTimeoutMs);
 
         try
         {
+            if (!_pending.TryAdd(seq, tcs))
+                throw new InvalidOperationException($"Gateway sequence {seq} is still pending.");
+            await _transport.EnqueueAsync(command, seq, timeout.Token);
             var response = await tcs.Task.WaitAsync(timeout.Token);
 
             if (response.Kind == AioiDecoder.ResponseKind.Nack)
@@ -228,19 +263,35 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
                 throw new AioiNackException(command);
             }
 
+            var expectedKind = command.StartsWith("Az", StringComparison.Ordinal)
+                ? AioiDecoder.ResponseKind.ModuleStatus
+                : AioiDecoder.ResponseKind.Ack;
+            if (response.Kind != expectedKind
+                || (expectedKind == AioiDecoder.ResponseKind.Ack && response.Raw != "o"
+                    && !(command == "@" && response.Raw.StartsWith('@')))
+                || (expectedKind == AioiDecoder.ResponseKind.ModuleStatus
+                    && response.ModuleInfo?.Address != command[2..]))
+                throw new InvalidOperationException($"Unexpected gateway response '{response.Raw}' for '{command}'.");
+
+            Volatile.Write(ref _protocolFaulted, 0);
             return response;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            _pending.TryRemove(seq, out _);
+            RemovePendingIfCurrent(seq, tcs);
             _log.LogError("Timeout waiting for ACK on command: {Cmd}", command);
             throw new TimeoutException($"Gateway did not respond to '{command}' within {AioiConstants.EthernetResponseTimeoutMs} ms");
         }
         finally
         {
-            _pending.TryRemove(seq, out _);
+            timeout.Cancel(); // Also invalidates an unsent queue entry after an early response/error.
+            RemovePendingIfCurrent(seq, tcs);
         }
     }
+
+    private void RemovePendingIfCurrent(int seq, TaskCompletionSource<AioiDecoder.ParsedResponse> tcs) =>
+        ((ICollection<KeyValuePair<int, TaskCompletionSource<AioiDecoder.ParsedResponse>>>)_pending)
+            .Remove(new(seq, tcs));
 
     private void OnPacketReceived(AioiPacket packet)
     {
@@ -249,16 +300,26 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         switch (response.Kind)
         {
             case AioiDecoder.ResponseKind.Interrupt:
-                // "t" packet: ACK must echo the same SeqNo as the interrupt (always 0)
-                // and must be sent immediately — bypass the send queue so it never waits
-                // behind a queued heartbeat or P1 command.
-                _ = _transport.SendImmediateAsync(AioiEncoder.Ack(), packet.SequenceNo);
-
                 if (response.Event is not null)
                 {
                     _log.LogInformation("[CONFIRM] Address={Addr} Status={Status}",
                         response.Event.Address, response.Event.Status);
-                    Confirmed?.Invoke(response.Event);
+                    try
+                    {
+                        // Subscribers durably record the confirmation before hardware may discard it.
+                        var confirmed = Confirmed;
+                        if (confirmed is null)
+                        {
+                            _log.LogWarning("No confirmation consumer is ready; withholding hardware ACK");
+                            break;
+                        }
+                        confirmed(response.Event);
+                        _ = _transport.SendImmediateAsync(AioiEncoder.Ack(), packet.SequenceNo);
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogError(ex, "Confirmation was not persisted; withholding hardware ACK for redelivery");
+                    }
                 }
                 break;
 

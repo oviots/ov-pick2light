@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using P2L.Hardware;
 using P2L.Shared.Enums;
+using P2L.Shared.Constants;
 using P2L.Shared.Models;
 
 namespace P2L.Core;
@@ -53,67 +54,64 @@ public sealed class PickingEngine : IDisposable
     /// If a batch for the specified block is already active, throws <see cref="InvalidOperationException"/>.
     /// </summary>
     public async Task StartBatchAsync(IReadOnlyList<PickingInstruction> instructions,
-                                      CancellationToken ct = default)
+                                      CancellationToken ct = default, bool relight = false)
     {
         if (instructions.Count == 0) return;
-
+        ValidateInstructions(instructions);
         var blockNo = instructions[0].BlockNo;
-        if (instructions.Any(i => i.BlockNo != blockNo))
-            throw new InvalidOperationException("All instructions in one batch must use the same block number.");
-
+        var correlationId = instructions.Select(i => i.CorrelationId).Distinct(StringComparer.Ordinal).Single();
         var signature = BuildBatchSignature(instructions);
-
-        var batch = new BatchState
-        {
-            BlockNo = blockNo,
-            Signature = signature,
-            CorrelationId = instructions
-                .Select(i => i.CorrelationId)
-                .Where(id => !string.IsNullOrWhiteSpace(id))
-                .Distinct(StringComparer.Ordinal)
-                .SingleOrDefault()
-        };
-
+        var effective = instructions;
+        var toInstruct = instructions;
+        BatchState batch;
         lock (_lock)
         {
+            ValidateOwnership(instructions);
             if (_activeBatches.TryGetValue(blockNo, out var existing))
             {
-                if (existing.Signature == signature)
+                if (existing.CorrelationId != correlationId)
+                    throw new PickingCommandRejectedException("BLOCK_BUSY", $"Block {blockNo} belongs to another active session.");
+                if (!relight)
                 {
-                    _log.LogInformation("Duplicate batch_start ignored for block {Block}: {Count} modules",
-                        blockNo, instructions.Count);
-                    return;
+                    if (existing.Signature == signature) return;
+                    throw new PickingCommandRejectedException("BLOCK_BUSY", $"A different batch for block {blockNo} is already active.");
                 }
-
-                throw new InvalidOperationException($"A batch for block {blockNo} is already active. Call FinishBatchAsync first.");
             }
-
-            foreach (var inst in instructions)
-                batch.PendingAddresses.Add(inst.Address.PadLeft(4, '0')[^4..]);
-
-            _activeBatches[blockNo] = batch;
-        }
-
-        // Update registry before sending (optimistic)
-        foreach (var inst in instructions)
-            _registry.SetInstructed(inst);
-
-        try
-        {
-            await _gateway.InstructBatchAsync(instructions, ct);
-        }
-        catch
-        {
-            RemoveBatchIfCurrent(blockNo, batch);
-            lock (_lock)
+            if (relight)
             {
-                foreach (var addr in batch.PendingAddresses)
-                    _registry.SetTerminated(addr);
+                // A confirmation may finish after WMS prepares the relight but
+                // before it reaches this bridge. Skip exactly that completed item.
+                toInstruct = instructions.Where(inst =>
+                {
+                    var current = _registry.Get(inst.Address);
+                    var sameItem = !string.IsNullOrEmpty(inst.CommandItemId)
+                        ? current?.CommandItemId == inst.CommandItemId
+                        : !string.IsNullOrEmpty(inst.PickingDetailId) && current?.PickingDetailId == inst.PickingDetailId;
+                    if (current?.Status == ModuleStatus.Operating && current.CorrelationId == inst.CorrelationId
+                        && !string.IsNullOrEmpty(current.CommandItemId) && !string.IsNullOrEmpty(inst.CommandItemId)
+                        && current.CommandItemId != inst.CommandItemId)
+                        return false; // A later detail already owns this address.
+                    return !(current is not null && current.Status is ModuleStatus.Completed or ModuleStatus.Shortage
+                        && current.CorrelationId == inst.CorrelationId && sameItem);
+                }).ToArray();
+                // An explicit relight applies the full live set of this block only.
+                var live = _registry.All.Where(m => m.Status == ModuleStatus.Operating && m.BlockNo == blockNo)
+                    .Select(ToInstruction).ToDictionary(i => Normalize(i.Address), StringComparer.Ordinal);
+                foreach (var inst in toInstruct) live[Normalize(inst.Address)] = inst;
+                effective = live.Values.OrderBy(i => i.Address, StringComparer.Ordinal).ToArray();
+                if (effective.Count == 0) return;
+                ValidateInstructions(effective);
             }
-            throw;
+            batch = new BatchState { BlockNo = blockNo, CorrelationId = correlationId, Signature = signature };
+            foreach (var inst in effective) batch.PendingAddresses.Add(Normalize(inst.Address));
+            _activeBatches[blockNo] = batch;
+            foreach (var inst in toInstruct) _registry.SetInstructed(inst);
         }
-
-        _log.LogInformation("Batch started for block {Block}: {Count} modules", blockNo, instructions.Count);
+        // Keep identities/tracking on an ambiguous hardware failure: a later confirm
+        // must retain its original item instead of becoming an uncorrelated event.
+        if (relight) await _gateway.OverwriteBatchAsync(effective, ct);
+        else await _gateway.InstructBatchAsync(effective, ct);
+        _log.LogInformation("Batch applied for block {Block}: {Count} modules (relight={Relight})", blockNo, effective.Count, relight);
     }
 
     /// <summary>
@@ -146,52 +144,45 @@ public sealed class PickingEngine : IDisposable
     /// Does not affect active batch tracking unless the module is already in a batch.
     /// </summary>
     public async Task QuickLightAsync(string address, int quantity,
-                                      LightColor color   = LightColor.Green,
+                                      LightColor color = LightColor.Green,
                                       LightState ledMode = LightState.On,
                                       LightState buzMode = LightState.Off,
-                                      string? label = null,
-                                      string? blockNo = "00",
-                                      string? correlationId = null,
-                                      CancellationToken ct = default)
+                                      string? label = null, string? blockNo = "00",
+                                      string? correlationId = null, CancellationToken ct = default,
+                                      string? commandItemId = null, string? pickingDetailId = null)
     {
         var inst = new PickingInstruction
         {
-            Address  = address.PadLeft(4, '0'),
-            Quantity = quantity,
-            Color    = color,
-            LedMode  = ledMode,
-            BuzMode  = buzMode,
-            Label    = label,
-            BlockNo  = blockNo ?? "00",
-            CorrelationId = correlationId,
+            Address = Normalize(address), Quantity = quantity, Color = color,
+            LedMode = ledMode, BuzMode = buzMode, Label = label,
+            BlockNo = blockNo ?? "00", CorrelationId = correlationId,
+            CommandItemId = commandItemId, PickingDetailId = pickingDetailId,
         };
-        _registry.SetInstructed(inst);
-
-        var batch = _registry.All
-            .Where(m => m.Status == ModuleStatus.Operating)
-            .Select(m => new PickingInstruction
-            {
-                Address  = m.Address,
-                Quantity = int.TryParse(m.DisplayData.Trim(), out int q) ? q : 0,
-                Color    = m.Color,
-                LedMode  = m.LedMode,
-                BuzMode  = m.BuzMode,
-                CorrelationId = m.CorrelationId,
-                BlockNo  = m.BlockNo ?? "00",
-            })
-            .ToList();
-
-        if (!batch.Any(i => i.Address == inst.Address))
-            batch.Add(inst);
-
-        try
+        ValidateInstructions([inst]);
+        List<PickingInstruction> instructions;
+        lock (_lock)
         {
-            await _gateway.InstructBatchAsync(batch, ct);
+            ValidateOwnership([inst]);
+            if (_activeBatches.TryGetValue(inst.BlockNo, out var active) && active.CorrelationId != correlationId)
+                throw new PickingCommandRejectedException("BLOCK_BUSY", $"Block {inst.BlockNo} belongs to another active session.");
+            var current = _registry.Get(inst.Address);
+            if (!string.IsNullOrEmpty(commandItemId) && current?.CommandItemId == commandItemId
+                && current.CorrelationId == correlationId && current.Status is ModuleStatus.Completed or ModuleStatus.Shortage)
+                throw new PickingCommandRejectedException("ITEM_COMPLETED", $"Item {commandItemId} already completed.");
+            instructions = _registry.All.Where(m => m.Status == ModuleStatus.Operating && m.BlockNo == inst.BlockNo)
+                .Select(ToInstruction).Where(i => i.Address != inst.Address).Append(inst)
+                .OrderBy(i => i.Address, StringComparer.Ordinal).ToList();
+            ValidateInstructions(instructions);
+            _registry.SetInstructed(inst);
+            active ??= new BatchState { BlockNo = inst.BlockNo, CorrelationId = correlationId, Signature = "" };
+            active.PendingAddresses.Add(inst.Address);
+            _activeBatches[inst.BlockNo] = active;
         }
+        try { await _gateway.InstructBatchAsync(instructions, ct); }
         catch (AioiNackException)
         {
             _log.LogInformation("[QuickLight] P1 NACKed — retrying with P5 (overwrite)");
-            await _gateway.OverwriteBatchAsync(batch, ct);
+            await _gateway.OverwriteBatchAsync(instructions, ct);
         }
     }
 
@@ -215,45 +206,90 @@ public sealed class PickingEngine : IDisposable
     }
 
     /// <summary>Turns off a single module immediately.</summary>
-    public Task ExtinguishAsync(string address, CancellationToken ct = default)
+    public async Task ExtinguishAsync(string address, CancellationToken ct = default)
     {
+        await _gateway.TerminateAsync(address, ct);
         _registry.SetTerminated(address);
-        return _gateway.TerminateAsync(address, ct);
     }
 
     // ─── Confirmation handling ─────────────────────────────────────────────
 
     private void OnConfirmed(ConfirmationEvent evt)
     {
-        var state = _registry.SetConfirmed(evt);
-        var addr = evt.Address.PadLeft(4, '0');
-
-        ItemConfirmed?.Invoke(evt, state);
-
-        // Track batches that just completed
-        var completedBatches = new List<BatchState>();
-
+        BatchState? completed = null;
         lock (_lock)
         {
-            foreach (var batch in _activeBatches.Values)
+            var addr = Normalize(evt.Address);
+            var state = _registry.Get(addr);
+            if (state is null || state.Status != ModuleStatus.Operating) return;
+            // Persist and complete one captured item atomically relative to a
+            // next-detail instruction. Subscribers synchronously persist only;
+            // no async/network wait occurs while this lock is held.
+            state.Status = evt.Status == CompletionStatus.Shortage ? ModuleStatus.Shortage : ModuleStatus.Completed;
+            state.LastConfirmedAt = evt.ReceivedAt;
+            state.AdjustedQuantity = int.TryParse(evt.AdjustedDisplay?.Trim(), out var qty) ? qty : null;
+            ItemConfirmed?.Invoke(evt, state);
+            _registry.SetConfirmed(evt);
+
+            if (_activeBatches.TryGetValue(state.BlockNo, out var batch)
+                && batch.CorrelationId == state.CorrelationId && batch.PendingAddresses.Remove(addr)
+                && batch.PendingAddresses.Count == 0)
             {
-                if (batch.PendingAddresses.Remove(addr))
-                {
-                    if (batch.PendingAddresses.Count == 0)
-                        completedBatches.Add(batch);
-                }
+                completed = batch;
+                RemoveBatchIfCurrent(state.BlockNo, batch);
             }
         }
-
-        foreach (var batch in completedBatches)
+        if (completed is not null)
         {
-            if (_activeBatches.TryRemove(batch.BlockNo, out _))
-            {
-                _log.LogInformation("Batch {Block} complete", batch.BlockNo);
-                BatchCompleted?.Invoke(batch.CorrelationId);
-            }
+            _log.LogInformation("Batch {Block} complete", completed.BlockNo);
+            BatchCompleted?.Invoke(completed.CorrelationId);
         }
     }
+
+    public static void ValidateInstructions(IReadOnlyList<PickingInstruction> instructions)
+    {
+        const int maxItemsPerFrame = (AioiConstants.MaxCommandLength - 4) / 9;
+        if (instructions.Count == 0 || instructions.Count > maxItemsPerFrame)
+            throw new PickingCommandRejectedException("INVALID_ITEMS", $"A batch must contain 1–{maxItemsPerFrame} modules per hardware frame.");
+        var block = instructions[0].BlockNo;
+        if (string.IsNullOrEmpty(block) || block.Length != 2 || !block.All(char.IsAsciiDigit))
+            throw new PickingCommandRejectedException("INVALID_BLOCK", "Block must contain two digits.");
+        if (instructions.Select(i => i.CorrelationId).Distinct(StringComparer.Ordinal).Count() > 1)
+            throw new PickingCommandRejectedException("INVALID_SESSION", "A batch must belong to one session.");
+        var addresses = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in instructions)
+        {
+            if (item.BlockNo != block) throw new PickingCommandRejectedException("MIXED_BLOCK", "A batch must belong to one block.");
+            if (string.IsNullOrWhiteSpace(item.Address) || item.Address.Length > 4 || !item.Address.All(char.IsAsciiDigit)
+                || !int.TryParse(item.Address, out var address) || address < 1 || address > 9999)
+                throw new PickingCommandRejectedException("INVALID_ADDRESS", "Address must contain digits from 0001 to 9999.");
+            if (!addresses.Add(Normalize(item.Address)))
+                throw new PickingCommandRejectedException("DUPLICATE_ADDRESS", "A batch cannot assign one address twice.");
+            if (item.Quantity is < 0 or > 99999 || !Enum.IsDefined(item.Color) || !Enum.IsDefined(item.LedMode)
+                || !Enum.IsDefined(item.SegMode) || !Enum.IsDefined(item.BuzMode))
+                throw new PickingCommandRejectedException("INVALID_PARAMETERS", "Quantity or light modes are invalid.");
+        }
+    }
+
+    private void ValidateOwnership(IReadOnlyList<PickingInstruction> instructions)
+    {
+        foreach (var inst in instructions)
+        {
+            var current = _registry.Get(inst.Address);
+            if (current?.Status == ModuleStatus.Operating && (current.BlockNo != inst.BlockNo || current.CorrelationId != inst.CorrelationId))
+                throw new PickingCommandRejectedException("ADDRESS_BUSY", $"Address {inst.Address} belongs to another active block/session.");
+        }
+    }
+
+    private static string Normalize(string address) => address?.PadLeft(4, '0') ?? string.Empty;
+
+    private static PickingInstruction ToInstruction(LightModuleState state) => new()
+    {
+        Address = state.Address, Quantity = int.TryParse(state.DisplayData.Trim(), out var q) ? q : 0,
+        Color = state.Color, LedMode = state.LedMode, SegMode = state.SegMode, BuzMode = state.BuzMode,
+        BlockNo = state.BlockNo, CorrelationId = state.CorrelationId,
+        CommandItemId = state.CommandItemId, PickingDetailId = state.PickingDetailId,
+    };
 
     private void RemoveBatchIfCurrent(string blockNo, BatchState batch)
     {
@@ -272,7 +308,9 @@ public sealed class PickingEngine : IDisposable
                 i.SegMode,
                 i.BuzMode,
                 i.Label ?? "",
-                i.CorrelationId ?? ""))
+                i.CorrelationId ?? "",
+                i.CommandItemId ?? "",
+                i.PickingDetailId ?? ""))
             .Order(StringComparer.Ordinal));
 
     public void Dispose()

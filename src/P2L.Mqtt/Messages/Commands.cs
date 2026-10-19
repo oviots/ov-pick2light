@@ -8,6 +8,8 @@ public abstract record MqttCommand
 {
     public required string  Type          { get; init; }
     public string?          CorrelationId { get; init; }
+    public string?          CommandId     { get; init; }
+    public DateTimeOffset?  ExpiresAt     { get; init; }
 }
 
 // ─── light_on ──────────────────────────────────────────────────────────────
@@ -15,11 +17,13 @@ public abstract record MqttCommand
 /// <summary>Light up a single module.</summary>
 public sealed record LightOnCmd : MqttCommand
 {
+    public string?          CommandItemId { get; init; }
+    public string?          PickingDetailId { get; init; }
     public required string  Address  { get; init; }
     public required int     Quantity { get; init; }
     public string           BlockNo  { get; init; } = "00";
-    public LightColor       Color    { get; init; } = LightColor.Green;
-    public LightState       LedMode  { get; init; } = LightState.On;
+    public LightColor?      Color    { get; init; }
+    public LightState?      LedMode  { get; init; }
     /// <summary>Buzzer mode. Null = mirrors LedMode (beeps when flashing).</summary>
     public LightState?      BuzMode  { get; init; }
     public string?          Label    { get; init; }
@@ -38,9 +42,10 @@ public sealed record LightOffCmd : MqttCommand
 /// <summary>Start a picking batch across multiple modules.</summary>
 public sealed record BatchStartCmd : MqttCommand
 {
+    public bool                       Relight { get; init; }
     public string                     BlockNo { get; init; } = "00";
-    public LightColor                 Color   { get; init; } = LightColor.Green;
-    public LightState                 LedMode { get; init; } = LightState.On;
+    public LightColor?                Color   { get; init; }
+    public LightState?                LedMode { get; init; }
     /// <summary>Buzzer mode. Null = mirrors LedMode (beeps when flashing).</summary>
     public LightState?                BuzMode { get; init; }
     public required List<BatchItemDto> Items  { get; init; }
@@ -48,11 +53,13 @@ public sealed record BatchStartCmd : MqttCommand
 
 public sealed record BatchItemDto
 {
+    public string?     CommandItemId { get; init; }
+    public string?     PickingDetailId { get; init; }
     /// <summary>
     /// 4-digit hardware address of the target module.
     /// If omitted, <see cref="Label"/> is used to resolve the address from the
-    /// client device database (<c>ClientDbPath</c>).  Items where neither field
-    /// resolves to a known address are silently skipped.
+    /// client device database (<c>ClientDbPath</c>). The entire command is rejected
+    /// if any item cannot be resolved.
     /// </summary>
     public string?     Address  { get; init; }
     public required int Quantity { get; init; }

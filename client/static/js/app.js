@@ -83,7 +83,7 @@ function initSubTabs() {
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
 function connectWs() {
-  const wsUrl = `ws://${location.host}/ws`;
+  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {

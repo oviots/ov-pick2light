@@ -56,6 +56,11 @@ async def start(binary_path: str, args: list[str], working_dir: str) -> None:
         return
 
     binary = Path(binary_path)
+    if binary.resolve().name.lower() not in ("p2l", "p2l.exe"):
+        raise ValueError("Only the P2L bridge executable can be started")
+    args = args or ["serve"]
+    if args != ["serve"]:
+        raise ValueError("The dashboard can only start the P2L serve command")
     if not binary.exists():
         raise RuntimeError(f"P2L binary not found: {binary_path}")
 
@@ -100,6 +105,7 @@ async def stop() -> None:
         await asyncio.wait_for(_proc.wait(), timeout=5)
     except asyncio.TimeoutError:
         _proc.kill()
+        await _proc.wait()
     _proc = None
     if _log_file:
         _log_file.close()

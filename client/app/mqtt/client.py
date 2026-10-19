@@ -13,7 +13,9 @@ import asyncio
 import json
 import logging
 import ssl
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
+from uuid import uuid4
 
 from ..protocol.enums import (
     CompletionStatus,
@@ -116,6 +118,7 @@ class MqttClient:
         self._task: Optional[asyncio.Task] = None
         # Set by _wake_reconnect(); cancels the backoff sleep when network is restored.
         self._backoff_wake: Optional[asyncio.Future] = None
+        self._pending: dict[str, asyncio.Future] = {}
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -143,6 +146,9 @@ class MqttClient:
                 pass
         self._is_connected = False
         self._connected_event.clear()
+        for result in list(self._pending.values()):
+            if not result.done():
+                result.set_exception(ConnectionError("MQTT client stopped before command result"))
 
     async def wait_connected(self, timeout: float = 15.0) -> None:
         """Wait until the MQTT broker is connected, or raise RuntimeError on timeout."""
@@ -158,16 +164,28 @@ class MqttClient:
         """Enqueue a command dict to be published on p2l/commands."""
         if not self._is_connected:
             raise ConnectionError("MQTT broker not connected")
+        command = {**command, "commandId": uuid4().hex,
+                   "expiresAt": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+        result = asyncio.get_running_loop().create_future()
+        self._pending[command["commandId"]] = result
         item = {
             "topic": self._cfg.command_topic,
             "payload": json.dumps(command, separators=(",", ":")),
             "qos": 1,
             "retain": False,
+            "result": result,
         }
         try:
             self._publish_queue.put_nowait(item)
+            await asyncio.wait_for(asyncio.shield(result), timeout=30)
         except asyncio.QueueFull:
             raise RuntimeError("MQTT publish queue full — broker too slow?")
+        except asyncio.TimeoutError:
+            raise TimeoutError("Bridge command result timed out; execution is uncertain") from None
+        finally:
+            self._pending.pop(command["commandId"], None)
+            if not result.done():
+                result.cancel()
 
     # ── Connection loop ────────────────────────────────────────────────────
 
@@ -265,6 +283,14 @@ class MqttClient:
                 payload = json.loads(message.payload.decode("utf-8", errors="replace"))
             except json.JSONDecodeError:
                 continue
+            if (str(message.topic) == self._cfg.event_topic
+                    and payload.get("type") == "command_result" and not message.retain):
+                result = self._pending.get(payload.get("commandId"))
+                if result and not result.done():
+                    if payload.get("status") == "applied":
+                        result.set_result(None)
+                    elif payload.get("status") in ("rejected", "uncertain"):
+                        result.set_exception(RuntimeError(payload.get("message") or "Bridge command failed"))
             if self._on_event:
                 try:
                     await self._on_event(str(message.topic), payload)
@@ -279,6 +305,8 @@ class MqttClient:
                 )
             except asyncio.TimeoutError:
                 continue
+            if item["result"].done():
+                continue
             try:
                 await client.publish(
                     item["topic"],
@@ -288,6 +316,8 @@ class MqttClient:
                 )
                 logger.debug("MQTT → %s : %s", item["topic"], item["payload"][:120])
             except Exception as exc:
+                if not item["result"].done():
+                    item["result"].set_exception(ConnectionError(f"Command delivery uncertain: {exc}"))
                 logger.error("MQTT publish error: %s", exc)
                 raise  # Bubble up so connect_loop re-connects
 

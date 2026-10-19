@@ -37,7 +37,10 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
 
     private readonly CancellationTokenSource _cts = new();
     private          Task?                   _connectLoop;
-    private          TaskCompletionSource    _disconnectedTcs = new();
+    private          TaskCompletionSource    _disconnectedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private CancellationTokenRegistration _startRegistration;
+    private int _started;
+    private int _disposed;
 
 
     // Network-restore wake-up: cancelled when NetworkAvailabilityChanged fires IsAvailable=true.
@@ -62,26 +65,32 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                            loggerFactory.CreateLogger<MqttEventPublisher>());
         _dispatcher  = new MqttCommandDispatcher(engine, _publisher, gate, csvRunner,
                            labelStore, scanService,
-                           loggerFactory.CreateLogger<MqttCommandDispatcher>());
+                           loggerFactory.CreateLogger<MqttCommandDispatcher>(),
+                           receipts: new CommandReceiptStore(settings.CommandReceiptPath));
         _options     = BuildOptions(settings);
 
         _client.ApplicationMessageReceivedAsync += OnMessageReceivedAsync;
         _client.ConnectedAsync    += OnConnectedAsync;
         _client.DisconnectedAsync += OnDisconnectedAsync;
 
-        _gateway.ConnectionChanged += connected =>
-        {
-            _publisher.EnqueueStatus(online: true, gatewayConnected: connected);
-        };
+        _gateway.ConnectionChanged += OnGatewayConnectionChanged;
 
         if (_csvRunner is not null)
-            _csvRunner.TaskEvent += e => _publisher.EnqueueTaskEvent(e);
+            _csvRunner.TaskEvent += OnTaskEvent;
     }
+
+    private void OnGatewayConnectionChanged(bool connected)
+        => _publisher.EnqueueStatus(online: true, gatewayConnected: connected);
+
+    private void OnTaskEvent(CsvTaskEvent evt) => _publisher.EnqueueTaskEvent(evt);
 
     // ─── Lifecycle ────────────────────────────────────────────────────────
 
     public Task StartAsync(CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
+        if (Interlocked.Exchange(ref _started, 1) != 0) return Task.CompletedTask;
+        _startRegistration = ct.Register(() => _cts.Cancel());
         _publisher.Start();
         _connectLoop = Task.Run(() => ConnectLoopAsync(_cts.Token), _cts.Token);
         _log.LogInformation("[MQTT] Bridge starting → {Host}:{Port} (TLS={Tls})",
@@ -91,6 +100,10 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _gateway.ConnectionChanged -= OnGatewayConnectionChanged;
+        if (_csvRunner is not null) _csvRunner.TaskEvent -= OnTaskEvent;
+        _startRegistration.Dispose();
         await _cts.CancelAsync();
         if (_connectLoop is not null)
             try { await _connectLoop; } catch (OperationCanceledException) { }
@@ -99,18 +112,22 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
         {
             try
             {
+                using var disconnectCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                 await _client.DisconnectAsync(
                     new MqttClientDisconnectOptionsBuilder()
                         .WithReason(MqttClientDisconnectOptionsReason.NormalDisconnection)
                         .Build(),
-                    CancellationToken.None);
+                    disconnectCts.Token);
             }
             catch { /* best-effort */ }
         }
 
-        await _publisher.DisposeAsync();
-        _client.Dispose();
-        _cts.Dispose();
+        try { await _publisher.DisposeAsync(); }
+        finally
+        {
+            _client.Dispose();
+            _cts.Dispose();
+        }
     }
 
     public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -128,7 +145,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
             {
                 try
                 {
-                    _disconnectedTcs = new TaskCompletionSource();
+                    _disconnectedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
                     // Per-attempt connect timeout (prevents hanging TCP connect when DNS resolves
                     // but the remote is unreachable). Linked to outer ct so service stop still works.
@@ -203,7 +220,11 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                 .WithTopic(_settings.CommandTopic)
                 .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce))
             .Build();
-        await _client.SubscribeAsync(sub, CancellationToken.None);
+        using var subscribeCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+        subscribeCts.CancelAfter(TimeSpan.FromSeconds(15));
+        var subscribed = await _client.SubscribeAsync(sub, subscribeCts.Token);
+        if (subscribed.Items.Any(i => (int)i.ResultCode >= 0x80))
+            throw new InvalidOperationException("MQTT broker rejected the command subscription.");
 
         // Publish online status
         _publisher.EnqueueStatus(online: true, gatewayConnected: _gateway.IsConnected);
@@ -218,29 +239,37 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
 
     private async Task OnMessageReceivedAsync(MqttApplicationMessageReceivedEventArgs args)
     {
+        args.AutoAcknowledge = false;
         var payload = args.ApplicationMessage.Payload.ToArray();
         // MQTT QoS acknowledgements should happen after command dispatch, not when
         // the payload is merely accepted into this process.
         await _dispatcher.HandleAsync(payload, _cts.Token);
+        await args.AcknowledgeAsync(_cts.Token);
     }
 
     // ─── Options builder ─────────────────────────────────────────────────
 
-    private static MqttClientOptions BuildOptions(MqttSettings s)
+    internal static MqttClientOptions BuildOptions(MqttSettings s)
     {
+        if (string.IsNullOrWhiteSpace(s.ClientId))
+            throw new ArgumentException("MQTT client ID must be stable and non-empty.");
+        if (s.SessionExpirySeconds is 0 or > 86400)
+            throw new ArgumentOutOfRangeException(nameof(s.SessionExpirySeconds), "MQTT session expiry must be 1..86400 seconds.");
         // Build LWT payload: broker publishes this automatically on ungraceful disconnect
         var lwtPayload = JsonSerializer.SerializeToUtf8Bytes(
             new BridgeStatusEvt { Type = "bridge_status", Online = false, GatewayConnected = false },
             P2LMqttJsonContext.Default.BridgeStatusEvt);
 
         var builder = new MqttClientOptionsBuilder()
+            .WithProtocolVersion(MQTTnet.Formatter.MqttProtocolVersion.V500)
+            .WithSessionExpiryInterval(s.SessionExpirySeconds)
             .WithClientId(s.ClientId)
             .WithTcpServer(s.Host, s.Port)
             .WithWillTopic(s.StatusTopic)
             .WithWillPayload(lwtPayload)
             .WithWillQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
             .WithWillRetain(true)
-            .WithCleanSession(false);   // resume subscriptions across reconnects
+            .WithCleanSession(false); // resume session within the bounded MQTT 5 expiry
 
         if (s.Username is not null)
             builder.WithCredentials(s.Username, s.Password);

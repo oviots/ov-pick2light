@@ -10,7 +10,7 @@ User=p2l
 Group=p2l
 WorkingDirectory=/opt/p2l/client
 ExecStart=/opt/p2l/client/venv/bin/python run.py
-Environment=P2L_CLIENT_HOST=0.0.0.0
+Environment=P2L_CLIENT_HOST=127.0.0.1
 Environment=P2L_CLIENT_PORT=8765
 
 KillSignal=SIGTERM

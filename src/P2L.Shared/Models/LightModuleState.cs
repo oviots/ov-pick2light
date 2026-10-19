@@ -46,6 +46,9 @@ public sealed class LightModuleState
     /// </summary>
     public string? CorrelationId { get; set; }
 
+    public string? CommandItemId { get; set; }
+    public string? PickingDetailId { get; set; }
+
     public override string ToString() =>
         $"[{Address}] {Status} | {Color}/{LedMode} | \"{DisplayData}\"";
 }

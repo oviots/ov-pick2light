@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using P2L.Core;
 using P2L.Core.Services;
@@ -20,6 +22,7 @@ internal sealed class MqttCommandDispatcher
     private readonly DeviceScanService   _scanService;
     private readonly ILogger             _log;
     private readonly SemaphoreSlim        _commandLock = new(1, 1);
+    private readonly CommandReceiptStore _receipts;
 
     public MqttCommandDispatcher(PickingEngine engine,
                                  MqttEventPublisher publisher,
@@ -27,7 +30,7 @@ internal sealed class MqttCommandDispatcher
                                  CsvPickTaskRunner? csvRunner,
                                  DeviceLabelStore labels,
                                  DeviceScanService scanService,
-                                 ILogger logger)
+                                 ILogger logger, CommandReceiptStore? receipts = null)
     {
         _engine      = engine;
         _publisher   = publisher;
@@ -36,28 +39,55 @@ internal sealed class MqttCommandDispatcher
         _labels      = labels;
         _scanService = scanService;
         _log         = logger;
+        _receipts = receipts ?? new CommandReceiptStore(Path.Combine(AppContext.BaseDirectory, "p2l_commands.db"));
     }
 
     public async Task HandleAsync(byte[] payload, CancellationToken ct)
     {
-        string type;
+        string type = "";
+        string? commandId = null;
+        string? correlationId = null;
+        string? receiptKey = null;
+        bool intentRecorded = false;
+        bool executionStarted = false;
+        bool lockTaken = false;
+        bool gateTaken = false;
+        CommandResultEvt? outcome = null;
         try
         {
             using var doc = JsonDocument.Parse(payload);
             type = doc.RootElement.GetProperty("type").GetString() ?? "";
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning("Malformed MQTT command payload: {Err}", ex.Message);
-            return;
-        }
+            commandId = doc.RootElement.TryGetProperty("commandId", out var id) ? id.GetString() : null;
+            correlationId = doc.RootElement.TryGetProperty("correlationId", out var correlation) ? correlation.GetString() : null;
+            if (commandId is not null && (string.IsNullOrWhiteSpace(commandId) || commandId.Length > 200))
+                throw new PickingCommandRejectedException("INVALID_COMMAND_ID", "Command ID must contain 1–200 characters.");
+            DateTimeOffset? expiresAt = null;
+            if (doc.RootElement.TryGetProperty("expiresAt", out var expiry) && expiry.ValueKind != JsonValueKind.Null)
+                expiresAt = expiry.GetDateTimeOffset();
+            if (commandId is not null && expiresAt is null)
+                throw new PickingCommandRejectedException("MISSING_EXPIRY", "An identified command requires expiresAt.");
+            if (expiresAt <= DateTimeOffset.UtcNow)
+                throw new PickingCommandRejectedException("COMMAND_EXPIRED", "Command has expired.");
 
-        var lockTaken = false;
-        _gate.Preempt();
-        try
-        {
+            _gate.Preempt();
+            gateTaken = true;
             await _commandLock.WaitAsync(ct);
             lockTaken = true;
+            ct.ThrowIfCancellationRequested();
+            // Commands can wait behind other hardware work; recheck immediately
+            // before recording intent and performing any operation.
+            if (expiresAt <= DateTimeOffset.UtcNow)
+                throw new PickingCommandRejectedException("COMMAND_EXPIRED", "Command expired while waiting for dispatch.");
+            var hash = Convert.ToHexString(SHA256.HashData(payload));
+            receiptKey = commandId is not null ? "command:" + commandId
+                : !string.IsNullOrWhiteSpace(correlationId) && (type is "batch_start" or "light_on")
+                    ? "legacy:" + hash : null;
+            if (receiptKey is not null)
+            {
+                outcome = _receipts.TryBegin(receiptKey, hash, commandId, correlationId);
+                if (outcome is not null) return;
+                intentRecorded = true;
+            }
 
             switch (type)
             {
@@ -66,8 +96,9 @@ internal sealed class MqttCommandDispatcher
                     var cmd = JsonSerializer.Deserialize(payload,
                         P2LMqttJsonContext.Default.LightOnCmd);
                     if (cmd is null) break;
-                    var buzMode = cmd.BuzMode ?? cmd.LedMode;
-                    await _engine.QuickLightAsync(cmd.Address, cmd.Quantity, cmd.Color, cmd.LedMode, buzMode, cmd.Label, cmd.BlockNo, cmd.CorrelationId, ct);
+                    var buzMode = cmd.BuzMode ?? cmd.LedMode ?? P2L.Shared.Enums.LightState.On;
+                    executionStarted = true;
+                    await _engine.QuickLightAsync(cmd.Address, cmd.Quantity, cmd.Color ?? P2L.Shared.Enums.LightColor.Green, cmd.LedMode ?? P2L.Shared.Enums.LightState.On, buzMode, cmd.Label, cmd.BlockNo, cmd.CorrelationId, ct, cmd.CommandItemId, cmd.PickingDetailId);
                     _log.LogInformation("[MQTT] light_on addr={A} qty={Q} block={B}", cmd.Address, cmd.Quantity, cmd.BlockNo);
                     break;
                 }
@@ -77,6 +108,7 @@ internal sealed class MqttCommandDispatcher
                     var cmd = JsonSerializer.Deserialize(payload,
                         P2LMqttJsonContext.Default.LightOffCmd);
                     if (cmd is null) break;
+                    executionStarted = true;
                     await _engine.ExtinguishAsync(cmd.Address, ct);
                     _log.LogInformation("[MQTT] light_off addr={A}", cmd.Address);
                     break;
@@ -87,7 +119,9 @@ internal sealed class MqttCommandDispatcher
                     var cmd = JsonSerializer.Deserialize(payload,
                         P2LMqttJsonContext.Default.BatchStartCmd);
                     if (cmd is null) break;
-                    var batchBuzMode = cmd.BuzMode ?? cmd.LedMode;
+                    if (cmd.Items is null) throw new PickingCommandRejectedException("INVALID_ITEMS", "Batch requires an item list.");
+                    var batchLedMode = cmd.LedMode ?? P2L.Shared.Enums.LightState.On;
+                    var batchBuzMode = cmd.BuzMode ?? batchLedMode;
                     var instructions = new List<PickingInstruction>(cmd.Items.Count);
                     foreach (var i in cmd.Items)
                     {
@@ -95,36 +129,36 @@ internal sealed class MqttCommandDispatcher
                         var addr = i.Address;
                         if (string.IsNullOrWhiteSpace(addr))
                         {
-                            if (string.IsNullOrWhiteSpace(i.Label)) continue;
+                            if (string.IsNullOrWhiteSpace(i.Label)) throw new PickingCommandRejectedException("INVALID_ADDRESS", "Each batch item needs an address or resolvable label.");
                             addr = _labels.GetAddress(i.Label);
                             if (addr is null)
                             {
-                                _log.LogWarning(
-                                    "[MQTT] batch_start: label '{L}' not found in device database — item skipped",
-                                    i.Label);
-                                continue;
+                                throw new PickingCommandRejectedException("UNKNOWN_LABEL", $"Label '{i.Label}' is not registered.");
                             }
                         }
-                        var itemLedMode = i.LedMode ?? cmd.LedMode;
+                        var itemLedMode = i.LedMode ?? batchLedMode;
                         var itemBuzMode = i.BuzMode ?? (i.LedMode.HasValue ? i.LedMode.Value : batchBuzMode);
                         instructions.Add(new PickingInstruction
                         {
                             Address  = addr,
                             Quantity = i.Quantity,
-                            Color    = i.Color ?? cmd.Color,
+                            Color    = i.Color ?? cmd.Color ?? P2L.Shared.Enums.LightColor.Green,
                             LedMode  = itemLedMode,
                             BuzMode  = itemBuzMode,
-                            BlockNo  = cmd.BlockNo,
+                            BlockNo  = cmd.BlockNo ?? "00",
                             Label    = i.Label,
                             CorrelationId = cmd.CorrelationId,
+                            CommandItemId = i.CommandItemId,
+                            PickingDetailId = i.PickingDetailId,
                         });
                     }
                     if (instructions.Count == 0)
                     {
-                        _log.LogWarning("[MQTT] batch_start: no valid items after address resolution — command ignored");
-                        break;
+                        throw new PickingCommandRejectedException("INVALID_ITEMS", "Batch contains no items.");
                     }
-                    await _engine.StartBatchAsync(instructions, ct);
+                    PickingEngine.ValidateInstructions(instructions);
+                    executionStarted = true;
+                    await _engine.StartBatchAsync(instructions, ct, cmd.Relight);
                     _log.LogInformation("[MQTT] batch_start count={C} block={B}", instructions.Count, cmd.BlockNo);
                     break;
                 }
@@ -134,12 +168,14 @@ internal sealed class MqttCommandDispatcher
                     var cmd = JsonSerializer.Deserialize(payload,
                         P2LMqttJsonContext.Default.BatchFinishCmd);
                     if (cmd is null) break;
+                    executionStarted = true;
                     await _engine.FinishBatchAsync(cmd.BlockNo, ct);
                     _log.LogInformation("[MQTT] batch_finish block={B}", cmd.BlockNo);
                     break;
                 }
 
                 case "terminate_all":
+                    executionStarted = true;
                     await _engine.FinishBatchAsync("00", ct);
                     _log.LogInformation("[MQTT] terminate_all");
                     break;
@@ -153,8 +189,9 @@ internal sealed class MqttCommandDispatcher
                 {
                     var cmd = JsonSerializer.Deserialize(payload,
                         P2LMqttJsonContext.Default.CsvRunCmd);
-                    if (cmd is null || _csvRunner is null) break;
+                    if (cmd is null || _csvRunner is null) throw new PickingCommandRejectedException("CSV_UNAVAILABLE", "CSV runner is not available.");
 
+                    executionStarted = true;
                     _csvRunner.Start(cmd.File, cmd.Color);
                     _log.LogInformation("[MQTT] csv_run file={F}", cmd.File);
                     break;
@@ -164,7 +201,7 @@ internal sealed class MqttCommandDispatcher
                 {
                     var cmd = JsonSerializer.Deserialize(payload,
                         P2LMqttJsonContext.Default.CsvControlCmd);
-                    if (cmd is null || _csvRunner is null) break;
+                    if (cmd is null || _csvRunner is null) throw new PickingCommandRejectedException("CSV_UNAVAILABLE", "CSV runner is not available.");
 
                     switch (cmd.Action.ToLowerInvariant())
                     {
@@ -182,29 +219,57 @@ internal sealed class MqttCommandDispatcher
                         P2LMqttJsonContext.Default.ScanDevicesCmd);
                     if (cmd is null) break;
 
+                    executionStarted = true;
                     await _scanService.ScanAsync(cmd.From, cmd.To, ct: ct);
                     _log.LogInformation("[MQTT] scan_devices from={F} to={T}", cmd.From, cmd.To);
                     break;
                 }
 
                 default:
-                    _log.LogWarning("[MQTT] Unknown command type: {T}", type);
-                    break;
+                    throw new PickingCommandRejectedException("UNKNOWN_COMMAND", $"Unknown command type: {type}");
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (PickingCommandRejectedException ex)
         {
-            _log.LogInformation("[MQTT] Command dispatch cancelled: {T}", type);
+            outcome = Result("rejected", ex.Code, ex.Message);
+            _log.LogWarning("[MQTT] Rejected {Type}: {Code} {Message}", type, ex.Code, ex.Message);
+        }
+        catch (Exception ex) when (!executionStarted && ex is JsonException or KeyNotFoundException or FormatException or InvalidOperationException)
+        {
+            outcome = Result("rejected", "INVALID_COMMAND", ex.Message);
+            _log.LogWarning("[MQTT] Invalid command {Type}: {Message}", type, ex.Message);
+        }
+        catch (Exception ex) when (executionStarted || ex is OperationCanceledException)
+        {
+            outcome = Result(executionStarted ? "uncertain" : "rejected", executionStarted ? "EXECUTION_UNCERTAIN" : "COMMAND_CANCELLED", ex.Message);
+            _log.LogError(ex, "[MQTT] Command {Type}: {Status}", type, outcome.Status);
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "[MQTT] Command dispatch failed: {T}", type);
+            outcome = Result("uncertain", "PERSISTENCE_FAILED", ex.Message);
+            throw;
         }
         finally
         {
-            if (lockTaken)
-                _commandLock.Release();
-            _gate.Release();
+            try
+            {
+                // Commit outcome before publishing it. Disk failure propagates;
+                // the executing receipt then prevents a blind retry after restart.
+                outcome ??= Result("applied", null, null);
+                if (intentRecorded && receiptKey is not null) _receipts.Complete(receiptKey, outcome);
+                _publisher.EnqueueCommandResult(outcome);
+            }
+            finally
+            {
+                if (lockTaken) _commandLock.Release();
+                if (gateTaken) _gate.Release();
+            }
         }
+
+        CommandResultEvt Result(string status, string? errorCode, string? message) => new()
+        {
+            Type = "command_result", CommandId = commandId, CorrelationId = correlationId,
+            Status = status, ErrorCode = errorCode, Message = message,
+        };
     }
 }

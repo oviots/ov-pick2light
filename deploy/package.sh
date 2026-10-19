@@ -180,14 +180,13 @@ stage_package() {
     cp "$CLIENT_BIN" "$STAGE/bin/$CLIENT_NAME"
     chmod +x "$STAGE/bin/$CLIENT_NAME"
 
-    # ── appsettings.json — use template (no credentials) ─────────────────────
+    # ── Bridge configuration — use template (no credentials) ────────────────
     local SETTINGS_SRC="$DEPLOY_DIR/appsettings.template.json"
-    [[ ! -f "$SETTINGS_SRC" ]] && SETTINGS_SRC="$ROOT/appsettings.json"
     if [[ -f "$SETTINGS_SRC" ]]; then
-        cp "$SETTINGS_SRC" "$STAGE/config/appsettings.json"
-        ok "Copied appsettings.json"
+        cp "$SETTINGS_SRC" "$STAGE/config/p2l_config.json"
+        ok "Copied config/p2l_config.json"
     else
-        warn "appsettings.json not found — using compiled-in defaults"
+        error "Missing bridge configuration template"
     fi
 
     # ── Deploy scripts ────────────────────────────────────────────────────────
@@ -227,6 +226,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PKG_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OS="$(uname -s)"
 INSTALL_DIR="/opt/p2l"
+if [[ "$OS" == "Darwin" ]]; then
+    INSTALL_DIR="$HOME/Library/Application Support/P2L"
+fi
 P2L_USER="p2l"
 
 # ── Helper: install systemd units ────────────────────────────────────────────
@@ -243,7 +245,7 @@ Type=simple
 User=${P2L_USER}
 Group=${P2L_USER}
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/p2l run ${INSTALL_DIR}/tasks.csv
+ExecStart=${INSTALL_DIR}/p2l serve
 Environment=LD_LIBRARY_PATH=${INSTALL_DIR}
 KillSignal=SIGTERM
 TimeoutStopSec=20s
@@ -273,7 +275,7 @@ User=${P2L_USER}
 Group=${P2L_USER}
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/p2l-client
-Environment=P2L_CLIENT_HOST=0.0.0.0
+Environment=P2L_CLIENT_HOST=127.0.0.1
 Environment=P2L_CLIENT_PORT=8765
 KillSignal=SIGTERM
 TimeoutStopSec=15s
@@ -296,7 +298,7 @@ UNIT
     ok "systemd units enabled"
 
     read -r -p "Start services now? [y/N] " START
-    if [[ "${START,,}" == "y" ]]; then
+    if [[ "$START" == [yY] ]]; then
         systemctl start p2l; sleep 1
         systemctl start p2l-client; sleep 1
         systemctl status p2l --no-pager
@@ -316,7 +318,7 @@ _install_launchd() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
     <key>Label</key>             <string>com.p2l.service</string>
-    <key>ProgramArguments</key>  <array><string>${INSTALL_DIR}/p2l</string><string>run</string><string>${INSTALL_DIR}/tasks.csv</string></array>
+    <key>ProgramArguments</key>  <array><string>${INSTALL_DIR}/p2l</string><string>serve</string></array>
     <key>WorkingDirectory</key>  <string>${INSTALL_DIR}</string>
     <key>EnvironmentVariables</key><dict><key>DYLD_LIBRARY_PATH</key><string>${INSTALL_DIR}</string></dict>
     <key>RunAtLoad</key>         <true/>
@@ -335,7 +337,7 @@ PLIST
     <key>ProgramArguments</key>  <array><string>${INSTALL_DIR}/p2l-client</string></array>
     <key>WorkingDirectory</key>  <string>${INSTALL_DIR}</string>
     <key>EnvironmentVariables</key><dict>
-        <key>P2L_CLIENT_HOST</key><string>0.0.0.0</string>
+        <key>P2L_CLIENT_HOST</key><string>127.0.0.1</string>
         <key>P2L_CLIENT_PORT</key><string>8765</string>
     </dict>
     <key>RunAtLoad</key>         <true/>
@@ -373,7 +375,7 @@ fi
 
 # ── Install binaries + SQLite native lib ─────────────────────────────────────
 info "Installing binaries ..."
-mkdir -p "$INSTALL_DIR/logs"
+mkdir -p "$INSTALL_DIR/config" "$INSTALL_DIR/logs"
 install -m 0755 "$PKG_ROOT/bin/p2l"        "$INSTALL_DIR/p2l"
 install -m 0755 "$PKG_ROOT/bin/p2l-client" "$INSTALL_DIR/p2l-client"
 
@@ -381,8 +383,8 @@ for sqlite_lib in "$PKG_ROOT/bin/"libe_sqlite3.* "$PKG_ROOT/bin/"e_sqlite3.*; do
     [[ -f "$sqlite_lib" ]] && install -m 0644 "$sqlite_lib" "$INSTALL_DIR/" && ok "Installed $(basename "$sqlite_lib")"
 done
 
-[[ -f "$PKG_ROOT/config/appsettings.json" ]] && \
-    install -m 0640 "$PKG_ROOT/config/appsettings.json" "$INSTALL_DIR/appsettings.json"
+[[ ! -f "$INSTALL_DIR/config/p2l_config.json" && -f "$PKG_ROOT/config/p2l_config.json" ]] && \
+    install -m 0640 "$PKG_ROOT/config/p2l_config.json" "$INSTALL_DIR/config/p2l_config.json"
 ok "Binaries installed"
 
 # ── Fix permissions (Linux) ───────────────────────────────────────────────────
@@ -396,14 +398,14 @@ if [[ "$OS" == "Linux" ]]; then
     _install_systemd
 elif [[ "$OS" == "Darwin" ]]; then
     INSTALL_DIR="$HOME/Library/Application Support/P2L"
-    mkdir -p "$INSTALL_DIR/logs"
+    mkdir -p "$INSTALL_DIR/config" "$INSTALL_DIR/logs"
     install -m 0755 "$PKG_ROOT/bin/p2l"        "$INSTALL_DIR/p2l"
     install -m 0755 "$PKG_ROOT/bin/p2l-client" "$INSTALL_DIR/p2l-client"
     for sqlite_lib in "$PKG_ROOT/bin/"libe_sqlite3.* "$PKG_ROOT/bin/"e_sqlite3.*; do
         [[ -f "$sqlite_lib" ]] && install -m 0644 "$sqlite_lib" "$INSTALL_DIR/"
     done
-    [[ -f "$PKG_ROOT/config/appsettings.json" ]] && \
-        install -m 0640 "$PKG_ROOT/config/appsettings.json" "$INSTALL_DIR/appsettings.json"
+    [[ ! -f "$INSTALL_DIR/config/p2l_config.json" && -f "$PKG_ROOT/config/p2l_config.json" ]] && \
+        install -m 0640 "$PKG_ROOT/config/p2l_config.json" "$INSTALL_DIR/config/p2l_config.json"
     _install_launchd
 fi
 
@@ -435,7 +437,7 @@ Pick2Light (P2L) — $PKG_NAME
 CONTENTS
   bin/p2l                 P2L .NET bridge service (Aioi gateway ↔ MQTT)
   bin/p2l-client          P2L web dashboard — standalone binary (no Python required)
-  config/appsettings.json P2L bridge configuration
+  config/p2l_config.json P2L bridge configuration
   deploy/                 Installation scripts & systemd units
 
 REQUIREMENTS
@@ -451,7 +453,7 @@ INSTALL — Windows
   .\\deploy\\install.ps1
 
 CONFIGURATION
-  Edit config/appsettings.json before installing, or set environment variables:
+  Edit config/p2l_config.json before installing, or set environment variables:
     P2L_GATEWAY__HOST=192.168.1.254
     P2L_GATEWAY__PORT=5003
     P2L_MQTT__HOST=your-broker
@@ -518,9 +520,10 @@ prepare_win_artifacts() {
         [[ -f "$OUT/$dll" ]] && ok "$dll found ✓" || warn "$dll NOT found — SQLite will fail at runtime"
     done
 
-    # Copy appsettings template for MSI packaging
+    # Match the path consumed by Program.cs and the MSI config component.
     local TMPL="$DEPLOY_DIR/appsettings.template.json"
-    [[ -f "$TMPL" ]] && cp "$TMPL" "$OUT/appsettings.json"
+    mkdir -p "$OUT/config"
+    [[ -f "$TMPL" ]] && cp "$TMPL" "$OUT/config/p2l_config.json"
 
     echo ""
     ok "Windows artifacts ready in: $OUT"

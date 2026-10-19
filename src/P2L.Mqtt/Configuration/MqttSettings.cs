@@ -9,6 +9,10 @@ public sealed class MqttSettings
     public string  ClientId     { get; init; } = "p2l-bridge";
     public string? Username     { get; init; }
     public string? Password     { get; init; }
+    /// <summary>MQTT 5 session retention after disconnect (1..86400 seconds).</summary>
+    public uint SessionExpirySeconds { get; init; } = 600;
+    /// <summary>Durable command receipts used to reject duplicate execution after restart.</summary>
+    public string CommandReceiptPath { get; init; } = "p2l_commands.db";
 
     /// <summary>Topic to subscribe for incoming light control commands (QoS 1).</summary>
     public string CommandTopic  { get; init; } = "p2l/commands";
@@ -21,9 +25,9 @@ public sealed class MqttSettings
 
     /// <summary>
     /// Path to the offline event buffer file (JSONL).
-    /// Events are appended here when the broker is unreachable and replayed on reconnect.
+    /// Business events are flushed here before MQTT delivery and replayed until PUBACK.
     /// Relative paths are resolved from the working directory.
-    /// Set to null or empty to disable file buffering (in-memory channel only).
+    /// Must be non-empty while MQTT is enabled; confirmations require durable storage.
     /// </summary>
     public string OfflineBufferPath { get; init; } = "mqtt_offline_buffer.jsonl";
 

@@ -26,6 +26,8 @@ public sealed class RegistryPersistenceService : IDisposable
 
     private Timer?       _debounceTimer;
     private readonly object _timerLock = new();
+    private readonly object _saveLock = new();
+    private bool _loaded;
 
     /// <summary>
     /// Creates the service.
@@ -56,6 +58,8 @@ public sealed class RegistryPersistenceService : IDisposable
     /// </summary>
     public void Load()
     {
+        if (_loaded) return;
+        _loaded = true;
         if (File.Exists(_filePath))
         {
             try
@@ -86,7 +90,9 @@ public sealed class RegistryPersistenceService : IDisposable
                             BuzMode  = e.BuzMode,
                             BlockNo  = e.BlockNo,
                             CorrelationId = e.CorrelationId,
-                        });
+                            CommandItemId = e.CommandItemId,
+                            PickingDetailId = e.PickingDetailId,
+                        }, e.LastInstructionAt);
                         loaded++;
                     }
 
@@ -107,7 +113,12 @@ public sealed class RegistryPersistenceService : IDisposable
 
     // ─── Save ─────────────────────────────────────────────────────────────
 
-    private void OnStateChanged(LightModuleState _) => ScheduleSave();
+    private void OnStateChanged(LightModuleState state)
+    {
+        if (!string.IsNullOrWhiteSpace(state.CorrelationId) || !string.IsNullOrWhiteSpace(state.CommandItemId))
+            Save(throwOnError: true); // Identity must be durable before hardware I/O/ACK.
+        else ScheduleSave();
+    }
 
     private void ScheduleSave()
     {
@@ -118,32 +129,46 @@ public sealed class RegistryPersistenceService : IDisposable
         }
     }
 
-    private void Save()
+    private void Save(bool throwOnError = false)
     {
-        try
+        lock (_saveLock)
         {
-            var entries = _registry.All
-                .Where(m => m.Status == ModuleStatus.Operating)
-                .Select(m => new PersistedModuleEntry
-                {
-                    Address            = m.Address,
-                    Quantity           = int.TryParse(m.DisplayData.Trim(), out int q) ? q : 0,
-                    Color              = m.Color,
-                    LedMode            = m.LedMode,
-                    SegMode            = m.SegMode,
-                    BuzMode            = m.BuzMode,
-                    BlockNo            = m.BlockNo,
-                    CorrelationId      = m.CorrelationId,
-                    LastInstructionAt  = m.LastInstructionAt ?? DateTime.UtcNow,
-                })
-                .ToList();
+            try
+            {
+                var entries = _registry.All
+                    .Where(m => m.Status == ModuleStatus.Operating)
+                    .Select(m => new PersistedModuleEntry
+                    {
+                        Address            = m.Address,
+                        Quantity           = int.TryParse(m.DisplayData.Trim(), out int q) ? q : 0,
+                        Color              = m.Color,
+                        LedMode            = m.LedMode,
+                        SegMode            = m.SegMode,
+                        BuzMode            = m.BuzMode,
+                        BlockNo            = m.BlockNo,
+                        CorrelationId      = m.CorrelationId,
+                        CommandItemId      = m.CommandItemId,
+                        PickingDetailId    = m.PickingDetailId,
+                        LastInstructionAt  = m.LastInstructionAt ?? DateTime.UtcNow,
+                    })
+                    .ToList();
 
-            var json = JsonSerializer.Serialize(entries, CoreJsonContext.Default.ListPersistedModuleEntry);
-            File.WriteAllText(_filePath, json);
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning("[State] Could not save state file: {Err}", ex.Message);
+                var json = JsonSerializer.Serialize(entries, CoreJsonContext.Default.ListPersistedModuleEntry);
+                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_filePath))!);
+                var temporaryPath = _filePath + ".tmp";
+                using (var stream = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+                    stream.Write(bytes);
+                    stream.Flush(flushToDisk: true);
+                }
+                File.Move(temporaryPath, _filePath, overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning("[State] Could not save state file: {Err}", ex.Message);
+                if (throwOnError) throw;
+            }
         }
     }
 
@@ -177,6 +202,8 @@ public sealed class PersistedModuleEntry
     public LightState BuzMode          { get; set; } = LightState.Off;
     public string     BlockNo          { get; set; } = "00";
     public string?    CorrelationId    { get; set; }
+    public string?    CommandItemId     { get; set; }
+    public string?    PickingDetailId   { get; set; }
     public DateTime  LastInstructionAt { get; set; }
 }
 

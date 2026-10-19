@@ -75,7 +75,7 @@
                      Key="SYSTEM\CurrentControlSet\Services\P2LClient">
           <RegistryValue Name="Environment"
                          Type="multiString"
-                         Value="P2L_CLIENT_HOST=0.0.0.0[~]P2L_CLIENT_PORT=8765" />
+                         Value="P2L_CLIENT_HOST=127.0.0.1[~]P2L_CLIENT_PORT=8765" />
         </RegistryKey>
 
         <ServiceControl Id="P2LClientServiceControl"

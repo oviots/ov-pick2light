@@ -24,7 +24,7 @@ if __name__ == "__main__":
     # ── Interactive / non-Windows / development mode ──────────────────────────
     import uvicorn
 
-    host = os.environ.get("P2L_CLIENT_HOST", "0.0.0.0" if getattr(sys, "frozen", False) else "127.0.0.1")
+    host = os.environ.get("P2L_CLIENT_HOST", "127.0.0.1")
     port = int(os.environ.get("P2L_CLIENT_PORT", "8765"))
 
     # loop="none" prevents uvicorn from calling WindowsProactorEventLoopPolicy on Windows,

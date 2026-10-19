@@ -574,6 +574,7 @@ async def get_config(request: Request):
     cfg = _config(request).to_dict()
     # Strip password from API response
     cfg["mqtt"].pop("password", None)
+    cfg["mqtt"].get("tls", {}).pop("cert_password", None)
     return cfg
 
 
@@ -621,6 +622,7 @@ async def update_config(request: Request, body: ConfigRequest):
     cfg.save()
     out = cfg.to_dict()
     out["mqtt"].pop("password", None)
+    out["mqtt"].get("tls", {}).pop("cert_password", None)
     return out
 
 

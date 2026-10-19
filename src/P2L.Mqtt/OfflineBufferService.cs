@@ -26,6 +26,7 @@ public sealed class OfflineBufferService : IAsyncDisposable
     private readonly LightModuleRegistry _registry;
     private readonly CsvPickTaskRunner?  _csvRunner;
     private readonly ILogger             _log;
+    private readonly DurableEventBuffer _outbox;
 
     public OfflineBufferService(
         MqttSettings settings,
@@ -39,11 +40,12 @@ public sealed class OfflineBufferService : IAsyncDisposable
         _registry  = registry;
         _csvRunner = csvRunner;
         _log       = log;
+        _outbox    = new DurableEventBuffer(settings.OfflineBufferPath);
     }
 
     // ─── Lifecycle ────────────────────────────────────────────────────────
 
-    private bool _started;
+    private int _started;
 
     /// <summary>
     /// Idempotent — safe to call multiple times (e.g. from TypeRegistrar.Build and
@@ -51,8 +53,7 @@ public sealed class OfflineBufferService : IAsyncDisposable
     /// </summary>
     public void Start()
     {
-        if (_started) return;
-        _started = true;
+        if (Interlocked.Exchange(ref _started, 1) != 0) return;
 
         _registry.StateChanged += OnStateChanged;
         _engine.ItemConfirmed  += OnItemConfirmed;
@@ -108,6 +109,10 @@ public sealed class OfflineBufferService : IAsyncDisposable
             Status          = evt.Status,
             AdjustedDisplay = evt.AdjustedDisplay,
             CorrelationId   = state?.CorrelationId,
+            CommandItemId   = state?.CommandItemId,
+            PickingDetailId = state?.PickingDetailId,
+            AdjustedQuantity = state?.AdjustedQuantity,
+            DisplayData     = state?.DisplayData,
         };
         Append(_settings.EventTopic, retain: false,
                JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.ConfirmedEvt));
@@ -142,16 +147,8 @@ public sealed class OfflineBufferService : IAsyncDisposable
 
     private void Append(string topic, bool retain, byte[] payload)
     {
-        try
-        {
-            var entry = new BufferedEntry(topic, retain, Convert.ToBase64String(payload));
-            var line  = JsonSerializer.Serialize(entry, P2LMqttJsonContext.Default.BufferedEntry);
-            File.AppendAllText(_settings.OfflineBufferPath, line + "\n");
-            _log.LogDebug("[OfflineBuffer] Buffered → {Topic}", topic);
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning("[OfflineBuffer] Failed to write buffer: {Err}", ex.Message);
-        }
+        // Persistence failures must reach the confirmation handler; logging and
+        // returning would let the hardware confirmation be accepted without a record.
+        _outbox.Append(topic, retain, payload);
     }
 }

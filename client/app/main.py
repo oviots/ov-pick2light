@@ -23,6 +23,7 @@ from ._paths import bundle_dir
 from .api.routes import router
 from .api.ws_manager import WebSocketManager
 from .config import AppConfig
+from .security import DashboardAccess
 from .core.registry import LightModuleRegistry
 from .mqtt.client import (
     MqttClient,
@@ -259,6 +260,7 @@ async def lifespan(app: FastAPI):
 # ─── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="P2L Web Dashboard", version="1.0.0", lifespan=lifespan)
+app.add_middleware(DashboardAccess)
 
 app.state.do_connect    = _do_connect
 app.state.do_disconnect = _do_disconnect

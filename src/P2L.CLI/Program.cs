@@ -15,10 +15,17 @@ using Spectre.Console.Cli;
 
 // ─── Configuration ────────────────────────────────────────────────────────
 
-// ProgramData\P2L — writable by NT SERVICE\* accounts; used for logs and DB.
-var appDataBase = Path.Combine(
-    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-    "P2L");
+// Windows services use ProgramData; Unix installers grant write access to the
+// installation directory rather than the system-wide application-data folder.
+var appDataBase = OperatingSystem.IsWindows()
+    ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "P2L")
+    : Path.Combine(AppContext.BaseDirectory, "data");
+try { Directory.CreateDirectory(appDataBase); }
+catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+{
+    Console.Error.WriteLine($"Cannot create P2L runtime data directory '{appDataBase}': {ex.Message}");
+    return 1;
+}
 
 var config = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
@@ -59,6 +66,8 @@ var appSettings = new AppSettings
         StatusTopic       = Cfg_String(config, "Mqtt:StatusTopic",       "p2l/status"),
         OfflineBufferPath = Cfg_String(config, "Mqtt:OfflineBufferPath", Path.Combine(appDataBase, "mqtt_offline_buffer.jsonl")),
         ClientDbPath      = config["Mqtt:ClientDbPath"] ?? Path.Combine(appDataBase, "p2l_devices.db"),
+        SessionExpirySeconds = (uint)Math.Clamp(Cfg_Int(config, "Mqtt:SessionExpirySeconds", 600), 1, 86400),
+        CommandReceiptPath = Cfg_String(config, "Mqtt:CommandReceiptPath", Path.Combine(appDataBase, "p2l_commands.db")),
         Tls = new MqttTlsSettings
         {
             Enabled             = Cfg_Bool  (config, "Mqtt:Tls:Enabled",             true),
@@ -156,8 +165,11 @@ services.AddSingleton<WatchdogService>(sp =>
 services.AddSingleton<DeviceScanService>();
 services.AddSingleton<PreemptionGate>();
 services.AddSingleton<CsvPickTaskRunner>();
-if (appSettings.EnableStatePersistence)
-    services.AddSingleton<RegistryPersistenceService>();
+if (appSettings.EnableStatePersistence || appSettings.Mqtt.Enabled)
+    services.AddSingleton(sp => new RegistryPersistenceService(
+        sp.GetRequiredService<LightModuleRegistry>(),
+        sp.GetRequiredService<ILogger<RegistryPersistenceService>>(),
+        Path.Combine(appDataBase, "p2l_state.json")));
 
 // MQTT bridge (optional — only registered when Enabled=true)
 if (appSettings.Mqtt.Enabled)

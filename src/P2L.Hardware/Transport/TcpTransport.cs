@@ -26,13 +26,16 @@ public sealed class TcpTransport : IAsyncDisposable
     private TcpClient?    _client;
     private NetworkStream? _stream;
     private int           _seqNo;
+    private long          _connectionGeneration;
+    private readonly object _connectionLock = new();
 
     // Protects direct stream writes (used by SendImmediateAsync) from racing with SendLoopAsync
     private readonly SemaphoreSlim _streamLock = new(1, 1);
 
     // Channel caps at 512 pending commands to prevent runaway memory use
-    private readonly Channel<AioiPacket> _sendQueue =
-        Channel.CreateBounded<AioiPacket>(new BoundedChannelOptions(512)
+    private sealed record QueuedPacket(AioiPacket Packet, CancellationToken CancellationToken);
+    private readonly Channel<QueuedPacket> _sendQueue =
+        Channel.CreateBounded<QueuedPacket>(new BoundedChannelOptions(512)
         {
             SingleReader = true,
             FullMode     = BoundedChannelFullMode.Wait,
@@ -51,7 +54,10 @@ public sealed class TcpTransport : IAsyncDisposable
     /// <summary>Fires when the connection state changes.</summary>
     public event Action<bool>? ConnectionStateChanged;
 
-    public bool IsConnected => _client?.Connected ?? false;
+    public bool IsConnected => _stream is not null && (_client?.Connected ?? false);
+
+    /// <summary>Reconnects only the link; never resets modules or replays sent commands.</summary>
+    public void ForceReconnect() => DropConnection();
 
     public TcpTransport(string host, int port, ILogger logger)
     {
@@ -84,7 +90,8 @@ public sealed class TcpTransport : IAsyncDisposable
     public async ValueTask EnqueueAsync(string command, int seq, CancellationToken ct = default)
     {
         var packet = new AioiPacket { SequenceNo = seq, Command = command };
-        await _sendQueue.Writer.WriteAsync(packet, ct);
+        _ = packet.ToBytes(); // Reject invalid frames before they enter the background loop.
+        await _sendQueue.Writer.WriteAsync(new QueuedPacket(packet, ct), ct);
     }
 
     /// <summary>
@@ -105,18 +112,19 @@ public sealed class TcpTransport : IAsyncDisposable
     /// </summary>
     public async ValueTask SendImmediateAsync(string command, int seq, CancellationToken ct = default)
     {
-        if (_stream is null) return;
         var bytes = new AioiPacket { SequenceNo = seq, Command = command }.ToBytes();
         await _streamLock.WaitAsync(ct);
+        var stream = _stream;
         try
         {
-            await _stream.WriteAsync(bytes, ct);
+            if (stream is null) return;
+            await stream.WriteAsync(bytes, ct);
             _log.LogDebug("[TX-IMM] SeqNo={Seq} Cmd={Cmd}", seq, command);
         }
         catch (Exception ex)
         {
             _log.LogWarning(ex, "Immediate send failed");
-            DropConnection();
+            DropConnection(stream);
         }
         finally
         {
@@ -128,26 +136,43 @@ public sealed class TcpTransport : IAsyncDisposable
 
     private async Task SendLoopAsync(CancellationToken ct)
     {
-        await foreach (var packet in _sendQueue.Reader.ReadAllAsync(ct))
+        try
         {
-            await EnsureConnectedAsync(ct);
-            await _streamLock.WaitAsync(ct);
-            try
+            await foreach (var queued in _sendQueue.Reader.ReadAllAsync(ct))
             {
-                var bytes = packet.ToBytes();
-                await _stream!.WriteAsync(bytes, ct);
-                _log.LogDebug("[TX] SeqNo={Seq} Cmd={Cmd}", packet.SequenceNo, packet.Command);
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex, "Send failed; will reconnect");
-                DropConnection();
-            }
-            finally
-            {
-                _streamLock.Release();
+                if (queued.CancellationToken.IsCancellationRequested) continue;
+                using var commandCts = CancellationTokenSource.CreateLinkedTokenSource(ct, queued.CancellationToken);
+                bool lockTaken = false;
+                NetworkStream? stream = null;
+                try
+                {
+                    await EnsureConnectedAsync(commandCts.Token);
+                    await _streamLock.WaitAsync(commandCts.Token);
+                    lockTaken = true;
+                    commandCts.Token.ThrowIfCancellationRequested();
+                    stream = _stream;
+                    if (stream is null) throw new IOException("Gateway disconnected before command write.");
+                    await stream.WriteAsync(queued.Packet.ToBytes(), commandCts.Token);
+                    _log.LogDebug("[TX] SeqNo={Seq} Cmd={Cmd}", queued.Packet.SequenceNo, queued.Packet.Command);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+                catch (OperationCanceledException) when (queued.CancellationToken.IsCancellationRequested)
+                {
+                    // If a write was already attempted its outcome is uncertain; never replay it.
+                    if (stream is not null) DropConnection(stream);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "Send failed; will reconnect");
+                    if (stream is not null) DropConnection(stream);
+                }
+                finally
+                {
+                    if (lockTaken) _streamLock.Release();
+                }
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
     }
 
     // ─── Receive loop ──────────────────────────────────────────────────────
@@ -156,19 +181,31 @@ public sealed class TcpTransport : IAsyncDisposable
     {
         var buffer  = new byte[4096];
         var pending = new List<byte>();
+        long generation = -1;
 
         while (!ct.IsCancellationRequested)
         {
+            NetworkStream? stream = null;
             try
             {
                 await EnsureConnectedAsync(ct);
-                int read = await _stream!.ReadAsync(buffer, ct);
+                stream = _stream;
+                if (stream is null) continue;
+                var currentGeneration = Volatile.Read(ref _connectionGeneration);
+                if (generation != currentGeneration)
+                {
+                    pending.Clear();
+                    generation = currentGeneration;
+                }
+                int read = await stream.ReadAsync(buffer, ct);
                 if (read == 0)
                 {
                     // Graceful disconnect
-                    DropConnection();
+                    DropConnection(stream);
+                    pending.Clear();
                     continue;
                 }
+                if (!ReferenceEquals(stream, _stream)) { pending.Clear(); continue; }
 
                 pending.AddRange(buffer[..read]);
 
@@ -178,19 +215,21 @@ public sealed class TcpTransport : IAsyncDisposable
                     var span     = System.Runtime.InteropServices.MemoryMarshal.AsBytes(
                         System.Runtime.InteropServices.CollectionsMarshal.AsSpan(pending));
                     var pkt = AioiPacket.TryParse(span, out int consumed);
+                    if (consumed > 0) pending.RemoveRange(0, consumed);
                     if (pkt is null) break;
 
                     _log.LogDebug("[RX] SeqNo={Seq} Cmd={Cmd}", pkt.SequenceNo, pkt.Command);
                     PacketReceived?.Invoke(pkt);
-                    pending.RemoveRange(0, consumed);
                 }
+                if (pending.Count > AioiConstants.MaxCommandLength + 9)
+                    throw new InvalidDataException("Gateway receive buffer exceeded the maximum frame length.");
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
                 // Log message only — full stack trace is noise for routine TCP drops
                 _log.LogWarning("Receive error; will reconnect: {Err}", ex.Message);
-                DropConnection();
+                if (stream is not null) DropConnection(stream);
                 pending.Clear();
             }
         }
@@ -211,11 +250,16 @@ public sealed class TcpTransport : IAsyncDisposable
             {
                 try
                 {
-                    _client?.Dispose();
-                    _client = new TcpClient();
-                    _client.NoDelay = true;  // Disable Nagle for low-latency command delivery
-                    await _client.ConnectAsync(_host, _port, ct);
-                    _stream = _client.GetStream();
+                    var client = new TcpClient { NoDelay = true };
+                    try { await client.ConnectAsync(_host, _port, ct); }
+                    catch { client.Dispose(); throw; }
+                    lock (_connectionLock)
+                    {
+                        if (ct.IsCancellationRequested) { client.Dispose(); ct.ThrowIfCancellationRequested(); }
+                        _client = client;
+                        _stream = client.GetStream();
+                        Interlocked.Increment(ref _connectionGeneration);
+                    }
                     _log.LogInformation("Connected to gateway {Host}:{Port}", _host, _port);
                     _reconnectAttempts = 0;
                     ConnectionStateChanged?.Invoke(true);
@@ -247,14 +291,24 @@ public sealed class TcpTransport : IAsyncDisposable
         }
     }
 
-    private void DropConnection()
+    private void DropConnection(NetworkStream? expectedStream = null)
     {
-        _stream?.Dispose();
-        _client?.Dispose();
-        _stream = null;
-        _client = null;
-        _reconnectAttempts = 0;
-        ConnectionStateChanged?.Invoke(false);
+        NetworkStream? stream;
+        TcpClient? client;
+        lock (_connectionLock)
+        {
+            // An error from an old stream must not tear down a newer connection.
+            if (expectedStream is not null && !ReferenceEquals(expectedStream, _stream)) return;
+            stream = _stream;
+            client = _client;
+            _stream = null;
+            _client = null;
+            Interlocked.Increment(ref _connectionGeneration);
+            _reconnectAttempts = 0;
+        }
+        stream?.Dispose();
+        client?.Dispose();
+        if (stream is not null || client is not null) ConnectionStateChanged?.Invoke(false);
     }
 
     // ─── Sequence number ──────────────────────────────────────────────────

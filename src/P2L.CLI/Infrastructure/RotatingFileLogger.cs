@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using System.Text;
 
 namespace P2L.CLI.Infrastructure;
 
@@ -42,12 +43,14 @@ public sealed class RotatingFileLoggerProvider : ILoggerProvider
     private StreamWriter? _writer;
     private string        _currentPath = "";
     private long          _currentSize;
+    private string        _hour = "";
+    private int           _segment;
     private readonly object _lock = new();
 
     public RotatingFileLoggerProvider(string directory, long maxBytes, LogLevel minLevel = LogLevel.Debug)
     {
         _directory = directory;
-        _maxBytes  = maxBytes;
+        _maxBytes  = Math.Max(1, maxBytes);
         MinLevel   = minLevel;
         // Best-effort: log directory may be created later (e.g. first write).
         // Do NOT throw here — a failure would crash the process before SCM handshake.
@@ -64,7 +67,7 @@ public sealed class RotatingFileLoggerProvider : ILoggerProvider
             EnsureWriter();
             _writer!.WriteLine(line);
             _writer.Flush();
-            _currentSize += line.Length + Environment.NewLine.Length;
+            _currentSize += Encoding.UTF8.GetByteCount(line + Environment.NewLine);
 
             if (_currentSize >= _maxBytes)
             {
@@ -76,8 +79,16 @@ public sealed class RotatingFileLoggerProvider : ILoggerProvider
 
     private void EnsureWriter()
     {
-        var path = Path.Combine(_directory,
-            $"p2l_{DateTime.Now:yyyyMMdd_HH}.log");
+        var hour = DateTime.Now.ToString("yyyyMMdd_HH");
+        if (_hour != hour) { _hour = hour; _segment = 0; }
+        string path;
+        do
+        {
+            var suffix = _segment == 0 ? "" : $"_{_segment}";
+            path = Path.Combine(_directory, $"p2l_{hour}{suffix}.log");
+            if (!File.Exists(path) || new FileInfo(path).Length < _maxBytes) break;
+            _segment++;
+        } while (true);
 
         if (_writer is not null && path == _currentPath) return;
 
