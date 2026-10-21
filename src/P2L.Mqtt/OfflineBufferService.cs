@@ -26,6 +26,7 @@ public sealed class OfflineBufferService : IAsyncDisposable
     private readonly LightModuleRegistry _registry;
     private readonly CsvPickTaskRunner?  _csvRunner;
     private readonly ILogger             _log;
+    private readonly DurableEventBuffer _outbox;
 
     public OfflineBufferService(
         MqttSettings settings,
@@ -39,11 +40,13 @@ public sealed class OfflineBufferService : IAsyncDisposable
         _registry  = registry;
         _csvRunner = csvRunner;
         _log       = log;
+        _outbox    = new DurableEventBuffer(settings.OfflineBufferPath);
+        _engine.RequireDurableConfirmationConsumer();
     }
 
     // ─── Lifecycle ────────────────────────────────────────────────────────
 
-    private bool _started;
+    private int _started;
 
     /// <summary>
     /// Idempotent — safe to call multiple times (e.g. from TypeRegistrar.Build and
@@ -51,14 +54,26 @@ public sealed class OfflineBufferService : IAsyncDisposable
     /// </summary>
     public void Start()
     {
-        if (_started) return;
-        _started = true;
+        if (Interlocked.Exchange(ref _started, 1) != 0) return;
 
         _registry.StateChanged += OnStateChanged;
-        _engine.ItemConfirmed  += OnItemConfirmed;
-        _engine.BatchCompleted += OnBatchCompleted;
+        _engine.DurableConfirmation  += OnItemConfirmed;
+        _engine.DurableConfirmationMissing += OnConfirmationMissing;
+        _engine.DurableBatchCompleted += OnBatchCompleted;
         if (_csvRunner is not null)
             _csvRunner.TaskEvent += OnTaskEvent;
+
+        try { _engine.ReplayPendingConfirmations(); }
+        catch
+        {
+            _registry.StateChanged -= OnStateChanged;
+            _engine.DurableConfirmation -= OnItemConfirmed;
+            _engine.DurableConfirmationMissing -= OnConfirmationMissing;
+            _engine.DurableBatchCompleted -= OnBatchCompleted;
+            if (_csvRunner is not null) _csvRunner.TaskEvent -= OnTaskEvent;
+            Volatile.Write(ref _started, 0);
+            throw;
+        }
 
         _log.LogInformation("[OfflineBuffer] Active — writing events to {Path}",
             _settings.OfflineBufferPath);
@@ -67,8 +82,9 @@ public sealed class OfflineBufferService : IAsyncDisposable
     public ValueTask DisposeAsync()
     {
         _registry.StateChanged -= OnStateChanged;
-        _engine.ItemConfirmed  -= OnItemConfirmed;
-        _engine.BatchCompleted -= OnBatchCompleted;
+        _engine.DurableConfirmation  -= OnItemConfirmed;
+        _engine.DurableConfirmationMissing -= OnConfirmationMissing;
+        _engine.DurableBatchCompleted -= OnBatchCompleted;
         if (_csvRunner is not null)
             _csvRunner.TaskEvent -= OnTaskEvent;
 
@@ -84,6 +100,11 @@ public sealed class OfflineBufferService : IAsyncDisposable
             Type              = "light_changed",
             Address           = state.Address,
             CorrelationId     = state.CorrelationId,
+            CommandItemId     = state.CommandItemId,
+            PickingDetailId   = state.PickingDetailId,
+            ObservedStatus    = state.ObservedStatus,
+            ConfirmationMissingAt = state.ConfirmationMissingAt,
+            ConfirmationMissingEventId = state.ConfirmationMissingEventId,
             ModuleStatus      = state.Status,
             Color             = state.Color,
             LedMode           = state.LedMode,
@@ -104,21 +125,35 @@ public sealed class OfflineBufferService : IAsyncDisposable
         var e = new ConfirmedEvt
         {
             Type            = "confirmed",
+            EventId         = evt.EventId,
+            Source          = evt.Source,
+            Timestamp       = evt.ReceivedAt,
             Address         = evt.Address,
             Status          = evt.Status,
             AdjustedDisplay = evt.AdjustedDisplay,
             CorrelationId   = state?.CorrelationId,
+            CommandItemId   = state?.CommandItemId,
+            PickingDetailId = state?.PickingDetailId,
+            AdjustedQuantity = state?.AdjustedQuantity,
+            DisplayData     = state?.DisplayData,
         };
         Append(_settings.EventTopic, retain: false,
                JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.ConfirmedEvt));
     }
 
-    private void OnBatchCompleted(string? correlationId)
+    private void OnConfirmationMissing(ConfirmationMissingEvent evt)
+        => Append(_settings.EventTopic, retain: false,
+            JsonSerializer.SerializeToUtf8Bytes(MqttEventPublisher.MissingToEvt(evt),
+                P2LMqttJsonContext.Default.ConfirmationMissingEvt));
+
+    private void OnBatchCompleted(BatchCompletionEvent completion)
     {
         var e = new BatchCompletedEvt
         {
             Type = "batch_completed",
-            CorrelationId = correlationId,
+            CorrelationId = completion.CorrelationId,
+            EventId = completion.EventId,
+            Timestamp = completion.CompletedAt,
         };
         Append(_settings.EventTopic, retain: false,
                JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.BatchCompletedEvt));
@@ -142,16 +177,8 @@ public sealed class OfflineBufferService : IAsyncDisposable
 
     private void Append(string topic, bool retain, byte[] payload)
     {
-        try
-        {
-            var entry = new BufferedEntry(topic, retain, Convert.ToBase64String(payload));
-            var line  = JsonSerializer.Serialize(entry, P2LMqttJsonContext.Default.BufferedEntry);
-            File.AppendAllText(_settings.OfflineBufferPath, line + "\n");
-            _log.LogDebug("[OfflineBuffer] Buffered → {Topic}", topic);
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning("[OfflineBuffer] Failed to write buffer: {Err}", ex.Message);
-        }
+        // Persistence failures must reach the confirmation handler; logging and
+        // returning would let the hardware confirmation be accepted without a record.
+        _outbox.Append(topic, retain, payload);
     }
 }

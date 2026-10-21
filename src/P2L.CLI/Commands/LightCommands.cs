@@ -156,8 +156,11 @@ public sealed class TerminateAllCommand : AsyncCommand<TerminateAllCommand.Setti
 
         try
         {
-            await _engine.FinishBatchAsync(s.BlockNo, cts.Token);
+            if (s.BlockNo == "00") await _engine.EmergencyStopAsync(cts.Token);
+            else await _engine.FinishBatchAsync(s.BlockNo, cts.Token);
             AnsiConsole.MarkupLine("[green]All lights terminated.[/]");
+            if (_engine.HasActiveWork)
+                AnsiConsole.MarkupLine("[yellow]Unresolved confirmations remain assigned to their original items.[/]");
             return 0;
         }
         catch (TimeoutException ex)

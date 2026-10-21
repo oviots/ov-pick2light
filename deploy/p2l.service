@@ -10,8 +10,8 @@ User=p2l
 Group=p2l
 WorkingDirectory=/opt/p2l
 
-# Replace <csv-file> with your picking task list, e.g. /opt/p2l/tasks.csv
-ExecStart=/opt/p2l/p2l run /opt/p2l/tasks.csv
+# Run the MQTT bridge continuously; CSV commands are one-shot.
+ExecStart=/opt/p2l/p2l serve
 
 # systemd sends SIGTERM on stop → P2L's PosixSignalRegistration drains TCP queue.
 KillSignal=SIGTERM

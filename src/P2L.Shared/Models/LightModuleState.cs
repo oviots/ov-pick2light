@@ -14,6 +14,13 @@ public sealed class LightModuleState
     /// <summary>Current operational status reported by the controller.</summary>
     public ModuleStatus Status { get; set; } = ModuleStatus.Standby;
 
+    /// <summary>Last maintenance inquiry result, separate from business confirmation eligibility.</summary>
+    public ModuleStatus? ObservedStatus { get; set; }
+
+    /// <summary>Active instruction observed without a corresponding hardware confirmation.</summary>
+    public DateTime? ConfirmationMissingAt { get; set; }
+    public string? ConfirmationMissingEventId { get; set; }
+
     /// <summary>Active display value (up to 5 chars, right-aligned).</summary>
     public string DisplayData { get; set; } = "     ";
 
@@ -28,6 +35,9 @@ public sealed class LightModuleState
 
     /// <summary>Active buzzer mode.</summary>
     public LightState BuzMode { get; set; } = LightState.Off;
+
+    public LightState? AfterConfirm { get; set; }
+    public LightState? BuzAfterConfirm { get; set; }
 
     /// <summary>UTC time of last instruction sent to this module.</summary>
     public DateTime? LastInstructionAt { get; set; }
@@ -45,6 +55,9 @@ public sealed class LightModuleState
     /// Caller-supplied trace ID for the currently active pick/batch session.
     /// </summary>
     public string? CorrelationId { get; set; }
+
+    public string? CommandItemId { get; set; }
+    public string? PickingDetailId { get; set; }
 
     public override string ToString() =>
         $"[{Address}] {Status} | {Color}/{LedMode} | \"{DisplayData}\"";

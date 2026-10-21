@@ -40,7 +40,7 @@ fi
 
 # ── 2. Install binaries ───────────────────────────────────────────────────────
 info "Installing binaries ..."
-mkdir -p "$INSTALL_DIR/logs"
+mkdir -p "$INSTALL_DIR/config" "$INSTALL_DIR/logs"
 install -m 0755 "$PKG_ROOT/bin/p2l"        "$INSTALL_DIR/p2l"
 install -m 0755 "$PKG_ROOT/bin/p2l-client" "$INSTALL_DIR/p2l-client"
 ok "Installed p2l and p2l-client"
@@ -56,13 +56,13 @@ for lib in "$PKG_ROOT/bin/"libe_sqlite3.* "$PKG_ROOT/bin/"e_sqlite3.*; do
 done
 $SQLITE_INSTALLED || warn "SQLite native lib not found — p2l may fail at runtime"
 
-# appsettings.json — skip if already customised
-if [[ -f "$PKG_ROOT/config/appsettings.json" ]]; then
-    if [[ -f "$INSTALL_DIR/appsettings.json" ]]; then
-        warn "appsettings.json exists — keeping existing config"
+# Preserve the bridge configuration on upgrade
+if [[ -f "$PKG_ROOT/config/p2l_config.json" ]]; then
+    if [[ -f "$INSTALL_DIR/config/p2l_config.json" ]]; then
+        warn "config/p2l_config.json exists — keeping existing config"
     else
-        install -m 0640 "$PKG_ROOT/config/appsettings.json" "$INSTALL_DIR/appsettings.json"
-        ok "Installed appsettings.json  <- edit before starting the service"
+        install -m 0640 "$PKG_ROOT/config/p2l_config.json" "$INSTALL_DIR/config/p2l_config.json"
+        ok "Installed config/p2l_config.json  <- edit before starting the service"
     fi
 fi
 
@@ -86,7 +86,7 @@ Type=simple
 User=${P2L_USER}
 Group=${P2L_USER}
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/p2l run ${INSTALL_DIR}/tasks.csv
+ExecStart=${INSTALL_DIR}/p2l serve
 Environment=LD_LIBRARY_PATH=${INSTALL_DIR}
 KillSignal=SIGTERM
 TimeoutStopSec=20s
@@ -116,7 +116,7 @@ User=${P2L_USER}
 Group=${P2L_USER}
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/p2l-client
-Environment=P2L_CLIENT_HOST=0.0.0.0
+Environment=P2L_CLIENT_HOST=127.0.0.1
 Environment=P2L_CLIENT_PORT=8765
 KillSignal=SIGTERM
 TimeoutStopSec=15s
@@ -141,7 +141,7 @@ ok "systemd units enabled"
 # ── 5. Optionally start now ───────────────────────────────────────────────────
 echo ""
 read -r -p "Start both services now? [y/N] " START_NOW
-if [[ "${START_NOW,,}" == "y" ]]; then
+if [[ "$START_NOW" == [yY] ]]; then
     systemctl start p2l; sleep 1
     systemctl start p2l-client; sleep 1
     systemctl status p2l --no-pager
@@ -155,6 +155,6 @@ fi
 echo ""
 ok "=== Installation complete ==="
 echo "  Dashboard     : http://localhost:8765"
-echo "  Config        : $INSTALL_DIR/appsettings.json"
+echo "  Config        : $INSTALL_DIR/config/p2l_config.json"
 echo "  Logs (bridge) : journalctl -u p2l -f"
 echo "  Logs (client) : journalctl -u p2l-client -f"

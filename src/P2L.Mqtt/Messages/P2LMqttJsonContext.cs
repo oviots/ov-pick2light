@@ -9,6 +9,8 @@ namespace P2L.Mqtt.Messages;
 /// </summary>
 [JsonSerializable(typeof(LightOnCmd))]
 [JsonSerializable(typeof(LightOffCmd))]
+[JsonSerializable(typeof(ResolveConfirmationCmd))]
+[JsonSerializable(typeof(ReleaseSessionCmd))]
 [JsonSerializable(typeof(BatchStartCmd))]
 [JsonSerializable(typeof(BatchItemDto))]
 [JsonSerializable(typeof(List<BatchItemDto>))]
@@ -21,6 +23,8 @@ namespace P2L.Mqtt.Messages;
 [JsonSerializable(typeof(CsvControlCmd))]
 [JsonSerializable(typeof(BufferedEntry))]
 [JsonSerializable(typeof(ConfirmedEvt))]
+[JsonSerializable(typeof(ConfirmationMissingEvt))]
+[JsonSerializable(typeof(CommandResultEvt))]
 [JsonSerializable(typeof(LightChangedEvt))]
 [JsonSerializable(typeof(BatchCompletedEvt))]
 [JsonSerializable(typeof(BridgeStatusEvt))]

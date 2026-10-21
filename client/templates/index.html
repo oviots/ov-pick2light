@@ -1314,6 +1314,25 @@
       </div>
     </div>
 
+    <div id="recovery-modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-title" id="recovery-title">Missing confirmation</div>
+        <p id="recovery-context" class="text-muted"></p>
+        <p>The light being off does not prove that picking was recorded. Enter what was actually picked, retry the instruction, or end your manual test.</p>
+        <div class="form-group">
+          <label class="form-label" for="recovery-qty">Actual quantity picked</label>
+          <input id="recovery-qty" class="form-input" type="number" min="0" max="99999" step="1" autocomplete="off" />
+        </div>
+        <p id="recovery-message" role="status"></p>
+        <div class="modal-footer flex-wrap">
+          <button id="btn-recovery-close" class="btn btn-ghost">Close</button>
+          <button id="btn-recovery-cancel-test" class="btn btn-danger" hidden>End test without picking</button>
+          <button id="btn-recovery-retry" class="btn btn-warning">Retry instruction</button>
+          <button id="btn-recovery-confirm" class="btn btn-success">Record actual picked quantity</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Toast container ─────────────────────────────────────────────────────── -->
     <div id="toast-container" class="toast-container"></div>
 

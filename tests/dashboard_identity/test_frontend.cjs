@@ -1,0 +1,18 @@
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path'),crypto=require('node:crypto');
+const source=fs.readFileSync(path.join(__dirname,'../../client/static/js/app.js'),'utf8');
+function ui(){const box=vm.createContext({document:{addEventListener(){},getElementById(){return{value:'00',checked:true};}},crypto,Uint8Array,console,setTimeout,clearTimeout,setInterval,clearInterval,Set,Map});vm.runInContext(source,box);vm.runInContext('pushEvent=()=>{};toast=()=>{};updateBatchStatus=()=>{};renderBatchBuilder=()=>{};addEvent=()=>{};renderDevices=()=>{};',box);return box;}
+test('old item/session confirmation and unrelated completion cannot consume current pending',()=>{
+ const box=ui();vm.runInContext("state.batchActive=true;state.batchCorrelation='new';state.batchIdentity=new Map([['0001','new-item']]);state.batchPending=new Set(['0001']);handleWsMessage({type:'confirmation',data:{address:'0001',correlation_id:'old',command_item_id:'old-item'}});handleWsMessage({type:'batch_completed',data:{correlation_id:'old'}})",box);assert.equal(vm.runInContext('state.batchPending.size',box),1);assert.equal(vm.runInContext('state.batchActive',box),true);
+ vm.runInContext("handleWsMessage({type:'confirmation',data:{address:'0001',correlation_id:'new',command_item_id:'new-item'}})",box);assert.equal(vm.runInContext('state.batchPending.size',box),0);
+});
+test('completion before HTTP applied response remains complete and IDs are sent',async()=>{
+ const box=ui();vm.runInContext("state.batchItems=[{address:'0001',quantity:1}];api=(m,p,body)=>{globalThis.sent=body;return new Promise(resolve=>globalThis.release=resolve)};globalThis.running=startBatch();handleWsMessage({type:'batch_completed',data:{correlation_id:state.batchCorrelation}})",box);assert.ok(box.sent.command_id);assert.ok(box.sent.items[0].command_item_id);box.release({count:1});await box.running;assert.equal(vm.runInContext('state.batchActive',box),false);assert.equal(vm.runInContext('state.batchPending.size',box),0);
+});
+test('poll cannot clear unseen items or other session; exact confirmed item can',()=>{
+ const box=ui();vm.runInContext("state.batchActive=true;state.batchCorrelation='s';state.batchIdentity=new Map([['0001','a'],['0002','b']]);state.batchPending=new Set(['0001','0002']);applyBatchStatus({correlation_id:'s',known:true,active:false,pending:[],confirmed:[{address:'0001',command_item_id:'a'}]})",box);assert.equal(vm.runInContext('state.batchPending.size',box),1);assert.equal(vm.runInContext('state.batchActive',box),true);
+ vm.runInContext("applyBatchStatus({correlation_id:'other',known:true,confirmed:[{address:'0002',command_item_id:'b'}]});applyBatchStatus({correlation_id:'s',known:true,confirmed:[{address:'0002',command_item_id:'OLD'}]})",box);assert.equal(vm.runInContext('state.batchPending.size',box),1);
+ vm.runInContext("applyBatchStatus({correlation_id:'s',known:true,confirmed:[{address:'0002',command_item_id:'b'}]})",box);assert.equal(vm.runInContext('state.batchActive',box),false);
+});
+test('unknown HTTP execution preserves current identity; known rejection clears pre-I/O attempt',async()=>{
+ for(const status of ['uncertain','rejected']){const box=ui();box.status=status;vm.runInContext("state.batchItems=[{address:'0001',quantity:1}];api=async()=>{const error=new Error('result');error.executionStatus=globalThis.status;throw error};globalThis.running=startBatch()",box);await box.running;assert.equal(vm.runInContext('state.batchActive',box),status==='uncertain');assert.ok(vm.runInContext('state.batchCorrelation',box));}
+});

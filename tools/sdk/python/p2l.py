@@ -24,9 +24,11 @@ import inspect
 import json
 import logging
 import ssl
-from collections import deque
+from collections import deque, OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 from typing import Callable, Optional
 
 import paho.mqtt.client as mqtt
@@ -74,6 +76,10 @@ class ConfirmEvent:
     adjusted_display: Optional[str] = None
     label:            Optional[str] = None
     display_data:     Optional[str] = None
+    correlation_id:   Optional[str] = None
+    command_item_id:  Optional[str] = None
+    picking_detail_id: Optional[str] = None
+    event_id:         Optional[str] = None
 
     @staticmethod
     def from_dict(d: dict) -> "ConfirmEvent":
@@ -83,6 +89,10 @@ class ConfirmEvent:
             adjusted_display=d.get("adjustedDisplay"),
             label=d.get("label"),
             display_data=d.get("displayData"),
+            correlation_id=d.get("correlationId"),
+            command_item_id=d.get("commandItemId"),
+            picking_detail_id=d.get("pickingDetailId"),
+            event_id=d.get("eventId"),
         )
 
 
@@ -164,6 +174,8 @@ class BatchItem:
     label:    Optional[str]      = None
     led_mode: LightMode          = LightMode.ON
     buz_mode: Optional[LightMode] = None
+    command_item_id: Optional[str] = None
+    picking_detail_id: Optional[str] = None
 
     def to_dict(self) -> dict:
         d: dict = {
@@ -177,7 +189,69 @@ class BatchItem:
             d["label"] = self.label
         if self.buz_mode is not None:
             d["buzMode"] = self.buz_mode.value
+        if self.command_item_id:
+            d["commandItemId"] = self.command_item_id
+        if self.picking_detail_id:
+            d["pickingDetailId"] = self.picking_detail_id
         return d
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    command_id: str
+    status: str
+    correlation_id: Optional[str] = None
+    error_code: Optional[str] = None
+    message: Optional[str] = None
+
+
+class CommandError(RuntimeError):
+    def __init__(self, result: CommandResult):
+        self.result = result
+        super().__init__(result.message or f"Bridge command {result.status}: {result.error_code or ''}")
+
+
+class CommandHandle:
+    """Transport send is synchronous; awaiting waits for the exact Bridge outcome.
+
+    A retry resends these same bytes, ID and expiry. Ignoring the handle preserves
+    the existing fire-and-forget calling style and creates no unobserved exception.
+    """
+    def __init__(self, client: "P2LClient", payload: dict):
+        self._client = client
+        self.command_id = payload["commandId"]
+        self.correlation_id = payload.get("correlationId")
+        self._encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        self._result: Optional[CommandResult] = None
+        self._future: Optional[asyncio.Future] = None
+
+    def _resolve(self, data: dict) -> None:
+        self._result = CommandResult(self.command_id, data["status"], data.get("correlationId"), data.get("errorCode"), data.get("message"))
+        if self._future is not None and not self._future.done():
+            self._future.set_result(self._result)
+
+    async def wait(self, timeout: float = 30.0) -> CommandResult:
+        result = self._result
+        if result is None:
+            if self._future is None:
+                self._future = asyncio.get_running_loop().create_future()
+            try:
+                result = await asyncio.wait_for(asyncio.shield(self._future), timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"Bridge outcome unknown for command {self.command_id}; retry this handle, not a new intent") from None
+        if result.status != "applied":
+            raise CommandError(result)
+        return result
+
+    def retry(self) -> "CommandHandle":
+        self._result = None
+        if self._future is not None and self._future.done():
+            self._future = None
+        self._client._send_handle(self)
+        return self
+
+    def __await__(self):
+        return self.wait().__await__()
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +288,20 @@ def _call(fn: Callable, *args) -> None:
         asyncio.ensure_future(fn(*args))
     else:
         fn(*args)
+
+
+def _track_outcome(dispatcher, handle, identities: set[str]) -> None:
+    if not inspect.isawaitable(handle):
+        return
+    async def observe():
+        try:
+            await handle
+        except Exception as error:
+            if not dispatcher._done.is_set() and identities.intersection(dispatcher._identities.values()):
+                dispatcher._error = error
+                dispatcher._client._on_confirm = dispatcher._prev_handler
+                dispatcher._done.set()
+    asyncio.ensure_future(observe())
 
 
 class WaveDispatcher:
@@ -258,6 +346,9 @@ class WaveDispatcher:
         self._cancelled = False
         self._prev_handler: Optional[Callable] = None
         self._done = asyncio.Event()
+        self._correlation_id = "sdk:" + uuid4().hex
+        self._identities: dict[str, str] = {}
+        self._error: Optional[Exception] = None
 
         # Public callbacks
         self.on_item_sent:      Optional[Callable] = None  # (address, item)
@@ -292,6 +383,8 @@ class WaveDispatcher:
                 )
         else:
             await self._done.wait()
+        if self._error is not None:
+            raise self._error
         return DispatchStats(
             total=self._total,
             confirmed=self._confirmed,
@@ -328,14 +421,19 @@ class WaveDispatcher:
             return
         item = self._queue.popleft()
         self._active[address] = item
-        self._client.light_on(
+        identity = uuid4().hex
+        self._identities[address] = identity
+        handle = self._client.light_on(
             address,
             quantity=item.quantity,
             color=item.color,
             led_mode=item.led_mode,
             buz_mode=item.buz_mode,
             label=item.sku,
+            correlation_id=self._correlation_id,
+            command_item_id=identity,
         )
+        _track_outcome(self, handle, {identity})
         if self.on_item_sent:
             _call(self.on_item_sent, address, item)
 
@@ -348,6 +446,9 @@ class WaveDispatcher:
         item = self._active.get(evt.address)
         if item is None:
             return
+        if evt.correlation_id != self._correlation_id or evt.command_item_id != self._identities.get(evt.address):
+            return
+        self._identities.pop(evt.address, None)
         self._confirmed += 1
         if self.on_item_confirmed:
             _call(self.on_item_confirmed, evt.address, item, evt)
@@ -494,6 +595,9 @@ class BatchDispatcher:
         self._confirmed = 0
         self._cancelled = False
         self._done      = asyncio.Event()
+        self._correlation_id = "sdk:" + uuid4().hex
+        self._identities: dict[str, str] = {}
+        self._error: Optional[Exception] = None
         self._prev_handler: Optional[Callable] = None
 
         # Public callbacks
@@ -527,6 +631,8 @@ class BatchDispatcher:
                 continue
             item = queue.popleft()
             self._active[addr] = item
+            identity = uuid4().hex
+            self._identities[addr] = identity
             initial.append(BatchItem(
                 address=addr,
                 quantity=item.quantity,
@@ -534,12 +640,14 @@ class BatchDispatcher:
                 label=item.sku,
                 led_mode=item.led_mode,
                 buz_mode=item.buz_mode,
+                command_item_id=identity,
             ))
             if self.on_item_sent:
                 _call(self.on_item_sent, addr, item)
 
         if initial:
-            self._client.batch_start(initial)
+            handle = self._client.batch_start(initial, correlation_id=self._correlation_id)
+            _track_outcome(self, handle, set(self._identities.values()))
 
     async def wait(self, timeout: Optional[float] = None) -> dict:
         """Block until every item is confirmed (or *timeout* seconds elapse)."""
@@ -553,6 +661,8 @@ class BatchDispatcher:
                 )
         else:
             await self._done.wait()
+        if self._error is not None:
+            raise self._error
         return {
             "batch_id":  self._batch_id,
             "total":     self._total,
@@ -592,14 +702,19 @@ class BatchDispatcher:
             return
         item = queue.popleft()
         self._active[address] = item
-        self._client.light_on(
+        identity = uuid4().hex
+        self._identities[address] = identity
+        handle = self._client.light_on(
             address,
             quantity=item.quantity,
             color=item.color,
             led_mode=item.led_mode,
             buz_mode=item.buz_mode,
             label=item.sku,
+            correlation_id=self._correlation_id,
+            command_item_id=identity,
         )
+        _track_outcome(self, handle, {identity})
         if self.on_item_sent:
             _call(self.on_item_sent, address, item)
 
@@ -611,6 +726,9 @@ class BatchDispatcher:
         item = self._active.get(evt.address)
         if item is None:
             return
+        if evt.correlation_id != self._correlation_id or evt.command_item_id != self._identities.get(evt.address):
+            return
+        self._identities.pop(evt.address, None)
         self._confirmed += 1
         if self.on_item_confirmed:
             _call(self.on_item_confirmed, evt.address, item, evt)
@@ -702,8 +820,13 @@ class P2LClient:
 
         # Pending waiters: address -> Future[ConfirmEvent]
         self._confirm_waiters: dict[str, asyncio.Future[ConfirmEvent]] = {}
+        self._confirm_filters: dict[str, tuple] = {}
+        self._pending_commands: dict[str, CommandHandle] = {}
+        self._seen_events: OrderedDict[str, None] = OrderedDict()
+        self._seen_items: OrderedDict[tuple[str, str], None] = OrderedDict()
         # Batch-complete waiter
         self._batch_complete_waiter: Optional[asyncio.Future[None]] = None
+        self._batch_complete_correlation: Optional[str] = None
         # CSV-complete waiter
         self._csv_complete_waiter: Optional[asyncio.Future[None]] = None
 
@@ -825,26 +948,56 @@ class P2LClient:
 
     def _on_message(self, client, userdata, msg: mqtt.MQTTMessage):
         if self._loop:
-            self._loop.call_soon_threadsafe(self._dispatch, msg.topic, msg.payload)
+            self._loop.call_soon_threadsafe(self._dispatch, msg.topic, msg.payload, msg.retain)
 
-    def _dispatch(self, topic: str, payload: bytes) -> None:
+    def _dispatch(self, topic: str, payload: bytes, retained: bool = False) -> None:
         try:
             data: dict = json.loads(payload)
         except Exception:
             return
 
+        if not isinstance(data, dict):
+            return
         kind = data.get("type", "")
-
-        if kind == "confirmed":
-            ev = ConfirmEvent.from_dict(data)
-            waiter = self._confirm_waiters.pop(ev.address, None)
-            if waiter and not waiter.done():
+        if retained and kind in ("confirmed", "batch_completed", "command_result"):
+            return
+        event_id = data.get("eventId")
+        if kind != "command_result" and isinstance(event_id, str) and event_id in self._seen_events:
+            return
+        if kind == "command_result":
+            command_id = data.get("commandId")
+            handle = self._pending_commands.get(command_id) if isinstance(command_id, str) else None
+            if handle and (not handle.correlation_id or handle.correlation_id == data.get("correlationId")) and data.get("status") in ("applied", "rejected", "uncertain"):
+                handle._resolve(data)
+                self._pending_commands.pop(handle.command_id, None)
+        elif kind == "confirmed":
+            try:
+                ev = ConfirmEvent.from_dict(data)
+            except (KeyError, ValueError, TypeError):
+                return
+            if not isinstance(ev.address, str) or not ev.address:
+                return
+            if any(value is not None and not isinstance(value, str) for value in (ev.correlation_id, ev.command_item_id, ev.picking_detail_id)):
+                return
+            item_key = (ev.correlation_id, ev.command_item_id or ("detail:" + ev.picking_detail_id if ev.picking_detail_id else None))
+            if all(item_key):
+                if item_key in self._seen_items:
+                    return
+                self._seen_items[item_key] = None
+                if len(self._seen_items) > 2048:
+                    self._seen_items.popitem(last=False)
+            waiter = self._confirm_waiters.get(ev.address)
+            expected = self._confirm_filters.get(ev.address, (None, None, None))
+            actual = (ev.correlation_id, ev.command_item_id, ev.picking_detail_id)
+            if waiter and not waiter.done() and all(wanted is None or wanted == value for wanted, value in zip(expected, actual)):
+                self._confirm_waiters.pop(ev.address, None)
+                self._confirm_filters.pop(ev.address, None)
                 waiter.set_result(ev)
             if self._on_confirm:
                 self._on_confirm(ev)
 
         elif kind == "batch_completed":
-            if self._batch_complete_waiter and not self._batch_complete_waiter.done():
+            if self._batch_complete_waiter and not self._batch_complete_waiter.done() and (self._batch_complete_correlation is None or self._batch_complete_correlation == data.get("correlationId")):
                 self._batch_complete_waiter.set_result(None)
             if self._on_batch_complete:
                 self._on_batch_complete()
@@ -878,6 +1031,11 @@ class P2LClient:
             )
             if self._on_bridge_status:
                 self._on_bridge_status(bs)
+
+        if isinstance(event_id, str) and event_id:
+            self._seen_events[event_id] = None
+            if len(self._seen_events) > 2048:
+                self._seen_events.popitem(last=False)
 
     # ------------------------------------------------------------------
     # Event subscriptions
@@ -935,29 +1093,34 @@ class P2LClient:
     # Wait helpers (one-shot async)
     # ------------------------------------------------------------------
 
-    async def wait_confirm(self, address: str, timeout: float = 30.0) -> ConfirmEvent:
-        """Wait until the operator presses the button on *address*."""
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[ConfirmEvent] = loop.create_future()
+    async def wait_confirm(self, address: str, timeout: float = 30.0, *,
+                           correlation_id: Optional[str] = None, command_item_id: Optional[str] = None,
+                           picking_detail_id: Optional[str] = None) -> ConfirmEvent:
+        """Wait for a confirmation, optionally fenced to one exact session/item."""
+        fut = asyncio.get_running_loop().create_future()
         self._confirm_waiters[address] = fut
+        self._confirm_filters[address] = (correlation_id, command_item_id, picking_detail_id)
         try:
             return await asyncio.wait_for(fut, timeout)
         except asyncio.TimeoutError:
-            self._confirm_waiters.pop(address, None)
-            raise TimeoutError(f"No confirmation from {address} within {timeout}s")
+            raise TimeoutError(f"No matching confirmation from {address} within {timeout}s") from None
+        finally:
+            if self._confirm_waiters.get(address) is fut:
+                self._confirm_waiters.pop(address, None)
+                self._confirm_filters.pop(address, None)
 
-    async def wait_batch_complete(self, timeout: float = 120.0) -> None:
-        """Wait until all items in the current batch are confirmed."""
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[None] = loop.create_future()
+    async def wait_batch_complete(self, timeout: float = 120.0, *, correlation_id: Optional[str] = None) -> None:
+        fut = asyncio.get_running_loop().create_future()
         self._batch_complete_waiter = fut
+        self._batch_complete_correlation = correlation_id
         try:
             await asyncio.wait_for(fut, timeout)
         except asyncio.TimeoutError:
-            self._batch_complete_waiter = None
-            raise TimeoutError(f"Batch not completed within {timeout}s")
+            raise TimeoutError(f"Batch not completed within {timeout}s") from None
         finally:
-            self._batch_complete_waiter = None
+            if self._batch_complete_waiter is fut:
+                self._batch_complete_waiter = None
+                self._batch_complete_correlation = None
 
     async def wait_csv_complete(self, timeout: float = 300.0) -> None:
         """Wait until every row in the running CSV pick task has been confirmed."""
@@ -976,58 +1139,63 @@ class P2LClient:
     # Commands
     # ------------------------------------------------------------------
 
-    def _publish(self, payload: dict) -> None:
-        self._mqtt.publish(self.COMMAND_TOPIC, json.dumps(payload), qos=1)
+    def _publish(self, payload: dict) -> CommandHandle:
+        command = dict(payload)
+        command.setdefault("commandId", uuid4().hex)
+        command.setdefault("expiresAt", (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat().replace("+00:00", "Z"))
+        handle = CommandHandle(self, command)
+        existing = self._pending_commands.get(handle.command_id)
+        if existing:
+            if existing._encoded != handle._encoded:
+                raise ValueError("Command ID is already pending with another payload; retry its handle")
+            return existing.retry()
+        self._send_handle(handle)
+        return handle
 
-    def light_on(
-        self,
-        address: str,
-        *,
-        quantity: int = 1,
-        color: LightColor = LightColor.GREEN,
-        led_mode: LightMode = LightMode.ON,
-        buz_mode: Optional[LightMode] = None,
-        label: Optional[str] = None,
-    ) -> None:
-        """Turn on a single light module."""
-        cmd: dict = {
-            "type":     "light_on",
-            "address":  address,
-            "quantity": quantity,
-            "color":    color.value,
-            "ledMode":  led_mode.value,
-        }
-        if buz_mode is not None:
-            cmd["buzMode"] = buz_mode.value
-        if label:
-            cmd["label"] = label
-        self._publish(cmd)
+    def _send_handle(self, handle: CommandHandle) -> None:
+        if handle.command_id not in self._pending_commands and len(self._pending_commands) >= 1024:
+            raise RuntimeError("Too many pending command outcomes")
+        self._pending_commands[handle.command_id] = handle
+        info = self._mqtt.publish(self.COMMAND_TOPIC, handle._encoded, qos=1)
+        if getattr(info, "rc", 0) != mqtt.MQTT_ERR_SUCCESS:
+            self._pending_commands.pop(handle.command_id, None)
+            raise ConnectionError("MQTT did not accept the command for sending")
 
-    def light_off(self, address: str) -> None:
-        """Turn off a single light module."""
-        self._publish({"type": "light_off", "address": address})
+    def light_on(self, address: str, *, quantity: int = 1, color: LightColor = LightColor.GREEN,
+                 led_mode: LightMode = LightMode.ON, buz_mode: Optional[LightMode] = None,
+                 label: Optional[str] = None, correlation_id: Optional[str] = None,
+                 command_item_id: Optional[str] = None, picking_detail_id: Optional[str] = None,
+                 block_no: Optional[str] = None, command_id: Optional[str] = None,
+                 expires_at: Optional[str] = None) -> CommandHandle:
+        cmd = {"type": "light_on", "address": address, "quantity": quantity,
+               "color": color.value, "ledMode": led_mode.value}
+        for key, value in (("buzMode", buz_mode.value if buz_mode is not None else None), ("label", label),
+                           ("correlationId", correlation_id), ("commandItemId", command_item_id),
+                           ("pickingDetailId", picking_detail_id), ("blockNo", block_no),
+                           ("commandId", command_id), ("expiresAt", expires_at)):
+            if value is not None:
+                cmd[key] = value
+        return self._publish(cmd)
 
-    def batch_start(
-        self,
-        items: list[BatchItem],
-        *,
-        led_mode: LightMode = LightMode.ON,
-        buz_mode: Optional[LightMode] = None,
-    ) -> None:
-        """Start a picking batch (lights up all items simultaneously)."""
-        cmd: dict = {
-            "type":    "batch_start",
-            "ledMode": led_mode.value,
-            "items":   [i.to_dict() for i in items],
-        }
-        if buz_mode is not None:
-            cmd["buzMode"] = buz_mode.value
-        self._publish(cmd)
+    def light_off(self, address: str) -> CommandHandle:
+        return self._publish({"type": "light_off", "address": address})
 
-    def batch_finish(self, block_no: str = "00") -> None:
-        """Terminate the current batch."""
-        self._publish({"type": "batch_finish", "blockNo": block_no})
+    def batch_start(self, items: list[BatchItem], *, led_mode: LightMode = LightMode.ON,
+                    buz_mode: Optional[LightMode] = None, correlation_id: Optional[str] = None,
+                    block_no: Optional[str] = None, command_id: Optional[str] = None,
+                    expires_at: Optional[str] = None, relight: bool = False) -> CommandHandle:
+        cmd = {"type": "batch_start", "ledMode": led_mode.value, "items": [i.to_dict() for i in items]}
+        for key, value in (("buzMode", buz_mode.value if buz_mode is not None else None),
+                           ("correlationId", correlation_id), ("blockNo", block_no),
+                           ("commandId", command_id), ("expiresAt", expires_at)):
+            if value is not None:
+                cmd[key] = value
+        if relight:
+            cmd["relight"] = True
+        return self._publish(cmd)
 
-    def terminate_all(self) -> None:
-        """Emergency: turn off all modules immediately."""
-        self._publish({"type": "terminate_all"})
+    def batch_finish(self, block_no: str = "00") -> CommandHandle:
+        return self._publish({"type": "batch_finish", "blockNo": block_no})
+
+    def terminate_all(self) -> CommandHandle:
+        return self._publish({"type": "terminate_all"})

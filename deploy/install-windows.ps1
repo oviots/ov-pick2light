@@ -13,8 +13,7 @@
     Default: directory above this script.
 
 .PARAMETER CsvTaskFile
-    Path to the picking task CSV.
-    Default: C:\Program Files\P2L\tasks.csv
+    Deprecated compatibility parameter; the bridge service always runs "serve".
 
 .PARAMETER ServiceName
     Windows Service name for P2L bridge. Default: P2L
@@ -61,7 +60,8 @@ if (-not (Test-Path $P2LBin))    { Fail "Not found: $P2LBin" }
 if (-not (Test-Path $ClientBin)) { Fail "Not found: $ClientBin" }
 
 $InstallDir = "C:\Program Files\P2L"
-$LogDir     = "C:\ProgramData\P2L\logs"
+$DataDir    = Join-Path $env:ProgramData "P2L"
+$LogDir     = Join-Path $DataDir "logs"
 $ClientServiceName = "${ServiceName}Client"
 
 Write-Step "Package root : $PackageRoot"
@@ -71,6 +71,8 @@ Write-Host ""
 # ── 1. Create install directories ─────────────────────────────────────────────
 Write-Step "Creating directories ..."
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $InstallDir "config") -Force | Out-Null
+New-Item -ItemType Directory -Path $DataDir    -Force | Out-Null
 New-Item -ItemType Directory -Path $LogDir     -Force | Out-Null
 Write-Ok "Directories ready"
 
@@ -89,15 +91,15 @@ if (Test-Path $SqliteDll) {
     Write-Warn "e_sqlite3.dll not found in package — p2l may fail at runtime"
 }
 
-# appsettings.json
-$AppSettings = Join-Path $PackageRoot "config\appsettings.json"
-$AppSettingsDest = Join-Path $InstallDir "appsettings.json"
+# Match the path loaded by Program.cs; preserve configured values on upgrade.
+$AppSettings = Join-Path $PackageRoot "config\p2l_config.json"
+$AppSettingsDest = Join-Path $InstallDir "config\p2l_config.json"
 if (Test-Path $AppSettings) {
     if (Test-Path $AppSettingsDest) {
-        Write-Warn "appsettings.json already exists — keeping existing config"
+        Write-Warn "config\p2l_config.json already exists — keeping existing config"
     } else {
         Copy-Item $AppSettings $AppSettingsDest -Force
-        Write-Ok "Installed appsettings.json  <- edit before starting the service"
+        Write-Ok "Installed config\p2l_config.json  <- edit before starting the service"
     }
 }
 
@@ -112,7 +114,7 @@ if ($existing) {
 }
 
 $p2lExe = Join-Path $InstallDir "p2l.exe"
-$binPath = "`"$p2lExe`" run `"$CsvTaskFile`""
+$binPath = "`"$p2lExe`" serve"
 $result = sc.exe create $ServiceName `
     binPath= $binPath `
     DisplayName= "Pick2Light Warehouse Daemon" `
@@ -148,7 +150,7 @@ New-Item -Path $regPath -Force | Out-Null
 Set-ItemProperty -Path $regPath -Name "AppParameters" -Value "" | Out-Null
 
 # Use sc.exe to set environment
-$envMultiSz = [string[]]@("P2L_CLIENT_HOST=0.0.0.0", "P2L_CLIENT_PORT=$ClientPort")
+$envMultiSz = [string[]]@("P2L_CLIENT_HOST=127.0.0.1", "P2L_CLIENT_PORT=$ClientPort")
 $regEnvPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ClientServiceName"
 New-ItemProperty -Path $regEnvPath -Name "Environment" -Value $envMultiSz -PropertyType MultiString -Force | Out-Null
 
@@ -164,6 +166,13 @@ $dataRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
     "NT AUTHORITY\LocalService", "Modify", "ContainerInherit,ObjectInherit", "None", "Allow")
 $acl.AddAccessRule($dataRule)
 Set-Acl $InstallDir $acl
+# Both services run under the default LocalSystem identity. Keep the writable
+# data directory separate from executable/config files.
+$dataAcl = Get-Acl $DataDir
+$systemDataRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    "NT AUTHORITY\SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
+$dataAcl.AddAccessRule($systemDataRule)
+Set-Acl $DataDir $dataAcl
 Write-Ok "ACLs configured"
 
 # ── 6. Optionally start now ────────────────────────────────────────────────────
@@ -186,7 +195,7 @@ if ($StartNow) {
 Write-Host ""
 Write-Ok "=== Installation complete ==="
 Write-Host "  Dashboard     : http://localhost:$ClientPort"
-Write-Host "  Config        : $InstallDir\appsettings.json"
+Write-Host "  Config        : $InstallDir\config\p2l_config.json"
 Write-Host "  Logs          : $LogDir\"
 Write-Host "  Stop bridge   : Stop-Service -Name $ServiceName"
 Write-Host "  Stop client   : Stop-Service -Name $ClientServiceName"

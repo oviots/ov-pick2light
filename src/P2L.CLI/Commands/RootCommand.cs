@@ -22,11 +22,13 @@ public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
     private readonly WatchdogService      _watchdog;
     private readonly MqttBridgeService?   _mqtt;
     private readonly OfflineBufferService? _offlineBuffer;
+    private readonly MissingConfirmationMonitor? _confirmationMonitor;
 
     public RootCommand(AioiGateway gateway, LightModuleRegistry registry,
                        HeartbeatService heartbeat, WatchdogService watchdog,
                        MqttBridgeService? mqtt = null,
-                       OfflineBufferService? offlineBuffer = null)
+                       OfflineBufferService? offlineBuffer = null,
+                       MissingConfirmationMonitor? confirmationMonitor = null)
     {
         _gateway       = gateway;
         _registry      = registry;
@@ -34,6 +36,7 @@ public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
         _watchdog      = watchdog;
         _mqtt          = mqtt;
         _offlineBuffer = offlineBuffer;
+        _confirmationMonitor = confirmationMonitor;
     }
 
     public sealed class Settings : CommandSettings
@@ -84,6 +87,7 @@ public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
             }
         }
 
+        _confirmationMonitor?.Start();
         var dashboard = new WarehouseDashboard(_gateway, _registry);
         try { await dashboard.RunAsync(cts.Token); }
         catch (OperationCanceledException) { }

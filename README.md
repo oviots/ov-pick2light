@@ -8,6 +8,7 @@ Fully self-contained binaries — **no .NET runtime or Python required** on depl
 
 ## Documentation
 
+- **[Bộ tài liệu bàn giao dự án (nguồn chuẩn)](docs/handover/README.md)**
 - [One-Page Summary](docs/ONE_PAGE_SUMMARY.md)
 - [One-Page Summary (Vietnamese)](docs/ONE_PAGE_SUMMARY.vi.md)
 - [Executive Overview](docs/EXECUTIVE_OVERVIEW.md)

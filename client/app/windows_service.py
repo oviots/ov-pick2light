@@ -105,7 +105,7 @@ def _service_main(argc: int, argv) -> None:  # noqa: ANN001
     # support add_reader/add_writer which aiomqtt/paho-mqtt requires.
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    host = os.environ.get("P2L_CLIENT_HOST", "0.0.0.0")
+    host = os.environ.get("P2L_CLIENT_HOST", "127.0.0.1")
     port = int(os.environ.get("P2L_CLIENT_PORT", "8765"))
 
     _server_ref = uvicorn.Server(

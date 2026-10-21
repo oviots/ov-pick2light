@@ -24,6 +24,12 @@ public sealed class AioiPacket
     {
         // Latin1 preserves all byte values 0–255 (required for binary mode-array bytes).
         var cmdBytes = Encoding.Latin1.GetBytes(Command);
+        if (SequenceNo is < 0 or > AioiConstants.SeqNoMax)
+            throw new ArgumentOutOfRangeException(nameof(SequenceNo));
+        if (cmdBytes.Length is < 1 or > AioiConstants.MaxCommandLength)
+            throw new ArgumentOutOfRangeException(nameof(Command), "Aioi commands must contain 1–1015 bytes.");
+        if (cmdBytes.Contains(AioiConstants.STX) || cmdBytes.Contains(AioiConstants.ETX))
+            throw new ArgumentException("Aioi command data cannot contain framing bytes.", nameof(Command));
         var frame    = new byte[1 + 3 + 4 + cmdBytes.Length + 1];
         int pos      = 0;
 
@@ -49,40 +55,55 @@ public sealed class AioiPacket
 
     /// <summary>
     /// Attempts to parse a single packet from a buffer.
-    /// Returns null if the buffer does not yet contain a complete packet.
-    /// <paramref name="consumed"/> is set to the number of bytes consumed on success.
+    /// Returns null if no complete valid packet is available. In that case,
+    /// <paramref name="consumed"/> reports invalid bytes that can be discarded;
+    /// an incomplete valid frame is retained for the next read.
     /// </summary>
     public static AioiPacket? TryParse(ReadOnlySpan<byte> buffer, out int consumed)
     {
         consumed = 0;
 
-        int stxIndex = -1;
-        for (int i = 0; i < buffer.Length; i++)
+        int offset = 0;
+        while (offset < buffer.Length)
         {
-            if (buffer[i] == AioiConstants.STX) { stxIndex = i; break; }
+            int next = buffer[offset..].IndexOf(AioiConstants.STX);
+            if (next < 0) { consumed = buffer.Length; return null; }
+            int stxIndex = offset + next;
+            var frame = buffer[stxIndex..];
+            consumed = stxIndex;
+            if (frame.Length < 8) return null;
+
+            bool digits = true;
+            for (int i = 1; i < 8; i++)
+                digits &= frame[i] is >= (byte)'0' and <= (byte)'9';
+            int dataLen = digits ? int.Parse(Encoding.ASCII.GetString(frame[4..8])) : 0;
+            if (!digits || dataLen is < 1 or > AioiConstants.MaxCommandLength)
+            {
+                offset = stxIndex + 1;
+                continue;
+            }
+
+            int totalExpected = 9 + dataLen;
+            // STX cannot occur inside command data; it begins a fresh frame.
+            int nestedStx = frame[1..Math.Min(frame.Length, totalExpected)].IndexOf(AioiConstants.STX);
+            if (nestedStx >= 0)
+            {
+                offset = stxIndex + 1 + nestedStx;
+                continue;
+            }
+            if (frame.Length < totalExpected) return null;
+            if (frame[totalExpected - 1] != AioiConstants.ETX)
+            {
+                offset = stxIndex + 1;
+                continue;
+            }
+
+            int seqNo = int.Parse(Encoding.ASCII.GetString(frame[1..4]));
+            var command = Encoding.Latin1.GetString(frame[8..(8 + dataLen)]);
+            consumed = stxIndex + totalExpected;
+            return new AioiPacket { SequenceNo = seqNo, Command = command };
         }
-        if (stxIndex < 0) return null;
-
-        // Minimum: STX(1) + SeqNo(3) + DataLen(4) + Cmd(>=1) + ETX(1) = 10 bytes
-        var frame = buffer[stxIndex..];
-        if (frame.Length < 10) return null;
-
-        // Parse SeqNo
-        if (!int.TryParse(Encoding.ASCII.GetString(frame[1..4]), out int seqNo))
-            return null;
-
-        // Parse DataLen
-        if (!int.TryParse(Encoding.ASCII.GetString(frame[4..8]), out int dataLen))
-            return null;
-
-        int totalExpected = 1 + 3 + 4 + dataLen + 1;
-        if (frame.Length < totalExpected) return null;
-
-        if (frame[totalExpected - 1] != AioiConstants.ETX) return null;
-
-        var command = Encoding.ASCII.GetString(frame[8..(8 + dataLen)]);
-        consumed = stxIndex + totalExpected;
-
-        return new AioiPacket { SequenceNo = seqNo, Command = command };
+        consumed = buffer.Length;
+        return null;
     }
 }

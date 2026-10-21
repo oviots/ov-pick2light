@@ -40,8 +40,8 @@ public sealed class CsvDeviceRecord
         LedMode         = state.LedMode.ToString(),
         SegMode         = state.SegMode.ToString(),
         BuzMode         = state.BuzMode.ToString(),
-        AfterConfirm    = LightState.Off.ToString(),   // not stored in state → safe default
-        BuzAfterConfirm = LightState.Off.ToString(),
+        AfterConfirm    = state.AfterConfirm?.ToString(),
+        BuzAfterConfirm = state.BuzAfterConfirm?.ToString(),
         Status          = state.Status.ToString(),
         Label           = "",
     };
@@ -96,15 +96,15 @@ public sealed class CsvDeviceRecord
 
         // ── Merge with current state for any unspecified fields ────────────
         var baseline = current is null
-            ? new ModuleParameters()
+            ? new ModuleParameters { AfterConfirm = LightState.NoChange, BuzAfterConfirm = LightState.NoChange }
             : new ModuleParameters
             {
                 Color           = current.Color,
                 LedMode         = current.LedMode,
                 SegMode         = current.SegMode,
                 BuzMode         = current.BuzMode,
-                AfterConfirm    = LightState.Off,
-                BuzAfterConfirm = LightState.Off,
+                AfterConfirm    = current.AfterConfirm ?? LightState.NoChange,
+                BuzAfterConfirm = current.BuzAfterConfirm ?? LightState.NoChange,
             };
 
         parameters = baseline.With(

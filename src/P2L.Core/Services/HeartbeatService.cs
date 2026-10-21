@@ -14,6 +14,8 @@ public sealed class HeartbeatService : IAsyncDisposable, IDisposable
     private readonly ILogger     _log;
     private readonly CancellationTokenSource _cts = new();
     private Task? _loop;
+    private int _consecutiveFailures;
+    private const int ReconnectAfterFailures = 3;
 
     public HeartbeatService(AioiGateway gateway, ILogger<HeartbeatService> logger)
     {
@@ -37,13 +39,24 @@ public sealed class HeartbeatService : IAsyncDisposable, IDisposable
             try
             {
                 await _gateway.QueryModuleStatusAsync(AioiConstants.ErrorDisplayAddress, ct);
+                _consecutiveFailures = 0;
                 _log.LogDebug("Heartbeat OK");
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _log.LogWarning("Heartbeat failed: {Msg}", ex.Message);
+                OnProbeFailed();
             }
         }
+    }
+
+    private void OnProbeFailed()
+    {
+        if (++_consecutiveFailures < ReconnectAfterFailures) return;
+        _consecutiveFailures = 0;
+        _log.LogWarning("Gateway protocol did not respond to {Count} heartbeats; reconnecting TCP without resetting lights",
+            ReconnectAfterFailures);
+        _gateway.RequestReconnect();
     }
 
     public async ValueTask DisposeAsync()

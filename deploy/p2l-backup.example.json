@@ -1,0 +1,21 @@
+{
+  "Mqtt": {
+    "ProbeIntervalMs": 1000,
+    "ProbeTimeoutMs": 3000,
+    "FailbackStableMs": 10000,
+    "BackupBroker": {
+      "Enabled": false,
+      "WebSocketUrl": "wss://mqtt-local.thesupra.vn/mqtt",
+      "Host": "emqx-local.warehouse.internal",
+      "Port": 8883,
+      "ClientId": "p2l-bridge-01-backup",
+      "Username": "bridge-block-01",
+      "Password": null,
+      "Tls": {
+        "Enabled": true,
+        "CaCertPath": null,
+        "AllowUntrustedCerts": false
+      }
+    }
+  }
+}

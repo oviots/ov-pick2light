@@ -37,6 +37,9 @@ public sealed class PickingInstruction
     /// </summary>
     public string? CorrelationId { get; init; }
 
+    public string? CommandItemId { get; init; }
+    public string? PickingDetailId { get; init; }
+
     /// <summary>Formats the quantity as the 5-character display data string.</summary>
     public string FormattedDisplay =>
         Quantity.ToString().PadLeft(AioiConstants.DisplayDataLength, '0');

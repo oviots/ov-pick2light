@@ -48,7 +48,7 @@ class LightModuleRegistry:
             self._modules[addr] = module
         self._notify()
 
-    def set_confirmed(self, event: ConfirmationEvent) -> None:
+    def set_confirmed(self, event: ConfirmationEvent) -> bool:
         from ..protocol.enums import CompletionStatus
         addr = self._normalize(event.address)
         with self._lock:
@@ -56,6 +56,14 @@ class LightModuleRegistry:
             if module is None:
                 module = LightModuleState(address=addr)
                 self._modules[addr] = module
+            if module.last_instruction_at and event.received_at < module.last_instruction_at:
+                return False
+            module.correlation_id = event.correlation_id
+            module.command_item_id = event.command_item_id
+            module.picking_detail_id = event.picking_detail_id
+            module.event_id = event.event_id
+            module.confirmation_missing_at = None
+            module.confirmation_missing_event_id = None
             if event.status == CompletionStatus.SHORTAGE:
                 module.status = ModuleStatus.SHORTAGE
             else:
@@ -63,6 +71,7 @@ class LightModuleRegistry:
             module.last_confirmed_at = event.received_at
             module.adjusted_quantity = event.adjusted_display
         self._notify()
+        return True
 
     def set_terminated(self, address: str) -> None:
         addr = self._normalize(address)

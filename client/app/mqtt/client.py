@@ -9,11 +9,14 @@ JSON naming convention matches the P2L.Mqtt C# bridge:
   - camelCase field names
   - PascalCase enum strings  (e.g. "Green", "On", "HighFlash", "Normal")
 """
+from collections import OrderedDict
 import asyncio
 import json
 import logging
 import ssl
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
+from uuid import uuid4
 
 from ..protocol.enums import (
     CompletionStatus,
@@ -93,6 +96,12 @@ def mqtt_to_completion_status(s: str) -> CompletionStatus:
     return _MQTT_TO_COMPLETION_STATUS.get(s, CompletionStatus.NORMAL)
 
 
+class CommandOutcomeError(RuntimeError):
+    def __init__(self, outcome):
+        self.outcome = outcome
+        super().__init__(outcome.get("message") or f"Bridge command {outcome.get('status')}")
+
+
 # ── MQTT Client ────────────────────────────────────────────────────────────
 
 class MqttClient:
@@ -116,6 +125,9 @@ class MqttClient:
         self._task: Optional[asyncio.Task] = None
         # Set by _wake_reconnect(); cancels the backoff sleep when network is restored.
         self._backoff_wake: Optional[asyncio.Future] = None
+        self._pending: dict[str, asyncio.Future] = {}
+        self._seen_events = OrderedDict()
+        self._seen_items = OrderedDict()
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -143,6 +155,9 @@ class MqttClient:
                 pass
         self._is_connected = False
         self._connected_event.clear()
+        for result in list(self._pending.values()):
+            if not result.done():
+                result.set_exception(ConnectionError("MQTT client stopped before command result"))
 
     async def wait_connected(self, timeout: float = 15.0) -> None:
         """Wait until the MQTT broker is connected, or raise RuntimeError on timeout."""
@@ -154,20 +169,34 @@ class MqttClient:
                 f"({self._cfg.host}:{self._cfg.port})"
             )
 
-    async def publish_command(self, command: dict) -> None:
-        """Enqueue a command dict to be published on p2l/commands."""
+    async def publish_command(self, command: dict, *, recovery_request: bool = False) -> None:
+        """Wait for application outcome; WMS recovery requests use its event ingress."""
         if not self._is_connected:
             raise ConnectionError("MQTT broker not connected")
+        command = {**command, "commandId": command.get("commandId") or uuid4().hex,
+                   "expiresAt": command.get("expiresAt") or (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()}
+        if command["commandId"] in self._pending:
+            raise RuntimeError("Command ID is already pending; await its outcome before retrying")
+        result = asyncio.get_running_loop().create_future()
+        self._pending[command["commandId"]] = result
         item = {
-            "topic": self._cfg.command_topic,
+            "topic": self._cfg.event_topic if recovery_request else self._cfg.command_topic,
             "payload": json.dumps(command, separators=(",", ":")),
             "qos": 1,
             "retain": False,
+            "result": result,
         }
         try:
             self._publish_queue.put_nowait(item)
+            await asyncio.wait_for(asyncio.shield(result), timeout=30)
         except asyncio.QueueFull:
             raise RuntimeError("MQTT publish queue full — broker too slow?")
+        except asyncio.TimeoutError:
+            raise TimeoutError("Bridge command result timed out; execution is uncertain") from None
+        finally:
+            self._pending.pop(command["commandId"], None)
+            if not result.done():
+                result.cancel()
 
     # ── Connection loop ────────────────────────────────────────────────────
 
@@ -189,14 +218,13 @@ class MqttClient:
 
                 async with aiomqtt.Client(**kwargs) as client:
                     logger.info("MQTT connected to %s:%d", self._cfg.host, self._cfg.port)
-                    self._is_connected = True
-                    self._connected_event.set()
-                    self._notify_state(True)
-                    delay = 1.0  # reset backoff on success
-
                     await client.subscribe(self._cfg.event_topic, qos=1)
                     await client.subscribe(f"{self._cfg.devices_topic}/#", qos=0)
                     await client.subscribe(self._cfg.status_topic, qos=1)
+                    self._is_connected = True
+                    self._connected_event.set()
+                    self._notify_state(True)
+                    delay = 1.0  # reset backoff on a usable event subscription
 
                     recv_task = asyncio.create_task(
                         self._recv_loop(client), name="p2l-mqtt-recv"
@@ -265,6 +293,35 @@ class MqttClient:
                 payload = json.loads(message.payload.decode("utf-8", errors="replace"))
             except json.JSONDecodeError:
                 continue
+            if not isinstance(payload, dict):
+                continue
+            kind = payload.get("type")
+            if message.retain and kind in ("confirmed", "batch_completed", "command_result"):
+                continue
+            event_id = payload.get("eventId")
+            if kind != "command_result":
+                if isinstance(event_id, str) and event_id in self._seen_events:
+                    continue
+                if kind == "confirmed":
+                    item_key = (payload.get("correlationId"), payload.get("commandItemId") or payload.get("pickingDetailId"))
+                    if all(isinstance(value, str) and value for value in item_key):
+                        if item_key in self._seen_items:
+                            continue
+                        self._seen_items[item_key] = None
+                        if len(self._seen_items) > 2048:
+                            self._seen_items.popitem(last=False)
+                if isinstance(event_id, str) and event_id:
+                    self._seen_events[event_id] = None
+                    if len(self._seen_events) > 2048:
+                        self._seen_events.popitem(last=False)
+            if (str(message.topic) == self._cfg.event_topic
+                    and payload.get("type") == "command_result" and not message.retain):
+                result = self._pending.get(payload.get("commandId"))
+                if result and not result.done():
+                    if payload.get("status") == "applied":
+                        result.set_result(None)
+                    elif payload.get("status") in ("rejected", "uncertain"):
+                        result.set_exception(CommandOutcomeError(payload))
             if self._on_event:
                 try:
                     await self._on_event(str(message.topic), payload)
@@ -279,6 +336,8 @@ class MqttClient:
                 )
             except asyncio.TimeoutError:
                 continue
+            if item["result"].done():
+                continue
             try:
                 await client.publish(
                     item["topic"],
@@ -288,6 +347,8 @@ class MqttClient:
                 )
                 logger.debug("MQTT → %s : %s", item["topic"], item["payload"][:120])
             except Exception as exc:
+                if not item["result"].done():
+                    item["result"].set_exception(ConnectionError(f"Command delivery uncertain: {exc}"))
                 logger.error("MQTT publish error: %s", exc)
                 raise  # Bubble up so connect_loop re-connects
 

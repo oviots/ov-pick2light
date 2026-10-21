@@ -25,6 +25,10 @@ public sealed class TypeRegistrar : ITypeRegistrar, IAsyncDisposable
         // like `light on` and `pick`) writes events to the buffer file without needing
         // explicit wiring in each command class. Start() is idempotent — RootCommand and
         // RunPickCommand calling it again is a safe no-op.
+        // Construct the durable sink even for a one-shot command; this does not
+        // start a broker connection or transport drain.
+        if (_provider.GetService<MqttBridgeService>() is not null)
+            _provider.GetRequiredService<PickingEngine>().ReplayPendingConfirmations();
         _provider.GetService<OfflineBufferService>()?.Start();
         return new TypeResolver(_provider);
     }

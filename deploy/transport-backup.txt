@@ -1,0 +1,30 @@
+Phạm vi: WMS <-> P2L Bridge; MQTT chính và một broker MQTT dự phòng. Ví dụ triển khai dùng EMQX chính và EMQX local dự phòng; transport không phụ thuộc nhà cung cấp broker.
+
+Cấu hình và đường mạng:
+1. WMS và Bridge đều phải kết nối được EMQX local. Nếu WMS nằm ngoài LAN kho, cần route/VPN tới broker; đặt broker trong LAN hoặc Kubernetes không tự tạo đường này.
+2. EMQX local được quản lý riêng, không tự khởi chạy cùng tool. Bridge hỗ trợ MQTT TCP/TLS hoặc MQTT over WebSocket. HTTPS Dashboard không phải endpoint MQTT; WSS cần listener MQTT WebSocket và reverse proxy chuyển đúng path/Upgrade.
+3. File Bridge ví dụ dùng WebSocketUrl=wss://mqtt-local.thesupra.vn/mqtt nhưng vẫn để Enabled=false và credentials placeholder. Thay bằng endpoint thực tế hai bên cùng truy cập được. Giữ kiểm tra certificate, không bật anonymous trên mạng kho.
+4. Cấp tài khoản MQTT riêng wms-block-01 và bridge-block-01. ACL theo prefix từng block: WMS publish commands, subscribe events/devices/#/status; Bridge subscribe commands, publish events/devices/#/status. Không commit passwords, cert private key hoặc .env.
+5. Ghép deploy/p2l-backup.example.json vào config/p2l_config.json hiện tại của Bridge; giữ Mqtt.Enabled=true, bật BackupBroker sau khi điền endpoint và credentials thật. File ví dụ chỉ là fragment, không thay toàn bộ config đang dùng.
+6. Ghép deploy/wms-backup.example.json vào MQTTConfig hiện tại của block (hoặc cấu hình ENV tương đương), giữ nguyên broker chính, zone, session và signal settings. backupBroker có broker hợp lệ sẽ kích hoạt coordinator. Không tự cập nhật production DB trong patch này.
+7. Gỡ các khóa SocketIo/socketIo và biến P2L_SOCKET_ENABLED, P2L_SOCKET_TOKENS, P2L_Mqtt__SocketIo__* còn lại khỏi cấu hình triển khai. Bridge bỏ qua khóa cấu hình cũ và không khởi tạo kết nối Socket.IO. Không cần endpoint HTTP/WebSocket trực tiếp giữa Bridge và WMS cho failover.
+
+MQTT over WebSocket trên Bridge: đặt Mqtt.WebSocketUrl cho broker chính hoặc Mqtt.BackupBroker.WebSocketUrl cho broker dự phòng. URL ws:// hoặc wss:// phải tuyệt đối, có thể giữ port/path/query; không chứa credentials hoặc fragment. Khi URL có giá trị, Host/Port không được dùng; wss bật TLS và ws dùng plaintext bất kể Tls.Enabled. Khi URL null/rỗng, Host/Port và Tls.Enabled giữ nguyên cơ chế TCP/TLS hiện tại. CaCertPath, client certificate và AllowUntrustedCerts vẫn áp dụng cho TLS; mặc định kiểm tra certificate theo OS trust store, chỉ bật AllowUntrustedCerts cho DEV/TEST. WMS dùng protocol=wss, port=443, path=/mqtt tương ứng; đây là MQTT WebSocket tới broker, không phải Socket.IO tới WMS.
+
+Cơ chế:
+- Kết nối cả hai broker sẵn. Lỗi/disconnect đã nhận biết sẽ chuyển ngay sang backup còn healthy; lỗi im lặng cần probe/deadline phát hiện.
+- ProbeIntervalMs/probeIntervalMs mặc định 1000, ProbeTimeoutMs/probeTimeoutMs 3000. commandRouteTimeoutMs phía WMS mặc định 3000; chỉ đổi đường gửi. Giữ publishTimeoutMs=30000 trên MQTTConfig WMS (kiểm tra nếu cấu hình cũ còn override 10000).
+- FailbackStableMs/failbackStableMs mặc định 10000 để tránh đảo kênh liên tục. Không đổi ID hay JSON lệnh khi failover.
+- Một engine/dispatcher/receipt SQLite/outbox dùng chung. Broker ACK chỉ xác nhận transport. applied chỉ đến sau hardware ACK; lệnh trùng đang/chạy xong không thực thi hardware thêm.
+- Multi-channel giữ event trong outbox tới application event_ack. Confirm ACK sau callback WMS đã lưu signal; lỗi lưu giữ nguyên event để thử kênh khác. ID event giữ nguyên qua retry/restart.
+- command_result là phản hồi control, ACK sau resolver hiện tại xử lý; không có collection business mới. Nếu WMS crash giữa result và ghi On, vẫn theo fence/ReconcileRequired hiện tại; không suy ra đã pick từ result.
+- Cả hai broker lỗi: giữ confirm trong outbox, không tự hoàn tất pick hoặc gỡ reservation. Nguồn điện/controller và đường mạng chung vẫn nằm ngoài failover transport.
+- Python dashboard cục bộ hiện vẫn dùng MQTT chính; patch này bảo vệ đường WMS <-> Bridge. Web WMS đi qua coordinator; không đưa token Bridge vào dashboard/browser.
+
+Triển khai có kiểm soát: cài broker/cert/ACL, triển khai code Bridge và WMS với backup còn tắt. Khi không có phiên đang pick: bật coordinator WMS trước (vẫn đi được broker chính), rồi bật BackupBroker ở Bridge. WMS phải đáp ứng control pong và event_ack trước khi Bridge bật multi-channel. Không xóa receipt/state/outbox khi nâng cấp. Patch không deploy hay thay config production.
+
+ClientId MQTT phải ổn định: giữ nguyên ClientId đã cấu hình khi nâng cấp để tiếp tục session của broker. Mặc định mới của Bridge dùng hậu tố -backup; nếu trước đây chưa đặt BackupBroker.ClientId, cấu hình rõ ID đang dùng trước khi nâng cấp để tránh vô tình tạo session mới. Tên kênh trong log là backup, không đổi topic hay ID nghiệp vụ.
+
+Phạm vi hiện tại thay thế hướng dẫn Socket.IO trước đây: chỉ còn hai broker MQTT. Các báo cáo audit/test lịch sử vẫn là bằng chứng cho phiên bản và thời điểm ghi nhận; kết quả ba kênh trong báo cáo cũ không phải kiểm chứng cấu hình hai broker hiện tại.
+
+Xác minh đèn: Az đọc trạng thái module (Operating/Operating2), không đo ánh sáng, màu hoặc số hiển thị. Chỉ dùng kiểm tra đúng địa chỉ nghi lỗi và tách observation khỏi business state. Camera/cảm biến hoặc kiểm tra thực tế cần thiết nếu yêu cầu chứng minh LED phát sáng. Không bổ sung polling Az trong patch transport.

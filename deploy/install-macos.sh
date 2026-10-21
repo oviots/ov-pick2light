@@ -33,7 +33,7 @@ echo ""
 
 # ── 1. Install binaries ───────────────────────────────────────────────────────
 info "Installing binaries ..."
-mkdir -p "$INSTALL_DIR/logs" "$LOG_DIR" "$LAUNCH_DIR"
+mkdir -p "$INSTALL_DIR/config" "$INSTALL_DIR/logs" "$LOG_DIR" "$LAUNCH_DIR"
 install -m 0755 "$PKG_ROOT/bin/p2l"        "$INSTALL_DIR/p2l"
 install -m 0755 "$PKG_ROOT/bin/p2l-client" "$INSTALL_DIR/p2l-client"
 ok "Installed p2l and p2l-client"
@@ -46,13 +46,13 @@ for lib in "$PKG_ROOT/bin/"libe_sqlite3.* "$PKG_ROOT/bin/"e_sqlite3.*; do
     fi
 done
 
-# appsettings.json — skip if already customised
-if [[ -f "$PKG_ROOT/config/appsettings.json" ]]; then
-    if [[ -f "$INSTALL_DIR/appsettings.json" ]]; then
-        warn "appsettings.json exists — keeping existing config"
+# Preserve the bridge configuration on upgrade
+if [[ -f "$PKG_ROOT/config/p2l_config.json" ]]; then
+    if [[ -f "$INSTALL_DIR/config/p2l_config.json" ]]; then
+        warn "config/p2l_config.json exists — keeping existing config"
     else
-        install -m 0640 "$PKG_ROOT/config/appsettings.json" "$INSTALL_DIR/appsettings.json"
-        ok "Installed appsettings.json  <- edit before starting the service"
+        install -m 0640 "$PKG_ROOT/config/p2l_config.json" "$INSTALL_DIR/config/p2l_config.json"
+        ok "Installed config/p2l_config.json  <- edit before starting the service"
     fi
 fi
 
@@ -70,8 +70,7 @@ cat > "$LAUNCH_DIR/com.p2l.service.plist" << PLIST
     <key>ProgramArguments</key>
     <array>
         <string>${INSTALL_DIR}/p2l</string>
-        <string>run</string>
-        <string>${INSTALL_DIR}/tasks.csv</string>
+        <string>serve</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -112,7 +111,7 @@ cat > "$LAUNCH_DIR/com.p2l.client.plist" << PLIST
 
     <key>EnvironmentVariables</key>
     <dict>
-        <key>P2L_CLIENT_HOST</key>  <string>0.0.0.0</string>
+        <key>P2L_CLIENT_HOST</key>  <string>127.0.0.1</string>
         <key>P2L_CLIENT_PORT</key>  <string>8765</string>
     </dict>
 
@@ -131,7 +130,7 @@ ok "Launchd plists written"
 # ── 4. Load agents ────────────────────────────────────────────────────────────
 echo ""
 read -r -p "Load and start both services now? [y/N] " START_NOW
-if [[ "${START_NOW,,}" == "y" ]]; then
+if [[ "$START_NOW" == [yY] ]]; then
     launchctl unload "$LAUNCH_DIR/com.p2l.service.plist" 2>/dev/null || true
     launchctl unload "$LAUNCH_DIR/com.p2l.client.plist"  2>/dev/null || true
     launchctl load   "$LAUNCH_DIR/com.p2l.service.plist"
@@ -149,7 +148,7 @@ fi
 echo ""
 ok "=== Installation complete ==="
 echo "  Dashboard     : http://localhost:8765"
-echo "  Config        : $INSTALL_DIR/appsettings.json"
+echo "  Config        : $INSTALL_DIR/config/p2l_config.json"
 echo "  Logs (bridge) : tail -f $LOG_DIR/p2l.log"
 echo "  Logs (client) : tail -f $LOG_DIR/p2l-client.log"
 echo "  Stop bridge   : launchctl unload \"$LAUNCH_DIR/com.p2l.service.plist\""

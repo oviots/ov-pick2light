@@ -35,6 +35,7 @@ public sealed class WatchdogService : IAsyncDisposable
 
     public void Start()
     {
+        if (_timeoutMinutes <= 0) return;
         _loop = Task.Run(() => RunAsync(_cts.Token));
         _log.LogInformation("[Watchdog] Started (disconnect timeout: {Min} min)", _timeoutMinutes);
     }
@@ -44,8 +45,15 @@ public sealed class WatchdogService : IAsyncDisposable
     private async Task RunAsync(CancellationToken ct)
     {
         // Phase 1 — wait for the first successful connection
-        while (!_gateway.IsConnected && !ct.IsCancellationRequested)
+        while (!_gateway.IsHealthy && !ct.IsCancellationRequested)
+        {
+            if (_gateway.HasBackgroundFailure)
+            {
+                RestartRequested?.Invoke("TCP background worker stopped before the first healthy connection");
+                return;
+            }
             await Task.Delay(2_000, ct);
+        }
 
         if (ct.IsCancellationRequested) return;
 
@@ -58,7 +66,7 @@ public sealed class WatchdogService : IAsyncDisposable
         {
             await Task.Delay(5_000, ct);
 
-            if (_gateway.IsConnected)
+            if (_gateway.IsHealthy)
             {
                 if (disconnectedSince.HasValue)
                 {
@@ -77,7 +85,7 @@ public sealed class WatchdogService : IAsyncDisposable
             }
             else if ((DateTime.UtcNow - disconnectedSince.Value).TotalMinutes >= _timeoutMinutes)
             {
-                var reason = $"Gateway disconnected for over {_timeoutMinutes} minutes";
+                var reason = $"Gateway disconnected or protocol-unhealthy for over {_timeoutMinutes} minutes";
                 _log.LogError("[Watchdog] {Reason} — requesting restart", reason);
                 RestartRequested?.Invoke(reason);
                 return; // prevent duplicate invocations

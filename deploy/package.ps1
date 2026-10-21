@@ -169,13 +169,11 @@ if (Test-Path $SqliteDll) {
     Write-Warn "e_sqlite3.dll not found — p2l may fail at runtime"
 }
 
-# appsettings.json template
+# Use only the sanitized template; never package a developer's runtime config.
 $SettingsSrc = Join-Path $DeployDir "appsettings.template.json"
-if (-not (Test-Path $SettingsSrc)) { $SettingsSrc = Join-Path $Root "appsettings.json" }
-if (Test-Path $SettingsSrc) {
-    Copy-Item $SettingsSrc (Join-Path $Stage "config\appsettings.json") -Force
-    Write-Ok "Copied appsettings.json"
-}
+if (-not (Test-Path $SettingsSrc)) { Fail "Missing bridge configuration template" }
+Copy-Item $SettingsSrc (Join-Path $Stage "config\p2l_config.json") -Force
+Write-Ok "Copied config\p2l_config.json"
 
 # Deploy scripts
 Copy-Item (Join-Path $DeployDir "install-windows.ps1") (Join-Path $Stage "deploy\install.ps1") -Force
@@ -189,7 +187,7 @@ CONTENTS
   bin\p2l.exe             P2L .NET bridge (Aioi gateway <-> MQTT)
   bin\p2l-client.exe      P2L web dashboard — standalone (no Python required)
   bin\e_sqlite3.dll       SQLite native library (required by p2l.exe)
-  config\appsettings.json P2L bridge configuration — edit before first run
+  config\p2l_config.json P2L bridge configuration — edit before first run
   deploy\install.ps1      Windows installer script
 
 INSTALL (run PowerShell as Administrator):
@@ -197,7 +195,7 @@ INSTALL (run PowerShell as Administrator):
   .\deploy\install.ps1 -StartNow
 
 CONFIGURATION
-  Edit config\appsettings.json to set:
+  Edit config\p2l_config.json to set:
     Gateway.Host / Port    — Aioi hardware IP
     Mqtt.Host / Username / Password — MQTT broker
   Or set environment variables:

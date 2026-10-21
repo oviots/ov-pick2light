@@ -114,15 +114,15 @@ public sealed class ConfigureDeviceCommand : AsyncCommand<ConfigureDeviceCommand
 
         // ── Derive baseline from registry (or defaults) ────────────────────
         var baseline = current is null
-            ? new ModuleParameters()
+            ? new ModuleParameters { AfterConfirm = LightState.NoChange, BuzAfterConfirm = LightState.NoChange }
             : new ModuleParameters
             {
                 Color           = current.Color,
                 LedMode         = current.LedMode,
                 SegMode         = current.SegMode,
                 BuzMode         = current.BuzMode,
-                AfterConfirm    = LightState.Off,    // not stored; default to Off
-                BuzAfterConfirm = LightState.Off,
+                AfterConfirm    = current.AfterConfirm ?? LightState.NoChange,
+                BuzAfterConfirm = current.BuzAfterConfirm ?? LightState.NoChange,
             };
 
         // ── Merge command-line overrides ───────────────────────────────────

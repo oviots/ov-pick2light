@@ -52,12 +52,7 @@ public static class AioiDecoder
             'n' => command == "n1"
                        ? new ParsedResponse { Kind = ResponseKind.DuplicateSeq, Raw = command }
                        : new ParsedResponse { Kind = ResponseKind.Nack,         Raw = command },
-            't' => new ParsedResponse
-            {
-                Kind  = ResponseKind.Interrupt,
-                Raw   = command,
-                Event = ParseInterrupt(command, seqNo),
-            },
+            't' => ParseInterruptResponse(command, seqNo),
             // Az response: a[addr(4)][statusByte(1)]  e.g. "a00011" (standby) / "a0000?" (not present)
             'a' => new ParsedResponse
             {
@@ -82,44 +77,49 @@ public static class AioiDecoder
     //   t100100<    12>      — address 1001, status 00, operator adjusted display to 12
     //
     // Status codes: "00"=normal, "01"=abnormal, "10"=shortage
-    private static ConfirmationEvent ParseInterrupt(string cmd, int seqNo)
+    private static ParsedResponse ParseInterruptResponse(string cmd, int seqNo)
+    {
+        var evt = ParseInterrupt(cmd, seqNo);
+        return new ParsedResponse { Kind = evt is null ? ResponseKind.Unknown : ResponseKind.Interrupt, Raw = cmd, Event = evt };
+    }
+
+    private static ConfirmationEvent? ParseInterrupt(string cmd, int seqNo)
     {
         // 't' + 4-digit addr + 2-digit status = 7 chars minimum
-        if (cmd.Length < 7)
-            return UnknownEvent(cmd, seqNo);
+        if (cmd.Length != 7 && cmd.Length != 14) return null;
 
         var address   = cmd[1..5];
+        if (address.Any(c => c is < '0' or > '9') || address == "0000") return null;
         var statusStr = cmd[5..7];
         var status    = ParseCompletionStatus(statusStr);
+        if (status is null) return null;
 
         // Extended format: t[addr4][status2]<[display5]>  — total 14 chars
         // The '<' delimiter is at position 7 and '>' at position 13.
-        string? adjusted = cmd.Length >= 14 && cmd[7] == '<' && cmd[13] == '>'
-            ? cmd[8..13]   // 5-char display field (may have leading spaces, e.g. "    12")
-            : null;
+        string? adjusted = null;
+        if (cmd.Length == 14)
+        {
+            if (cmd[7] != '<' || cmd[13] != '>') return null;
+            adjusted = cmd[8..13];
+            if (!int.TryParse(adjusted.Trim(), System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out _)) return null;
+        }
 
         return new ConfirmationEvent
         {
             Address         = address,
-            Status          = status,
+            Status          = status.Value,
             AdjustedDisplay = adjusted,
             SequenceNo      = seqNo,
         };
     }
 
-    private static CompletionStatus ParseCompletionStatus(string s) => s switch
+    private static CompletionStatus? ParseCompletionStatus(string s) => s switch
     {
         "00" => CompletionStatus.Normal,
         "01" => CompletionStatus.Abnormal,
         "10" => CompletionStatus.Shortage,
-        _    => CompletionStatus.Normal,
-    };
-
-    private static ConfirmationEvent UnknownEvent(string raw, int seqNo) => new()
-    {
-        Address    = "0000",
-        Status     = CompletionStatus.Abnormal,
-        SequenceNo = seqNo,
+        _    => null,
     };
 
     // ─── Az response parsing ──────────────────────────────────────────────

@@ -6,185 +6,190 @@ using P2L.Shared.Models;
 
 namespace P2L.Core;
 
-/// <summary>
-/// Persists the <see cref="LightModuleRegistry"/> state to a JSON file so that
-/// modules which were <see cref="ModuleStatus.Operating"/> in a previous process
-/// invocation are still known to the next one.
-///
-/// This prevents P1 block-instruct from extinguishing previously lit modules
-/// when the CLI is invoked again as a new one-shot process.
-///
-/// Call <see cref="Load"/> once after construction (before any gateway commands).
-/// The service then auto-saves whenever the registry state changes (debounced).
-/// </summary>
+/// <summary>Atomic versioned owner/replay snapshot; accepts legacy Operating-only arrays.</summary>
 public sealed class RegistryPersistenceService : IDisposable
 {
     private readonly LightModuleRegistry _registry;
-    private readonly string              _filePath;
-    private readonly ILogger             _log;
-    private readonly TimeSpan            _staleThreshold;
-
-    private Timer?       _debounceTimer;
-    private readonly object _timerLock = new();
-
-    /// <summary>
-    /// Creates the service.
-    /// </summary>
-    /// <param name="registry">The live module registry to persist.</param>
-    /// <param name="filePath">Path of the state JSON file (default: p2l_state.json next to the binary).</param>
-    /// <param name="staleThreshold">
-    /// Operating entries older than this are ignored on load (prevents re-lighting
-    /// modules from a previous shift). Default: 8 hours.
-    /// </param>
-    public RegistryPersistenceService(LightModuleRegistry registry,
-                                      ILogger<RegistryPersistenceService> log,
-                                      string? filePath = null,
-                                      TimeSpan staleThreshold = default)
+    private readonly string _filePath;
+    private readonly ILogger _log;
+    private readonly object _saveLock = new();
+    private bool _loaded;
+    public RegistryPersistenceService(LightModuleRegistry registry, ILogger<RegistryPersistenceService> log,
+        string? filePath = null, TimeSpan staleThreshold = default)
     {
-        _registry       = registry;
-        _log            = log;
-        _filePath       = filePath ?? Path.Combine(AppContext.BaseDirectory, "p2l_state.json");
-        _staleThreshold = staleThreshold == default ? TimeSpan.FromHours(8) : staleThreshold;
+        _registry = registry;
+        _log = log;
+        _filePath = filePath ?? Path.Combine(AppContext.BaseDirectory, "p2l_state.json");
+        // Keep this legacy optional argument for API compatibility. Pending owners are
+        // no longer discarded by age: elapsed time does not prove their lights are off.
     }
-
-    // ─── Load ─────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Reads the state file and restores all non-stale Operating modules into
-    /// the registry, then subscribes to future state changes for auto-save.
-    /// Safe to call multiple times — subsequent calls are no-ops.
-    /// </summary>
     public void Load()
     {
-        if (File.Exists(_filePath))
+        lock (_registry.SyncRoot)
         {
+            if (_loaded)
+                return;
+            bool exists;
             try
             {
-                var json    = File.ReadAllText(_filePath);
-                var entries = JsonSerializer.Deserialize(json, CoreJsonContext.Default.ListPersistedModuleEntry);
-                if (entries is not null)
+                _ = File.GetAttributes(_filePath);
+                exists = true;
+            }
+            catch (FileNotFoundException) { exists = false; }
+            catch (DirectoryNotFoundException) { exists = false; }
+            if (exists)
+            {
+                try
                 {
-                    var cutoff  = DateTime.UtcNow - _staleThreshold;
-                    int loaded  = 0;
-                    int skipped = 0;
-
-                    foreach (var e in entries)
+                    var json = File.ReadAllText(_filePath);
+                    using var document = JsonDocument.Parse(json);
+                    RegistrySnapshot snapshot;
+                    if (document.RootElement.ValueKind == JsonValueKind.Array)
                     {
-                        if (e.LastInstructionAt < cutoff)
+                        var legacy = JsonSerializer.Deserialize(json, CoreJsonContext.Default.ListPersistedModuleEntry) ?? throw new JsonException("Empty legacy state.");
+                        snapshot = new RegistrySnapshot
                         {
-                            skipped++;
-                            continue;
-                        }
-
-                        _registry.SetInstructed(new PickingInstruction
-                        {
-                            Address  = e.Address,
-                            Quantity = e.Quantity,
-                            Color    = e.Color,
-                            LedMode  = e.LedMode,
-                            SegMode  = e.SegMode,
-                            BuzMode  = e.BuzMode,
-                            BlockNo  = e.BlockNo,
-                            CorrelationId = e.CorrelationId,
-                        });
-                        loaded++;
+                            Modules = legacy.Select(e => new LightModuleState
+                            {
+                                Address = e.Address,
+                                Status = ModuleStatus.Operating,
+                                DisplayData = e.Quantity.ToString().PadLeft(5, '0'),
+                                Color = e.Color,
+                                LedMode = e.LedMode,
+                                SegMode = e.SegMode,
+                                BuzMode = e.BuzMode,
+                                BlockNo = e.BlockNo,
+                                CorrelationId = e.CorrelationId,
+                                CommandItemId = e.CommandItemId,
+                                PickingDetailId = e.PickingDetailId,
+                                LastInstructionAt = e.LastInstructionAt
+                            }).ToList()
+                        };
                     }
-
-                    _log.LogInformation(
-                        "[State] Loaded {Loaded} module(s) from {File} ({Skipped} stale skipped)",
-                        loaded, Path.GetFileName(_filePath), skipped);
+                    else
+                    {
+                        if (!document.RootElement.TryGetProperty("version", out var version) || version.GetInt32() != 2
+                            || !document.RootElement.TryGetProperty("modules", out _)
+                            || !document.RootElement.TryGetProperty("completedItems", out _)
+                            || !document.RootElement.TryGetProperty("interrupts", out _))
+                            throw new JsonException("Incomplete versioned state envelope.");
+                        snapshot = JsonSerializer.Deserialize(json, CoreJsonContext.Default.RegistrySnapshot) ?? throw new JsonException("Empty state snapshot.");
+                    }
+                    Validate(snapshot);
+                    _registry.Restore(snapshot);
+                    _log.LogInformation("[State] Restored {Count} module owners and replay guards", snapshot.Modules.Count);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "[State] Existing state cannot be loaded; refusing an empty-state startup: {File}", _filePath);
+                    throw new IOException("Existing Pick2Light state is invalid or unreadable; reconcile it before startup.", ex);
                 }
             }
-            catch (Exception ex)
+            _registry.PersistenceRequired += SaveRequired;
+            _loaded = true;
+        }
+    }
+    private static void Validate(RegistrySnapshot snapshot)
+    {
+        if (snapshot.Version != 2 || snapshot.Modules is null || snapshot.CompletedItems is null || snapshot.Interrupts is null
+            || snapshot.Modules.Count > 9999 || snapshot.CompletedItems.Count > LightModuleRegistry.CompletedHistoryLimit
+            || snapshot.Interrupts.Count > LightModuleRegistry.InterruptHistoryLimit)
+            throw new JsonException("Invalid state version or capacity.");
+        if (snapshot.PendingBatchCompletions is null || snapshot.PendingBatchCompletions.Count > 256
+            || snapshot.PendingBatchCompletions.Any(c => c is null || string.IsNullOrWhiteSpace(c.EventId) || c.CompletedAt == default))
+            throw new JsonException("Invalid pending batch completions.");
+        if (snapshot.ClosedSessions is null || snapshot.ClosedSessions.Count > LightModuleRegistry.CompletedHistoryLimit
+            || snapshot.ClosedSessions.Any(c => c is null || string.IsNullOrWhiteSpace(c.CorrelationId)
+                || c.BlockNo.Length != 2 || !c.BlockNo.All(char.IsAsciiDigit) || c.ClosedAt == default)
+            || snapshot.ClosedSessions.Select(c => (c.BlockNo, c.CorrelationId)).Distinct().Count() != snapshot.ClosedSessions.Count)
+            throw new JsonException("Invalid closed-session replay history.");
+        if (snapshot.PendingMissingConfirmations is null || snapshot.PendingMissingConfirmations.Count > 256
+            || snapshot.PendingMissingConfirmations.Any(e => e is null || string.IsNullOrWhiteSpace(e.EventId)
+                || e.Address.Length != 4 || !e.Address.All(char.IsAsciiDigit) || e.Address == "0000"
+                || e.BlockNo.Length != 2 || !e.BlockNo.All(char.IsAsciiDigit)
+                || e.DetectedAt == default || e.LastInstructionAt == default || !Enum.IsDefined(e.ObservedStatus)))
+            throw new JsonException("Invalid pending missing confirmations.");
+        var addresses = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var m in snapshot.Modules)
+        {
+            if (m is null || m.Address.Length != 4 || !addresses.Add(m.Address) || !Enum.IsDefined(m.Status) || m.LastInstructionAt is null)
+                throw new JsonException("Invalid persisted module.");
+            if ((m.ConfirmationMissingAt is null) != (m.ConfirmationMissingEventId is null)
+                || (m.ConfirmationMissingAt is not null && (m.Status != P2L.Shared.Enums.ModuleStatus.Operating
+                    || string.IsNullOrWhiteSpace(m.ConfirmationMissingEventId))))
+                throw new JsonException("Invalid missing-confirmation state.");
+            PickingEngine.ValidateInstructions([new PickingInstruction {Address=m.Address,Quantity=int.TryParse(m.DisplayData.Trim(),out var q)?q:-1,
+                BlockNo=m.BlockNo,Color=m.Color,LedMode=m.LedMode,SegMode=m.SegMode,BuzMode=m.BuzMode}]);
+        }
+        foreach (var c in snapshot.CompletedItems)
+            if (c is null || c.CompletedAt == default || (string.IsNullOrEmpty(c.CommandItemId) && string.IsNullOrEmpty(c.PickingDetailId)))
+                throw new JsonException("Invalid completed-item guard.");
+        foreach (var i in snapshot.Interrupts)
+            if (i is null || (i.Source == "manual_recovery" ? i.SequenceNo != -1 : i.SequenceNo is < 0 or > 999)
+                || i.Address.Length != 4 || !i.Address.All(char.IsAsciiDigit) || i.Address == "0000"
+                || !Enum.IsDefined(i.Status) || i.ProcessedAt == default
+                || (i.PendingState is not null && (string.IsNullOrEmpty(i.EventId) || i.PendingState.Address != i.Address
+                    || i.PendingState.Status is not (ModuleStatus.Completed or ModuleStatus.Shortage))))
+                throw new JsonException("Invalid interrupt guard.");
+    }
+    private void SaveRequired() => Save(true);
+    private void Save(bool throwOnError)
+    {
+        // Every caller uses registry -> save lock ordering, including Dispose.
+        lock (_registry.SyncRoot)
+            lock (_saveLock)
             {
-                _log.LogWarning("[State] Could not read state file {File}: {Err}", _filePath, ex.Message);
-            }
-        }
-
-        // Subscribe AFTER load so we don't save immediately due to load-induced events
-        _registry.StateChanged += OnStateChanged;
-    }
-
-    // ─── Save ─────────────────────────────────────────────────────────────
-
-    private void OnStateChanged(LightModuleState _) => ScheduleSave();
-
-    private void ScheduleSave()
-    {
-        lock (_timerLock)
-        {
-            _debounceTimer?.Dispose();
-            _debounceTimer = new Timer(_ => Save(), null, dueTime: 300, period: Timeout.Infinite);
-        }
-    }
-
-    private void Save()
-    {
-        try
-        {
-            var entries = _registry.All
-                .Where(m => m.Status == ModuleStatus.Operating)
-                .Select(m => new PersistedModuleEntry
+                try
                 {
-                    Address            = m.Address,
-                    Quantity           = int.TryParse(m.DisplayData.Trim(), out int q) ? q : 0,
-                    Color              = m.Color,
-                    LedMode            = m.LedMode,
-                    SegMode            = m.SegMode,
-                    BuzMode            = m.BuzMode,
-                    BlockNo            = m.BlockNo,
-                    CorrelationId      = m.CorrelationId,
-                    LastInstructionAt  = m.LastInstructionAt ?? DateTime.UtcNow,
-                })
-                .ToList();
-
-            var json = JsonSerializer.Serialize(entries, CoreJsonContext.Default.ListPersistedModuleEntry);
-            File.WriteAllText(_filePath, json);
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning("[State] Could not save state file: {Err}", ex.Message);
-        }
+                    var json = JsonSerializer.Serialize(_registry.Snapshot(), CoreJsonContext.Default.RegistrySnapshot);
+                    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_filePath))!);
+                    var temporary = _filePath + ".tmp";
+                    using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
+                    {
+                        stream.Write(System.Text.Encoding.UTF8.GetBytes(json));
+                        stream.Flush(true);
+                    }
+                    File.Move(temporary, _filePath, true);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "[State] Durable state transition failed");
+                    if (throwOnError)
+                        throw;
+                }
+            }
     }
-
-    // ─── Disposal ─────────────────────────────────────────────────────────
-
     public void Dispose()
     {
-        _registry.StateChanged -= OnStateChanged;
-
-        lock (_timerLock)
+        lock (_registry.SyncRoot)
         {
-            _debounceTimer?.Dispose();
-            _debounceTimer = null;
+            if (!_loaded)
+                return;
+            _registry.PersistenceRequired -= SaveRequired;
+            Save(false);
+            _loaded = false;
         }
-
-        // Final flush so the last state change is always persisted
-        Save();
     }
 }
 
-// ─── Persisted DTO ────────────────────────────────────────────────────────
-
-/// <summary>Serializable snapshot of a single Operating module.</summary>
+// Legacy array schema remains readable. The next successful transition upgrades it.
 public sealed class PersistedModuleEntry
 {
-    public string    Address           { get; set; } = "";
-    public int       Quantity          { get; set; }
-    public LightColor Color            { get; set; } = LightColor.Green;
-    public LightState LedMode          { get; set; } = LightState.On;
-    public LightState SegMode          { get; set; } = LightState.On;
-    public LightState BuzMode          { get; set; } = LightState.Off;
-    public string     BlockNo          { get; set; } = "00";
-    public string?    CorrelationId    { get; set; }
-    public DateTime  LastInstructionAt { get; set; }
+    public string Address { get; set; } = "";
+    public int Quantity { get; set; }
+    public LightColor Color { get; set; } = LightColor.Green;
+    public LightState LedMode { get; set; } = LightState.On;
+    public LightState SegMode { get; set; } = LightState.On;
+    public LightState BuzMode { get; set; } = LightState.Off;
+    public string BlockNo { get; set; } = "00";
+    public string? CorrelationId { get; set; }
+    public string? CommandItemId { get; set; }
+    public string? PickingDetailId { get; set; }
+    public DateTime LastInstructionAt { get; set; }
 }
-
-// ─── AOT-safe JSON context ────────────────────────────────────────────────
-
 [JsonSerializable(typeof(List<PersistedModuleEntry>))]
-[JsonSourceGenerationOptions(
-    PropertyNamingPolicy   = JsonKnownNamingPolicy.CamelCase,
-    UseStringEnumConverter = true,
-    WriteIndented          = true)]
-internal sealed partial class CoreJsonContext : JsonSerializerContext { }
+[JsonSerializable(typeof(RegistrySnapshot))]
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, UseStringEnumConverter = true, WriteIndented = true)]
+internal sealed partial class CoreJsonContext : JsonSerializerContext
+{
+}

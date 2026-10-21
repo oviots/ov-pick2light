@@ -7,3 +7,6 @@ logs/
 .vs/
 .idea/
 *.suo
+
+# Local dashboard MQTT credentials
+/client/config/p2l_client_config.json

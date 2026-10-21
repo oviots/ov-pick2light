@@ -18,6 +18,13 @@ class LightModuleState:
     adjusted_quantity: Optional[str] = None
     block_no: str = "00"
     correlation_id: Optional[str] = None
+    command_item_id: Optional[str] = None
+    picking_detail_id: Optional[str] = None
+    event_id: Optional[str] = None
+    observed_status: Optional[ModuleStatus] = None
+    confirmation_missing_at: Optional[datetime] = None
+    confirmation_missing_event_id: Optional[str] = None
+    can_cancel_test: bool = False
     label: str = ""
     order_no: int = 0
 
@@ -35,6 +42,13 @@ class LightModuleState:
             "adjusted_quantity": self.adjusted_quantity,
             "block_no": self.block_no,
             "correlation_id": self.correlation_id,
+            "command_item_id": self.command_item_id,
+            "picking_detail_id": self.picking_detail_id,
+            "event_id": self.event_id,
+            "observed_status": self.observed_status.name if self.observed_status is not None else None,
+            "confirmation_missing_at": self.confirmation_missing_at.isoformat() if self.confirmation_missing_at else None,
+            "confirmation_missing_event_id": self.confirmation_missing_event_id,
+            "can_cancel_test": self.can_cancel_test,
             "label": self.label,
             "order_no": self.order_no,
         }
@@ -66,8 +80,12 @@ class ConfirmationEvent:
     received_at: datetime
     seq_no: int
     correlation_id: Optional[str] = None
+    command_item_id: Optional[str] = None
+    picking_detail_id: Optional[str] = None
+    event_id: Optional[str] = None
     label: Optional[str] = None
     display_data: Optional[str] = None
+    source: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -76,6 +94,10 @@ class ConfirmationEvent:
             "adjusted_display": self.adjusted_display,
             "received_at":      self.received_at.isoformat(),
             "correlation_id":   self.correlation_id,
+            "command_item_id": self.command_item_id,
+            "picking_detail_id": self.picking_detail_id,
+            "event_id": self.event_id,
             "label":            self.label,
             "display_data":     self.display_data,
+            "source":           self.source,
         }
