@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ._paths import bundle_dir
 
-from .api.routes import router
+from .api.routes import router, _manual_owner
 from .api.ws_manager import WebSocketManager
 from .config import AppConfig
 from .security import DashboardAccess
@@ -100,17 +100,28 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
 
     if evt_type == "confirmed":
         from .protocol.models import ConfirmationEvent
+        try:
+            received_at = datetime.fromisoformat(payload.get("timestamp", "").replace("Z", "+00:00"))
+        except (ValueError, TypeError, AttributeError):
+            received_at = datetime.now(timezone.utc)
+        if received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=timezone.utc)
         event = ConfirmationEvent(
             address=payload.get("address", "0000"),
             status=mqtt_to_completion_status(payload.get("status", "Normal")),
             adjusted_display=payload.get("adjustedDisplay"),
-            received_at=datetime.now(timezone.utc),
+            received_at=received_at,
             seq_no=0,
             correlation_id=payload.get("correlationId"),
+            command_item_id=payload.get("commandItemId"),
+            picking_detail_id=payload.get("pickingDetailId"),
+            event_id=payload.get("eventId"),
             label=payload.get("label"),
             display_data=payload.get("displayData"),
+            source=payload.get("source"),
         )
-        registry.set_confirmed(event)
+        if registry.set_confirmed(event) is False:
+            return
         await ws_manager.broadcast({"type": "confirmation", "data": event.to_dict()})
 
     elif evt_type == "light_changed":
@@ -133,6 +144,17 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
         module.display_data = payload.get("displayData") or "00000"
         module.block_no = payload.get("blockNo") or "00"
         module.correlation_id = payload.get("correlationId")
+        module.command_item_id = payload.get("commandItemId")
+        module.picking_detail_id = payload.get("pickingDetailId")
+        module.observed_status = mqtt_to_module_status(payload["observedStatus"]) if payload.get("observedStatus") is not None else None
+        module.confirmation_missing_event_id = payload.get("confirmationMissingEventId")
+        module.confirmation_missing_at = None
+        if payload.get("confirmationMissingAt"):
+            try:
+                module.confirmation_missing_at = datetime.fromisoformat(payload["confirmationMissingAt"].replace("Z", "+00:00"))
+            except (ValueError, TypeError, AttributeError):
+                pass
+        module.can_cancel_test = bool(module.correlation_id and module.correlation_id == _manual_owner(config.mqtt.client_id, module.block_no))
         if payload.get("lastInstructionAt"):
             try:
                 module.last_instruction_at = datetime.fromisoformat(
@@ -151,7 +173,7 @@ async def _on_mqtt_event(topic: str, payload: dict) -> None:
         _mqtt_seen_addrs.add(LightModuleRegistry.normalize_address(addr))
 
     elif evt_type == "batch_completed":
-        await ws_manager.broadcast({"type": "batch_completed", "data": {}})
+        await ws_manager.broadcast({"type": "batch_completed", "data": {"correlation_id": payload.get("correlationId"), "event_id": payload.get("eventId")}})
 
     elif evt_type == "bridge_status":
         online = payload.get("online", False)

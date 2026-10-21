@@ -6,9 +6,24 @@ public sealed class MqttSettings
     public bool    Enabled      { get; init; } = false;
     public string  Host         { get; init; } = "localhost";
     public int     Port         { get; init; } = 8883;
+    /// <summary>Optional absolute ws/wss MQTT endpoint. When set, overrides Host/Port; the URL scheme selects TLS.</summary>
+    public string? WebSocketUrl { get; init; }
     public string  ClientId     { get; init; } = "p2l-bridge";
     public string? Username     { get; init; }
     public string? Password     { get; init; }
+    public MqttSettings? BackupBroker { get; init; }
+    /// <summary>
+    /// Wait for the WMS application to acknowledge each durable business event,
+    /// even with one broker. Requires a peer supporting transport probes/event_ack.
+    /// Leave false for standalone legacy clients; backup mode always requires ACKs.
+    /// </summary>
+    public bool RequireApplicationAck { get; init; } = false;
+    public int ProbeIntervalMs { get; init; } = 1000;
+    public int ProbeTimeoutMs { get; init; } = 3000;
+    public int FailbackStableMs { get; init; } = 10000;
+    public int CommandQueueCapacity { get; init; } = 64;
+    public int CommandExecutionTimeoutMs { get; init; } = 25000;
+    public int DiagnosticTimeoutMs { get; init; } = 15000;
     /// <summary>MQTT 5 session retention after disconnect (1..86400 seconds).</summary>
     public uint SessionExpirySeconds { get; init; } = 600;
     /// <summary>Durable command receipts used to reject duplicate execution after restart.</summary>
@@ -25,7 +40,8 @@ public sealed class MqttSettings
 
     /// <summary>
     /// Path to the offline event buffer file (JSONL).
-    /// Business events are flushed here before MQTT delivery and replayed until PUBACK.
+    /// Business events are flushed here before MQTT delivery and replayed until
+    /// application ACK in WMS/backup mode, or PUBACK in legacy standalone mode.
     /// Relative paths are resolved from the working directory.
     /// Must be non-empty while MQTT is enabled; confirmations require durable storage.
     /// </summary>

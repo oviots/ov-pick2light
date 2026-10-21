@@ -39,6 +39,15 @@ static bool   Cfg_Bool  (IConfiguration c, string k, bool   def) => bool .TryPar
 static int    Cfg_Int   (IConfiguration c, string k, int    def) => int  .TryParse(c[k], out var v) ? v : def;
 static long   Cfg_Long  (IConfiguration c, string k, long   def) => long .TryParse(c[k], out var v) ? v : def;
 static string Cfg_String(IConfiguration c, string k, string def) => c[k] ?? def;
+static MqttTlsSettings Cfg_Tls(IConfiguration c, string prefix) => new()
+{
+    Enabled = Cfg_Bool(c, prefix + ":Enabled", true),
+    CaCertPath = c[prefix + ":CaCertPath"],
+    ClientCertPath = c[prefix + ":ClientCertPath"],
+    ClientKeyPath = c[prefix + ":ClientKeyPath"],
+    CertPassword = c[prefix + ":CertPassword"],
+    AllowUntrustedCerts = Cfg_Bool(c, prefix + ":AllowUntrustedCerts", false),
+};
 
 var appSettings = new AppSettings
 {
@@ -52,11 +61,21 @@ var appSettings = new AppSettings
     MaxLogFileSizeBytes = Cfg_Long  (config, "MaxLogFileSizeBytes", 10 * 1024 * 1024),
     EnableStatePersistence = Cfg_Bool(config, "EnableStatePersistence", false),
     StartMinimizedOnWindows = Cfg_Bool(config, "StartMinimizedOnWindows", true),
+    ConfirmationRecovery = new ConfirmationRecoverySettings
+    {
+        Enabled = Cfg_Bool(config, "ConfirmationRecovery:Enabled", true),
+        PollIntervalMs = Cfg_Int(config, "ConfirmationRecovery:PollIntervalMs", 2000),
+        MaxProbesPerCycle = Cfg_Int(config, "ConfirmationRecovery:MaxProbesPerCycle", 4),
+        MinimumInstructionAgeMs = Cfg_Int(config, "ConfirmationRecovery:MinimumInstructionAgeMs", 15000),
+        ProbeTimeoutMs = Cfg_Int(config, "ConfirmationRecovery:ProbeTimeoutMs", 1500),
+        MismatchGraceMs = Cfg_Int(config, "ConfirmationRecovery:MismatchGraceMs", 10000),
+    },
     Mqtt = new MqttSettings
     {
         Enabled           = Cfg_Bool  (config, "Mqtt:Enabled",           false),
         Host              = Cfg_String(config, "Mqtt:Host",              "localhost"),
         Port              = Cfg_Int   (config, "Mqtt:Port",              8883),
+        WebSocketUrl      = config["Mqtt:WebSocketUrl"],
         ClientId          = Cfg_String(config, "Mqtt:ClientId",          "p2l-bridge"),
         Username          = config["Mqtt:Username"],
         Password          = config["Mqtt:Password"],
@@ -68,15 +87,30 @@ var appSettings = new AppSettings
         ClientDbPath      = config["Mqtt:ClientDbPath"] ?? Path.Combine(appDataBase, "p2l_devices.db"),
         SessionExpirySeconds = (uint)Math.Clamp(Cfg_Int(config, "Mqtt:SessionExpirySeconds", 600), 1, 86400),
         CommandReceiptPath = Cfg_String(config, "Mqtt:CommandReceiptPath", Path.Combine(appDataBase, "p2l_commands.db")),
-        Tls = new MqttTlsSettings
+        RequireApplicationAck = Cfg_Bool(config, "Mqtt:RequireApplicationAck", false),
+        ProbeIntervalMs = Math.Clamp(Cfg_Int(config, "Mqtt:ProbeIntervalMs", 1000), 100, 60000),
+        ProbeTimeoutMs = Math.Clamp(Cfg_Int(config, "Mqtt:ProbeTimeoutMs", 3000), 500, 60000),
+        FailbackStableMs = Math.Clamp(Cfg_Int(config, "Mqtt:FailbackStableMs", 10000), 0, 300000),
+        CommandQueueCapacity = Math.Clamp(Cfg_Int(config, "Mqtt:CommandQueueCapacity", 64), 1, 1024),
+        DiagnosticTimeoutMs = Math.Clamp(Cfg_Int(config, "Mqtt:DiagnosticTimeoutMs", 15000), 1000, 60000),
+        CommandExecutionTimeoutMs = Math.Clamp(Cfg_Int(config, "Mqtt:CommandExecutionTimeoutMs", 25000), 1, 30000),
+        BackupBroker = Cfg_Bool(config, "Mqtt:BackupBroker:Enabled", false) ? new MqttSettings
         {
-            Enabled             = Cfg_Bool  (config, "Mqtt:Tls:Enabled",             true),
-            CaCertPath          = config["Mqtt:Tls:CaCertPath"],
-            ClientCertPath      = config["Mqtt:Tls:ClientCertPath"],
-            ClientKeyPath       = config["Mqtt:Tls:ClientKeyPath"],
-            CertPassword        = config["Mqtt:Tls:CertPassword"],
-            AllowUntrustedCerts = Cfg_Bool  (config, "Mqtt:Tls:AllowUntrustedCerts", false),
-        },
+            Enabled = true,
+            Host = Cfg_String(config, "Mqtt:BackupBroker:Host", "localhost"),
+            Port = Cfg_Int(config, "Mqtt:BackupBroker:Port", 8883),
+            WebSocketUrl = config["Mqtt:BackupBroker:WebSocketUrl"],
+            ClientId = Cfg_String(config, "Mqtt:BackupBroker:ClientId", Cfg_String(config, "Mqtt:ClientId", "p2l-bridge") + "-backup"),
+            Username = config["Mqtt:BackupBroker:Username"],
+            Password = config["Mqtt:BackupBroker:Password"],
+            CommandTopic = Cfg_String(config, "Mqtt:CommandTopic", "p2l/commands"),
+            EventTopic = Cfg_String(config, "Mqtt:EventTopic", "p2l/events"),
+            DevicesTopic = Cfg_String(config, "Mqtt:DevicesTopic", "p2l/devices"),
+            StatusTopic = Cfg_String(config, "Mqtt:StatusTopic", "p2l/status"),
+            SessionExpirySeconds = (uint)Math.Clamp(Cfg_Int(config, "Mqtt:SessionExpirySeconds", 600), 1, 86400),
+            Tls = Cfg_Tls(config, "Mqtt:BackupBroker:Tls"),
+        } : null,
+        Tls = Cfg_Tls(config, "Mqtt:Tls"),
     },
     SelfHeal = new SelfHealSettings
     {
@@ -110,8 +144,9 @@ var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
 // SIGTERM from systemd / container runtimes → cancel
-if (!OperatingSystem.IsWindows())
-    PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => cts.Cancel());
+using var sigterm = !OperatingSystem.IsWindows()
+    ? PosixSignalRegistration.Create(PosixSignal.SIGTERM, context => { context.Cancel = true; cts.Cancel(); })
+    : null;
 
 // ─── Service registration ─────────────────────────────────────────────────
 
@@ -150,8 +185,19 @@ services.AddSingleton<AioiGateway>(sp =>
 
 // Core
 services.AddSingleton<LightModuleRegistry>();
-services.AddSingleton<PickingEngine>();
+services.AddSingleton(sp => new PickingEngine(
+    sp.GetRequiredService<AioiGateway>(), sp.GetRequiredService<LightModuleRegistry>(),
+    sp.GetRequiredService<ILogger<PickingEngine>>(), appSettings.Mqtt.CommandExecutionTimeoutMs));
 services.AddSingleton<HeartbeatService>();
+if (appSettings.ConfirmationRecovery.Enabled)
+    services.AddSingleton(sp => new MissingConfirmationMonitor(
+        sp.GetRequiredService<PickingEngine>(), sp.GetRequiredService<AioiGateway>(),
+        sp.GetRequiredService<ILogger<MissingConfirmationMonitor>>(),
+        appSettings.ConfirmationRecovery.PollIntervalMs,
+        appSettings.ConfirmationRecovery.MaxProbesPerCycle,
+        appSettings.ConfirmationRecovery.MinimumInstructionAgeMs,
+        appSettings.ConfirmationRecovery.ProbeTimeoutMs,
+        appSettings.ConfirmationRecovery.MismatchGraceMs));
 services.AddSingleton<WatchdogService>(sp =>
 {
     var svc = new WatchdogService(

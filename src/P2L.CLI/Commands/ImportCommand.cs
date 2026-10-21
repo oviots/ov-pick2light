@@ -71,6 +71,11 @@ public sealed class ImportCommand : AsyncCommand<ImportCommand.Settings>
             AnsiConsole.MarkupLine($"[yellow]{parseErrors.Count} parse issue(s):[/]");
             foreach (var e in parseErrors)
                 AnsiConsole.MarkupLine($"  [grey]row {e.Row}[/] [red]{e.Message}[/]");
+            if (!s.SkipInvalid)
+            {
+                AnsiConsole.MarkupLine("[red]Aborting before hardware writes. Fix parse errors or use --skip-invalid.[/]");
+                return 1;
+            }
         }
 
         if (records.Count == 0)

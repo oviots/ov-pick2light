@@ -6,10 +6,13 @@ using System.Text;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using P2L.Core;
 using P2L.Core.Services;
 using P2L.Hardware;
 using P2L.Hardware.Protocol;
 using P2L.Hardware.Transport;
+using P2L.Shared.Constants;
+using P2L.Shared.Enums;
 using P2L.Shared.Models;
 
 namespace P2L.UnitTests;
@@ -171,6 +174,86 @@ public sealed class HardwareTests
         Assert.Equal(0, QueueCount(Transport(gateway)));
     }
 
+    [Fact]
+    public void OverwriteUsesDocumentedPp5WithNoModeArrayAndExactGoldenFrame()
+    {
+        PickingInstruction[] items = [new() { Address = "0008", Quantity = 1, BlockNo = "01" }];
+        var command = AioiEncoder.BlockInstructOverwrite("01", items);
+        Assert.Equal("PP5050001000800001", command);
+        var packet = new AioiPacket { SequenceNo = 7, Command = command }.ToBytes();
+        Assert.Equal("023030373030313850503530353030303130303038303030303103", Convert.ToHexString(packet).ToLowerInvariant());
+        // Vendor reference printed page 54 example (5): mode array omitted,
+        // block00, address0001, display00012.
+        Assert.Equal("PP5050000000100012", AioiEncoder.BlockInstructOverwrite("00",
+            [new PickingInstruction { Address = "0001", Quantity = 12, BlockNo = "00" }]));
+    }
+
+    [Fact]
+    public void InitialP1StillFits112ButRewritableEngineAdmissionFits111()
+    {
+        var items = Enumerable.Range(1, 112).Select(i => new PickingInstruction { Address = i.ToString("D4"), BlockNo = "01", Quantity = 1 }).ToArray();
+        Assert.Equal(111, AioiConstants.MaxBatchAddresses);
+        PickingEngine.ValidateInstructions(items[..111]);
+        Assert.Equal("INVALID_ITEMS", Assert.Throws<PickingCommandRejectedException>(() => PickingEngine.ValidateInstructions(items)).Code);
+        Assert.Equal(1012 + 9, new AioiPacket { Command = AioiEncoder.BlockInstruct("01", items) }.ToBytes().Length);
+        Assert.Equal(1008 + 9, new AioiPacket { Command = AioiEncoder.BlockInstructOverwrite("01", items[..111]) }.ToBytes().Length);
+        Assert.Throws<ArgumentOutOfRangeException>(() => new AioiPacket { Command = AioiEncoder.BlockInstructOverwrite("01", items) }.ToBytes());
+    }
+
+    [Fact]
+    public async Task Overwrite112AndEngine112AreRejectedBeforeAnyModeCommand()
+    {
+        await using var gateway = Gateway();
+        var items = Enumerable.Range(1, 112).Select(i => new PickingInstruction { Address = i.ToString("D4"), BlockNo = "01", Quantity = 1 }).ToArray();
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => gateway.OverwriteBatchAsync(items));
+        Assert.Equal(0, QueueCount(Transport(gateway)));
+        using var engine = new PickingEngine(gateway, new LightModuleRegistry(), NullLogger<PickingEngine>.Instance);
+        Assert.Equal("INVALID_ITEMS", (await Assert.ThrowsAsync<PickingCommandRejectedException>(() => engine.StartBatchAsync(items))).Code);
+        Assert.Equal(0, QueueCount(Transport(gateway)));
+    }
+
+    [Theory]
+    [InlineData(false, 112)]
+    [InlineData(true, 111)]
+    public async Task LargestSupportedHardwareBatchesCompleteAfterModeAndFinalAcks(bool overwrite, int count)
+    {
+        await using var gateway = Gateway();
+        var items = Enumerable.Range(1, count).Select(i => new PickingInstruction { Address = i.ToString("D4"), BlockNo = "01", Quantity = 1 }).ToArray();
+        var operation = overwrite ? gateway.OverwriteBatchAsync(items) : gateway.InstructBatchAsync(items);
+        var commands = await AckQueuedBatch(gateway, operation);
+        Assert.Equal(count + 1, commands.Count);
+        Assert.Equal(count, commands.Count(c => c.StartsWith("Am1", StringComparison.Ordinal)));
+        Assert.StartsWith(overwrite ? "PP5050001" : "P101", commands[^1]);
+    }
+
+    [Fact]
+    public async Task OverwriteKeepsPerAddressHeterogeneousColorAndModesInAm1()
+    {
+        await using var gateway = Gateway();
+        PickingInstruction[] items = [
+            new() { Address = "0008", Quantity = 1, BlockNo = "01", Color = LightColor.Red, LedMode = LightState.On },
+            new() { Address = "0014", Quantity = 2, BlockNo = "01", Color = LightColor.Blue, LedMode = LightState.Flash },
+            new() { Address = "0017", Quantity = 3, BlockNo = "01", Color = LightColor.Cyan, LedMode = LightState.HighFlash, SegMode = LightState.Flash, BuzMode = LightState.On },
+        ];
+        var commands = await AckQueuedBatch(gateway, gateway.OverwriteBatchAsync(items));
+        Assert.Equal(new[] { "Am10008\x32\x11\x21", "Am10014\x31\x13\x21", "Am10017\x31\x44\x32", "PP5050001000800001001400002001700003" }, commands);
+    }
+
+    private static async Task<List<string>> AckQueuedBatch(AioiGateway gateway, Task operation)
+    {
+        var commands = new List<string>();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        while (!operation.IsCompleted)
+        {
+            if (QueueCount(Transport(gateway)) == 0) { await Task.Delay(1, deadline.Token); continue; }
+            var packet = Read(Transport(gateway)).Packet;
+            commands.Add(packet.Command);
+            Respond(gateway, packet.SequenceNo, "o");
+        }
+        await operation;
+        return commands;
+    }
+
     [Theory]
     [InlineData("\u0002xxx0001o\u0003")]
     [InlineData("\u00020019999o\u0003")]
@@ -283,6 +366,40 @@ public sealed class HardwareTests
         Respond(gateway, Read(transport).Packet.SequenceNo, "a0000?");
         await probe;
         Assert.Equal(0, Field<int>(gateway, "_protocolFaulted"));
+    }
+
+    [Fact]
+    public async Task FailedBackgroundWorkerIsObservableWithoutAnOperationalSocket()
+    {
+        await using var gateway = Gateway();
+        var transport = Transport(gateway);
+        var supervise = typeof(TcpTransport).GetMethod("SuperviseAsync", Private)!;
+        Func<CancellationToken, Task> failure = _ => Task.FromException(new IOException("inert worker failure"));
+        await (Task)supervise.Invoke(transport, [failure, CancellationToken.None])!;
+        Assert.IsType<IOException>(transport.BackgroundFailure);
+        Assert.True(gateway.HasBackgroundFailure);
+        Assert.False(gateway.IsHealthy);
+    }
+
+    [Fact]
+    public async Task DynamicFinalPayloadIsSelectedOnlyAtWriteInitiation()
+    {
+        await using var gateway = Gateway();
+        var items = new List<PickingInstruction> { new() { Address = "0001", Quantity = 1, BlockNo = "01" } };
+        var operation = gateway.InstructBatchAsync(items, writeCurrent: write => write(items));
+        Respond(gateway, Read(Transport(gateway)).Packet.SequenceNo, "o");
+        await Task.Yield();
+        var reader = Reader(Transport(gateway));
+        object?[] args = [null];
+        using var wait = new CancellationTokenSource(2000);
+        while (!(bool)reader.GetType().GetMethod("TryRead")!.Invoke(reader, args)!) await Task.Delay(1, wait.Token);
+        items.Clear(); // The final command is already queued but not written.
+        var stream = RecordingNetworkStream.Create();
+        var writeMethod = typeof(TcpTransport).GetMethod("WriteQueuedAsync", Private)!;
+        await (ValueTask)writeMethod.Invoke(Transport(gateway), [args[0]!, stream, CancellationToken.None])!;
+        await operation;
+        Assert.Empty(stream.Writes);
+        Assert.Equal(0, PendingCount(gateway));
     }
 
     private sealed class RecordingNetworkStream : NetworkStream

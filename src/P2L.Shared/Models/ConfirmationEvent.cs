@@ -22,4 +22,10 @@ public sealed class ConfirmationEvent
 
     /// <summary>Raw sequence number from the interrupt packet (for ACK pairing).</summary>
     public int SequenceNo { get; init; }
+
+    /// <summary>Stable identity for durable pending-confirm replay.</summary>
+    public string? EventId { get; init; }
+
+    /// <summary>Null for hardware input; manual_recovery for explicit operator resolution.</summary>
+    public string? Source { get; init; }
 }

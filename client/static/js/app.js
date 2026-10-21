@@ -11,6 +11,9 @@ const state = {
   batchItems: [],        // items in the batch builder (not yet sent)
   batchActive: false,
   batchPending: new Set(),
+  batchIdentity: new Map(),
+  batchCorrelation: null,
+  batchStarting: false,
   eventFeed: [],
 };
 
@@ -179,6 +182,7 @@ function handleWsMessage(msg) {
       });
       renderDevices();
       updateStats();
+      if (state.batchActive) updateBatchStatus();
       break;
     }
 
@@ -186,7 +190,7 @@ function handleWsMessage(msg) {
       const evt = msg.data;
       pushEvent('confirmed', evt);
       addEvent(`${evt.address} confirmed`, evt.status === 'SHORTAGE' ? 'warning' : 'success');
-      if (state.batchPending.has(evt.address)) {
+      if (evt.correlation_id === state.batchCorrelation && evt.command_item_id === state.batchIdentity.get(evt.address) && state.batchPending.has(evt.address)) {
         state.batchPending.delete(evt.address);
         updateBatchStatus();
       }
@@ -195,6 +199,7 @@ function handleWsMessage(msg) {
     }
 
     case 'batch_completed':
+      if (!state.batchCorrelation || msg.data?.correlation_id !== state.batchCorrelation) break;
       pushEvent('batch_completed', {});
       toast('Batch complete! All items confirmed.', 'success');
       state.batchActive = false;
@@ -265,6 +270,7 @@ function updateStats() {
 const STATUS_PRIORITY = { OPERATING: 0, OPERATING2: 1, SHORTAGE: 2, COMPLETED: 3, MAINTENANCE: 4, POWER_ON: 5, STANDBY: 6 };
 
 function renderDevices() {
+  pruneRecoveryIntents();
   const grid = $('device-grid');
   const devices = Object.values(state.devices).sort((a, b) => {
     const sa = STATUS_PRIORITY[a.status] ?? 9, sb = STATUS_PRIORITY[b.status] ?? 9;
@@ -328,6 +334,7 @@ function _bindCardActions(card, address) {
   card.querySelector('.btn-light-off')?.addEventListener('click', () => lightOff(address));
   card.querySelector('.btn-check')?.addEventListener('click', () => checkDevice(address));
   card.querySelector('.btn-remove')?.addEventListener('click', () => removeDevice(address));
+  card.querySelector('.btn-recover')?.addEventListener('click', () => openRecoveryModal(address));
 
   // ── Order number inline edit ──
   const orderText = card.querySelector('.device-order-text');
@@ -413,6 +420,7 @@ function deviceCardHTML(d) {
   const labelVal = escHtml(d.label || '');
   const orderVal = d.order_no ?? 0;
 
+  const missing = Boolean(d.confirmation_missing_at && d.confirmation_missing_event_id && d.status === 'OPERATING');
   return `
     <div class="device-header">
       <span class="device-order-text" title="Display order">#${orderVal}</span>
@@ -427,12 +435,104 @@ function deviceCardHTML(d) {
     </div>
     <div class="color-indicator ${d.color !== 'OFF' && d.status === 'OPERATING' ? 'color-' + d.color : 'color-OFF'}"></div>
     <div class="device-display">${displayVal}</div>
+    ${missing ? `<div class="confirmation-warning"><strong>Confirmation missing</strong><span>Check the picked quantity before continuing.</span><button class="btn btn-sm btn-warning btn-recover">Resolve this item</button></div>` : ''}
     <div class="device-actions">
-      <button class="btn btn-sm btn-success btn-light-on">ON</button>
-      <button class="btn btn-sm btn-danger btn-light-off">OFF</button>
-      <button class="btn btn-sm btn-warning btn-check" title="Flash green for 3 s then off">Check</button>
+      <button class="btn btn-sm btn-success btn-light-on" ${missing ? 'disabled' : ''}>ON</button>
+      <button class="btn btn-sm btn-danger btn-light-off" ${missing ? 'disabled' : ''}>OFF</button>
+      <button class="btn btn-sm btn-warning btn-check" title="Flash green for 3 s then off" ${missing ? 'disabled' : ''}>Check</button>
       <button class="btn btn-sm btn-ghost btn-remove" title="Remove device">✕</button>
     </div>`;
+}
+
+// Recovery uses the exact warning/item snapshot, never the current address alone.
+let _recoverySnapshot = null;
+let _recoveryBusy = false;
+const _recoveryIntents = new Map();
+
+function pruneRecoveryIntents() {
+  for (const [key, entry] of _recoveryIntents) {
+    if (Date.parse(entry.command.expires_at) <= Date.now() || !recoveryMatches(state.devices[entry.snapshot.address], entry.snapshot)) _recoveryIntents.delete(key);
+  }
+}
+
+function recoveryIdentity(d) {
+  return { block_no: d.block_no, correlation_id: d.correlation_id,
+    command_item_id: d.command_item_id, picking_detail_id: d.picking_detail_id || null,
+    missing_event_id: d.confirmation_missing_event_id };
+}
+
+function recoveryMatches(d, snapshot) {
+  return Boolean(d && d.status === 'OPERATING' && d.confirmation_missing_at
+    && d.address === snapshot.address && JSON.stringify(recoveryIdentity(d)) === JSON.stringify(snapshot.identity));
+}
+
+function openRecoveryModal(address) {
+  if (_recoveryBusy) return;
+  pruneRecoveryIntents();
+  const d = state.devices[address];
+  if (!d || !d.confirmation_missing_at || !d.confirmation_missing_event_id || !d.command_item_id || !d.correlation_id) {
+    toast('Refresh the device state before recovering this item', 'warning'); return;
+  }
+  _recoverySnapshot = { address, identity: recoveryIdentity(d), quantity: Number((d.display_data || '').trim()), canCancel: d.can_cancel_test === true };
+  $('recovery-title').textContent = `Missing confirmation · ${address}`;
+  $('recovery-context').textContent = `Block ${d.block_no} · instructed quantity ${_recoverySnapshot.quantity} · observed ${d.observed_status || 'unknown'}`;
+  $('recovery-qty').value = ''; // Never assume the full instructed quantity was picked.
+  $('recovery-qty').max = String(_recoverySnapshot.quantity);
+  $('recovery-qty').placeholder = `Enter actual picked quantity (0–${_recoverySnapshot.quantity})`;
+  $('recovery-message').textContent = '';
+  $('btn-recovery-cancel-test').hidden = !_recoverySnapshot.canCancel;
+  $('recovery-modal').classList.remove('hidden');
+}
+
+function closeRecoveryModal() {
+  if (_recoveryBusy) return;
+  $('recovery-modal').classList.add('hidden');
+  _recoverySnapshot = null;
+}
+
+async function recoverItem(action) {
+  if (_recoveryBusy || !_recoverySnapshot) return;
+  const snapshot = _recoverySnapshot;
+  if (!recoveryMatches(state.devices[snapshot.address], snapshot)) {
+    pruneRecoveryIntents();
+    $('recovery-message').textContent = 'Item state changed. Close this dialog and refresh before recovering.'; return;
+  }
+  if (action === 'cancel' && !snapshot.canCancel) return;
+  const body = { ...snapshot.identity, action };
+  if (action === 'confirm') {
+    const raw = $('recovery-qty').value.trim();
+    const quantity = Number(raw);
+    if (!/^\d+$/.test(raw) || !Number.isInteger(quantity) || quantity < 0 || quantity > snapshot.quantity) {
+      $('recovery-message').textContent = `Enter the actual picked quantity from 0 to ${snapshot.quantity}.`; return;
+    }
+    body.actual_quantity = quantity;
+  }
+  const key = JSON.stringify([snapshot.address, body]);
+  // Retrying delivery after a lost HTTP result must reuse the exact intent bytes.
+  pruneRecoveryIntents();
+  if (!_recoveryIntents.has(key)) {
+    while (_recoveryIntents.size >= 128) _recoveryIntents.delete(_recoveryIntents.keys().next().value);
+    _recoveryIntents.set(key, { snapshot, command: { ...body, command_id: newIdentity(), expires_at: new Date(Date.now() + 600_000).toISOString() } });
+  }
+  const intent = _recoveryIntents.get(key).command;
+  _recoveryBusy = true;
+  ['btn-recovery-confirm', 'btn-recovery-retry', 'btn-recovery-cancel-test'].forEach(id => { $(id).disabled = true; });
+  $('recovery-message').textContent = 'Waiting for the recovery result…';
+  try {
+    await api('POST', `/api/devices/${snapshot.address}/recover`, intent, 35000);
+    _recoveryIntents.delete(key);
+    // Only Bridge telemetry/confirmed events may clear the warning or advance a batch.
+    toast('Recovery applied. Waiting for updated item state.', 'success');
+    $('recovery-modal').classList.add('hidden');
+    _recoverySnapshot = null;
+  } catch (error) {
+    if (error.executionStatus === 'rejected' || (!error.executionStatus && error.status >= 400 && error.status < 500)) _recoveryIntents.delete(key);
+    $('recovery-message').textContent = error.message;
+    toast(error.message, 'error');
+  } finally {
+    _recoveryBusy = false;
+    ['btn-recovery-confirm', 'btn-recovery-retry', 'btn-recovery-cancel-test'].forEach(id => { $(id).disabled = false; });
+  }
 }
 
 // ── Light Modal ────────────────────────────────────────────────────────────
@@ -812,21 +912,48 @@ function removeBatchItem(idx) {
   renderBatchBuilder();
 }
 
+function newIdentity() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = new Uint8Array(16); crypto.getRandomValues(bytes);
+  return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+}
+
 async function startBatch() {
+  if (state.batchStarting || state.batchActive) { toast('A batch is already active; refresh its status before another start', 'warning'); return; }
   if (state.batchItems.length === 0) { toast('Add items first', 'warning'); return; }
   const block_no = $('batch-block').value || '00';
   const buzz = $('batch-buzz')?.checked !== false;
+  const correlation_id = newIdentity();
+  const items = state.batchItems.map(item => ({ ...item, address: item.address.padStart(4, '0').slice(-4), command_item_id: newIdentity() }));
+  const command = { block_no, buzz, correlation_id, command_id: newIdentity(), expires_at: new Date(Date.now() + 600_000).toISOString(), items };
+  // Install the exact intent before HTTP: confirmations can precede command_result.
+  state.batchCorrelation = correlation_id;
+  state.batchIdentity = new Map(items.map(item => [item.address, item.command_item_id]));
+  state.batchPending = new Set(items.map(item => item.address));
+  state.batchActive = true;
+  state.batchStarting = true;
+  updateBatchStatus();
   try {
-    const result = await api('POST', '/api/batch/start', { block_no, buzz, items: state.batchItems });
-    state.batchActive = true;
-    state.batchPending = new Set(state.batchItems.map(i => i.address.padStart(4, '0').slice(-4)));
+    const result = await api('POST', '/api/batch/start', command);
     state.batchItems = [];
     renderBatchBuilder();
+    // Never recreate pending state after await: a matching WS completion may already have arrived.
     updateBatchStatus();
-    toast(`Batch started: ${result.count} modules`, 'success');
+    toast(state.batchActive ? `Batch started: ${result.count} modules` : 'Batch completed', 'success');
   } catch (e) {
+    if (e.executionStatus === 'rejected') { state.batchActive = false; state.batchPending.clear(); updateBatchStatus(); }
     toast(e.message, 'error');
+  } finally { state.batchStarting = false; }
+}
+
+function applyBatchStatus(bs) {
+  if (!state.batchCorrelation || bs.correlation_id !== state.batchCorrelation || !bs.known) return;
+  for (const item of bs.confirmed || []) {
+    if (item.command_item_id && item.command_item_id === state.batchIdentity.get(item.address)) state.batchPending.delete(item.address);
   }
+  // A partially received telemetry snapshot cannot prove unobserved items complete.
+  if (state.batchPending.size === 0) state.batchActive = false;
+  updateBatchStatus();
 }
 
 async function finishBatch() {
@@ -864,13 +991,14 @@ function updateBatchStatus() {
     .sort((a, b) => a.address.localeCompare(b.address))
     .forEach(d => {
       const confirmed = d.status === 'COMPLETED' || d.status === 'SHORTAGE';
+      const missing = d.status === 'OPERATING' && d.confirmation_missing_at && d.confirmation_missing_event_id;
       const tr = el('tr');
       tr.innerHTML = `
         <td class="addr-cell">${d.address}</td>
         <td>${(d.adjusted_quantity || d.display_data || '').trim().replace(/^0+/, '') || '0'}</td>
         <td><span class="color-dot" style="background:${COLOR_HEX[d.color] || '#374151'}"></span></td>
         <td>${d.label || '—'}</td>
-        <td>${confirmed ? '<span class="confirm-icon">✓</span>' : '<span class="pending-icon">○</span>'}</td>`;
+        <td>${confirmed ? '<span class="confirm-icon">✓</span>' : missing ? `<button class="btn btn-xs btn-warning" onclick="openRecoveryModal('${d.address}')">Missing confirm</button>` : '<span class="pending-icon">○</span>'}</td>`;
       tbody.appendChild(tr);
     });
 }
@@ -1414,13 +1542,26 @@ function importCSV() {
 }
 
 // ── API helper ────────────────────────────────────────────────────────────
-async function api(method, path, body) {
+async function api(method, path, body, timeoutMs = 0) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body && method !== 'GET') opts.body = JSON.stringify(body);
-  const res = await fetch(path, opts);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
-  return data;
+  const controller = timeoutMs ? new AbortController() : null;
+  if (controller) opts.signal = controller.signal;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const res = await fetch(path, opts);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const error = new Error(data.detail?.message || data.detail || `HTTP ${res.status}`);
+      error.executionStatus = data.detail?.execution_status;
+      error.status = res.status;
+      throw error;
+    }
+    return data;
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error('Recovery result timed out; item state remains unconfirmed. Refresh before continuing.');
+    throw error;
+  } finally { if (timer) clearTimeout(timer); }
 }
 
 function escHtml(s) {
@@ -1474,6 +1615,11 @@ async function init() {
   $('btn-confirm-light')?.addEventListener('click', confirmLightOn);
   $('btn-cancel-light')?.addEventListener('click', closeLightModal);
   $('light-modal')?.addEventListener('click', e => { if (e.target === $('light-modal')) closeLightModal(); });
+  $('btn-recovery-close')?.addEventListener('click', closeRecoveryModal);
+  $('btn-recovery-confirm')?.addEventListener('click', () => recoverItem('confirm'));
+  $('btn-recovery-retry')?.addEventListener('click', () => recoverItem('retry'));
+  $('btn-recovery-cancel-test')?.addEventListener('click', () => recoverItem('cancel'));
+  $('recovery-modal')?.addEventListener('click', e => { if (e.target === $('recovery-modal')) closeRecoveryModal(); });
 
   // Wire up batch tab
   $('btn-add-batch-item')?.addEventListener('click', addBatchItem);
@@ -1551,12 +1697,8 @@ $('btn-clear-events')?.addEventListener('click', () => {
   setInterval(async () => {
     if (!state.connected) return;
     try {
-      const bs = await api('GET', '/api/batch/status');
-      state.batchActive = bs.active;
-      if (bs.active) {
-        state.batchPending = new Set(bs.pending);
-        updateBatchStatus();
-      }
+      const bs = await api('GET', '/api/batch/status?correlation_id=' + encodeURIComponent(state.batchCorrelation || ''));
+      applyBatchStatus(bs);
     } catch { /* ignore */ }
   }, 5000);
 }

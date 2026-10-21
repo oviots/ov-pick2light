@@ -6,7 +6,7 @@ No direct Aioi hardware communication happens in this process.
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -42,16 +42,54 @@ def _config(request: Request):
 
 # ─── Schemas ──────────────────────────────────────────────────────────────────
 
-class LightRequest(BaseModel):
+class CommandIdentity(BaseModel):
+    correlation_id: Optional[str] = None
+    command_id: Optional[str] = None
+    expires_at: Optional[str] = None
+
+
+def _identity(body, default_correlation: Optional[str] = None) -> dict:
+    from uuid import uuid4
+    return {"correlationId": body.correlation_id or default_correlation or uuid4().hex,
+            **({"commandId": body.command_id} if body.command_id else {}),
+            **({"expiresAt": body.expires_at} if body.expires_at else {})}
+
+
+def _resolve_block(request: Request, block_no: Optional[str]) -> str:
+    return block_no or _config(request).block_no or "00"
+
+
+def _manual_owner(client_id: Optional[str], block_no: str) -> Optional[str]:
+    from uuid import NAMESPACE_URL, uuid5
+    if not isinstance(client_id, str) or not client_id.strip():
+        return None
+    # A manual owner survives dashboard restarts, while item/command IDs remain
+    # unique per intent. Never adopt a session owned by WMS or another client.
+    key = json.dumps(["p2l-dashboard-manual-v1", client_id, block_no], separators=(",", ":"))
+    return "manual:" + uuid5(NAMESPACE_URL, key).hex
+
+
+def _manual_session(request: Request, block_no: str) -> str:
+    owner = _manual_owner(_config(request).mqtt.client_id, block_no)
+    if owner is None:
+        raise HTTPException(status_code=422, detail="Configure a stable MQTT client ID before lighting modules without an explicit session")
+    return owner
+
+
+class LightRequest(CommandIdentity):
+    command_item_id: Optional[str] = None
+    picking_detail_id: Optional[str] = None
     quantity: int = Field(default=1, ge=0, le=99999)
     color: str = Field(default="GREEN")
     led_mode: str = Field(default="ON")
     buzz: bool = Field(default=True)
-    block_no: str = Field(default="00")
+    block_no: Optional[str] = None
     label: str = Field(default="")
 
 
 class BatchItem(BaseModel):
+    command_item_id: Optional[str] = None
+    picking_detail_id: Optional[str] = None
     address: str
     quantity: int = Field(ge=0, le=99999)
     color: str = Field(default="GREEN")
@@ -60,10 +98,22 @@ class BatchItem(BaseModel):
     label: str = Field(default="")
 
 
-class BatchRequest(BaseModel):
-    block_no: str = Field(default="00")
+class BatchRequest(CommandIdentity):
+    block_no: Optional[str] = None
     buzz: bool = Field(default=True)
     items: list[BatchItem]
+
+
+class RecoveryRequest(CommandIdentity):
+    command_id: str = Field(min_length=1)
+    expires_at: str = Field(min_length=1)
+    block_no: str = Field(min_length=2, max_length=2)
+    correlation_id: str = Field(min_length=1)
+    command_item_id: str = Field(min_length=1)
+    picking_detail_id: Optional[str] = None
+    missing_event_id: str = Field(min_length=1)
+    action: Literal["confirm", "retry", "cancel"]
+    actual_quantity: Optional[int] = Field(default=None, ge=0, le=99999, strict=True)
 
 
 class ConfigRequest(BaseModel):
@@ -115,14 +165,20 @@ def _parse_led_mode(name: str) -> LightState:
         return LightState.ON
 
 
-async def _publish(request: Request, command: dict) -> None:
+async def _publish(request: Request, command: dict, *, recovery_request: bool = False) -> None:
     """Publish a command to the P2L service via MQTT."""
     mc = _mqtt(request)
     if mc is None or not mc.is_connected:
         raise HTTPException(status_code=503, detail="Not connected to MQTT broker")
     try:
-        await mc.publish_command(command)
+        if recovery_request:
+            await mc.publish_command(command, recovery_request=True)
+        else:
+            await mc.publish_command(command)
     except Exception as exc:
+        outcome = getattr(exc, "outcome", None)
+        if outcome:
+            raise HTTPException(status_code=409, detail={"message": str(exc), "execution_status": outcome.get("status"), "command_id": outcome.get("commandId")})
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -480,15 +536,21 @@ async def update_device(request: Request, address: str, body: UpdateDeviceReques
 async def light_on(request: Request, address: str, body: LightRequest):
     c = _parse_color(body.color)
     s = _parse_led_mode(body.led_mode)
+    block_no = _resolve_block(request, body.block_no)
     payload: dict = {
         "type":     "light_on",
         "address":  address.zfill(4)[-4:],
         "quantity": body.quantity,
         "color":    _COLOR_TO_MQTT.get(c, "Green"),
         "ledMode":  _STATE_TO_MQTT.get(s, "On"),
-        "blockNo":  body.block_no or "00",
+        "blockNo":  block_no,
         "label":    body.label or None,
     }
+    from uuid import uuid4
+    payload.update(_identity(body, body.correlation_id or _manual_session(request, block_no)))
+    payload["commandItemId"] = body.command_item_id or uuid4().hex
+    if body.picking_detail_id:
+        payload["pickingDetailId"] = body.picking_detail_id
     if not body.buzz:
         payload["buzMode"] = "Off"
     await _publish(request, payload)
@@ -504,12 +566,56 @@ async def light_off(request: Request, address: str):
     return {"status": "sent", "address": address}
 
 
+@router.post("/api/devices/{address}/recover")
+async def recover_confirmation(request: Request, address: str, body: RecoveryRequest):
+    from ..protocol.enums import ModuleStatus
+    if not (1 <= len(address) <= 4 and address.isascii() and address.isdigit() and int(address) > 0):
+        raise HTTPException(status_code=422, detail="Address must contain 1–4 ASCII digits from 1 to 9999")
+    module = _registry(request).get(address)
+    if module is None:
+        raise HTTPException(status_code=404, detail="Module not found; refresh device state")
+    if (module.status != ModuleStatus.OPERATING or not module.confirmation_missing_at
+            or module.confirmation_missing_event_id != body.missing_event_id
+            or module.block_no != body.block_no or module.correlation_id != body.correlation_id
+            or module.command_item_id != body.command_item_id
+            or module.picking_detail_id != body.picking_detail_id):
+        raise HTTPException(status_code=409, detail="Item or missing-confirmation state changed; refresh before recovering")
+    manual = body.correlation_id == _manual_owner(_config(request).mqtt.client_id, body.block_no)
+    if body.action == "cancel" and not manual:
+        raise HTTPException(status_code=403, detail="Only this client's manual test can be ended here")
+    if not manual and not body.picking_detail_id:
+        raise HTTPException(status_code=409, detail="Original WMS picking detail is required for recovery")
+    if body.action == "confirm":
+        if body.actual_quantity is None:
+            raise HTTPException(status_code=422, detail="Enter the actual quantity picked, including zero")
+        try:
+            instructed_quantity = int(module.display_data.strip())
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=409, detail="Original quantity is unavailable; refresh before recovering")
+        if body.actual_quantity > instructed_quantity:
+            raise HTTPException(status_code=422, detail="Actual picked quantity cannot exceed the original instructed quantity")
+    elif body.actual_quantity is not None:
+        raise HTTPException(status_code=422, detail="Actual quantity is only accepted for confirm")
+    payload = {
+        "type": "resolve_confirmation" if manual else "recovery_requested",
+        "address": module.address, "blockNo": body.block_no,
+        "correlationId": body.correlation_id, "commandItemId": body.command_item_id,
+        "pickingDetailId": body.picking_detail_id, "missingEventId": body.missing_event_id,
+        "action": body.action, "commandId": body.command_id, "expiresAt": body.expires_at,
+    }
+    if body.action == "confirm":
+        payload["actualQuantity"] = body.actual_quantity
+    await _publish(request, payload, recovery_request=not manual)
+    return {"status": "applied", "address": module.address, "command_id": payload["commandId"]}
+
+
 # ─── Batch ────────────────────────────────────────────────────────────────────
 
 @router.post("/api/batch/start")
 async def start_batch(request: Request, body: BatchRequest):
     if not body.items:
         raise HTTPException(status_code=400, detail="No items in batch")
+    from uuid import uuid4
     items = []
     for item in body.items:
         led = _parse_led_mode(item.led_mode)
@@ -520,6 +626,9 @@ async def start_batch(request: Request, body: BatchRequest):
             "ledMode":  _STATE_TO_MQTT.get(led, "On"),
             "label":    item.label or None,
         }
+        entry["commandItemId"] = item.command_item_id or uuid4().hex
+        if item.picking_detail_id:
+            entry["pickingDetailId"] = item.picking_detail_id
         if item.buz_mode:
             buz = _parse_led_mode(item.buz_mode)
             entry["buzMode"] = _STATE_TO_MQTT.get(buz, "On")
@@ -528,11 +637,12 @@ async def start_batch(request: Request, body: BatchRequest):
         items.append(entry)
     payload: dict = {
         "type":    "batch_start",
-        "blockNo": body.block_no or "00",
+        "blockNo": _resolve_block(request, body.block_no),
         "items":   items,
     }
+    payload.update(_identity(body))
     await _publish(request, payload)
-    return {"status": "sent", "count": len(items)}
+    return {"status": "sent", "count": len(items), "correlation_id": payload["correlationId"]}
 
 
 @router.post("/api/batch/finish")
@@ -546,17 +656,17 @@ async def finish_batch(request: Request):
 
 
 @router.get("/api/batch/status")
-async def batch_status(request: Request):
+async def batch_status(request: Request, correlation_id: Optional[str] = None):
     reg = _registry(request)
     from ..protocol.enums import ModuleStatus
-    active = [m.address for m in reg.all
-              if m.status in (ModuleStatus.OPERATING, ModuleStatus.OPERATING2)]
-    pending = [m.address for m in reg.all if m.status == ModuleStatus.COMPLETED]
-    return {
-        "active":   len(active) > 0,
-        "pending":  pending,
-        "complete": len(active) == 0 and len(pending) == 0,
-    }
+    modules = [m for m in reg.all if not correlation_id or m.correlation_id == correlation_id]
+    active = [m.address for m in modules if m.status in (ModuleStatus.OPERATING, ModuleStatus.OPERATING2)]
+    confirmed = [{"address": m.address, "command_item_id": getattr(m, "command_item_id", None),
+                  "picking_detail_id": getattr(m, "picking_detail_id", None)}
+                 for m in modules if m.status in (ModuleStatus.COMPLETED, ModuleStatus.SHORTAGE)]
+    return {"active": bool(active), "pending": active, "confirmed": confirmed,
+            "correlation_id": correlation_id, "known": bool(modules),
+            "complete": bool(modules) and not active}
 
 
 # ─── Terminate all ────────────────────────────────────────────────────────────

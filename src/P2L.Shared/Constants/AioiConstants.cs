@@ -32,6 +32,10 @@ public static class AioiConstants
     // Display data is always 5 ASCII characters (right-aligned, space-padded)
     public const int DisplayDataLength = 5;
 
+    // PP50500 + BlockNo uses 9 bytes; every address/display pair uses 9 more.
+    // Engine admission must fit both initial P1 and subsequent PP5 relights.
+    public const int MaxBatchAddresses = (MaxCommandLength - 9) / (4 + DisplayDataLength);
+
     // Communication timeouts (milliseconds)
     public const int EthernetResponseTimeoutMs = 5_000;
     public const int ReconnectDelayMs          = 1_000;

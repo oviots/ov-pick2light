@@ -10,6 +10,7 @@ public abstract record MqttCommand
     public string?          CorrelationId { get; init; }
     public string?          CommandId     { get; init; }
     public DateTimeOffset?  ExpiresAt     { get; init; }
+    public DateTimeOffset?  ExecutionDeadlineAt { get; init; }
 }
 
 // ─── light_on ──────────────────────────────────────────────────────────────
@@ -35,6 +36,24 @@ public sealed record LightOnCmd : MqttCommand
 public sealed record LightOffCmd : MqttCommand
 {
     public required string Address { get; init; }
+}
+
+/// <summary>Explicit operator resolution of one observed missing confirmation.</summary>
+public sealed record ResolveConfirmationCmd : MqttCommand
+{
+    public required string Address { get; init; }
+    public required string BlockNo { get; init; }
+    public string? CommandItemId { get; init; }
+    public string? PickingDetailId { get; init; }
+    public required string MissingEventId { get; init; }
+    public required string Action { get; init; }
+    public int? ActualQuantity { get; init; }
+}
+
+/// <summary>Close one WMS owner after its business session is terminal.</summary>
+public sealed record ReleaseSessionCmd : MqttCommand
+{
+    public required string BlockNo { get; init; }
 }
 
 // ─── batch_start ───────────────────────────────────────────────────────────

@@ -46,7 +46,14 @@ public sealed class WatchdogService : IAsyncDisposable
     {
         // Phase 1 — wait for the first successful connection
         while (!_gateway.IsHealthy && !ct.IsCancellationRequested)
+        {
+            if (_gateway.HasBackgroundFailure)
+            {
+                RestartRequested?.Invoke("TCP background worker stopped before the first healthy connection");
+                return;
+            }
             await Task.Delay(2_000, ct);
+        }
 
         if (ct.IsCancellationRequested) return;
 

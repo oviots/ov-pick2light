@@ -23,6 +23,9 @@ public sealed class AppSettings
     /// <summary>Self-healing / auto-restart settings.</summary>
     public SelfHealSettings SelfHeal { get; init; } = new();
 
+    /// <summary>Bounded read-only checks for active lights whose confirmation is missing.</summary>
+    public ConfirmationRecoverySettings ConfirmationRecovery { get; init; } = new();
+
     /// <summary>
     /// Persist Operating module state to p2l_state.json so that lights
     /// remain known across one-shot CLI invocations. Default: false.
@@ -41,6 +44,16 @@ public sealed class GatewaySettings
     public string Host    { get; init; } = AioiConstants.DefaultGatewayIp;
     public int    Port    { get; init; } = AioiConstants.DefaultTcpPort;
     public string BlockNo { get; init; } = "00";
+}
+
+public sealed class ConfirmationRecoverySettings
+{
+    public bool Enabled { get; init; } = true;
+    public int PollIntervalMs { get; init; } = 2000;
+    public int MaxProbesPerCycle { get; init; } = 4;
+    public int MinimumInstructionAgeMs { get; init; } = 15000;
+    public int ProbeTimeoutMs { get; init; } = 1500;
+    public int MismatchGraceMs { get; init; } = 10000;
 }
 
 /// <summary>

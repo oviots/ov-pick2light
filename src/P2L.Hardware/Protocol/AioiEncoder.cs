@@ -133,19 +133,21 @@ public static class AioiEncoder
     /// P1 — Block instruction. Format: P1[BlockNo(2)][Addr(4)][Display(5)]...
     /// Flash mode is set via Am1 nibbles before P1, not via a separate FP1 command
     /// (FP1 is NACK'd by L-PICK Ethernet gateways; Am1 controls On/Flash/HighFlash).
-    /// Use P5 when you need to overwrite an in-progress instruction.
+    /// Use BlockInstructOverwrite when you need to overwrite an in-progress instruction.
     /// </summary>
     public static string BlockInstruct(string blockNo, IEnumerable<PickingInstruction> items,
                                        LightState ledMode = LightState.On)
         => BuildBlockCommand("P1", blockNo, items);
 
     /// <summary>
-    /// P5 — Rewritable block operation instruction (overwrites in-progress instruction).
-    /// Flash mode is set via Am1 nibbles before P5.
+    /// PP5 — Rewritable block instruction with no Fn display and no mode array.
+    /// Format: PP50500[BlockNo(2)][Addr(4)][Display(5)]...
+    /// Omitting the mode array preserves each address's preceding Am1 color/modes.
+    /// Plain P5 requires five operation-mode bytes and cannot use the P1 layout.
     /// </summary>
     public static string BlockInstructOverwrite(string blockNo, IEnumerable<PickingInstruction> items,
                                                 LightState ledMode = LightState.On)
-        => BuildBlockCommand("P5", blockNo, items);
+        => BuildBlockCommand("PP50500", blockNo, items);
 
     private static string BuildBlockCommand(string cmd, string blockNo, IEnumerable<PickingInstruction> items)
     {

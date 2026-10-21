@@ -33,7 +33,13 @@ public sealed class TcpTransport : IAsyncDisposable
     private readonly SemaphoreSlim _streamLock = new(1, 1);
 
     // Channel caps at 512 pending commands to prevent runaway memory use
-    private sealed record QueuedPacket(AioiPacket Packet, CancellationToken CancellationToken);
+    private sealed record QueuedPacket(AioiPacket Packet, CancellationToken CancellationToken)
+    {
+        public Func<Func<string?, ValueTask>, ValueTask>? WriteCurrent { get; init; }
+        public Action? Skipped { get; init; }
+        public Action<Exception>? Failed { get; init; }
+        public string? WrittenCommand { get; set; }
+    }
     private readonly Channel<QueuedPacket> _sendQueue =
         Channel.CreateBounded<QueuedPacket>(new BoundedChannelOptions(512)
         {
@@ -44,6 +50,9 @@ public sealed class TcpTransport : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private Task? _sendLoop;
     private Task? _recvLoop;
+    private Exception? _backgroundFailure;
+    private int _started;
+    public Exception? BackgroundFailure => Volatile.Read(ref _backgroundFailure);
 
     private int               _reconnectAttempts;
     private readonly SemaphoreSlim _reconnectLock = new(1, 1);
@@ -71,9 +80,30 @@ public sealed class TcpTransport : IAsyncDisposable
     /// <summary>Starts background connect/send/receive loops.</summary>
     public Task StartAsync(CancellationToken ct = default)
     {
-        _sendLoop = Task.Run(() => SendLoopAsync(_cts.Token), _cts.Token);
-        _recvLoop = Task.Run(() => ReceiveLoopAsync(_cts.Token), _cts.Token);
+        if (Interlocked.Exchange(ref _started, 1) != 0) return Task.CompletedTask;
+        _sendLoop = Task.Run(() => SuperviseAsync(SendLoopAsync, _cts.Token), _cts.Token);
+        _recvLoop = Task.Run(() => SuperviseAsync(ReceiveLoopAsync, _cts.Token), _cts.Token);
         return Task.CompletedTask;
+    }
+
+    private async Task SuperviseAsync(Func<CancellationToken, Task> run, CancellationToken ct)
+    {
+        try
+        {
+            await run(ct);
+            if (!ct.IsCancellationRequested)
+                throw new IOException("TCP background worker ended unexpectedly.");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            Interlocked.CompareExchange(ref _backgroundFailure, ex, null);
+            _cts.Cancel();
+            _sendQueue.Writer.TryComplete(ex);
+            try { DropConnection(); } catch { }
+            try { _log.LogCritical(ex, "TCP background worker stopped; restart is required"); }
+            catch { try { Console.Error.WriteLine("P2L TCP worker stopped; restart is required."); } catch { } }
+        }
     }
 
     /// <summary>
@@ -92,6 +122,42 @@ public sealed class TcpTransport : IAsyncDisposable
         var packet = new AioiPacket { SequenceNo = seq, Command = command };
         _ = packet.ToBytes(); // Reject invalid frames before they enter the background loop.
         await _sendQueue.Writer.WriteAsync(new QueuedPacket(packet, ct), ct);
+    }
+
+    internal async ValueTask EnqueueCurrentAsync(string command, int seq,
+        Func<Func<string?, ValueTask>, ValueTask> writeCurrent, Action skipped,
+        Action<Exception> failed, CancellationToken ct)
+    {
+        var packet = new AioiPacket { SequenceNo = seq, Command = command };
+        _ = packet.ToBytes();
+        await _sendQueue.Writer.WriteAsync(new QueuedPacket(packet, ct)
+        {
+            WriteCurrent = writeCurrent,
+            Skipped = skipped,
+            Failed = failed
+        }, ct);
+    }
+
+    // The caller's state fence covers payload selection AND write initiation only.
+    // Neither the stream write await nor the controller ACK holds that fence.
+    private async ValueTask WriteQueuedAsync(QueuedPacket queued, NetworkStream stream, CancellationToken ct)
+    {
+        ValueTask BeginWrite(string? command)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (command is null)
+            {
+                queued.Skipped?.Invoke();
+                return ValueTask.CompletedTask;
+            }
+            var packet = new AioiPacket { SequenceNo = queued.Packet.SequenceNo, Command = command };
+            queued.WrittenCommand = command;
+            return stream.WriteAsync(packet.ToBytes(), ct);
+        }
+        if (queued.WriteCurrent is { } current)
+            await current(BeginWrite);
+        else
+            await BeginWrite(queued.Packet.Command);
     }
 
     /// <summary>
@@ -152,8 +218,8 @@ public sealed class TcpTransport : IAsyncDisposable
                     commandCts.Token.ThrowIfCancellationRequested();
                     stream = _stream;
                     if (stream is null) throw new IOException("Gateway disconnected before command write.");
-                    await stream.WriteAsync(queued.Packet.ToBytes(), commandCts.Token);
-                    _log.LogDebug("[TX] SeqNo={Seq} Cmd={Cmd}", queued.Packet.SequenceNo, queued.Packet.Command);
+                    await WriteQueuedAsync(queued, stream, commandCts.Token);
+                    _log.LogDebug("[TX] SeqNo={Seq} Cmd={Cmd}", queued.Packet.SequenceNo, queued.WrittenCommand ?? "(completed batch skipped)");
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
                 catch (OperationCanceledException) when (queued.CancellationToken.IsCancellationRequested)
@@ -163,6 +229,7 @@ public sealed class TcpTransport : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
+                    queued.Failed?.Invoke(ex);
                     _log.LogWarning(ex, "Send failed; will reconnect");
                     if (stream is not null) DropConnection(stream);
                 }

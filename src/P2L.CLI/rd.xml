@@ -25,6 +25,8 @@
       <Type Name="P2L.CLI.Commands.ImportCommand+Settings"         Dynamic="Required All"/>
       <Type Name="P2L.CLI.Commands.RunPickCommand"                 Dynamic="Required All"/>
       <Type Name="P2L.CLI.Commands.RunPickCommand+Settings"        Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.ServeCommand"                   Dynamic="Required All"/>
+      <Type Name="P2L.CLI.Commands.ServeCommand+Settings"          Dynamic="Required All"/>
     </Assembly>
     <Assembly Name="P2L.Mqtt">
       <Type Name="P2L.Mqtt.OfflineBufferService"              Dynamic="Required All" />

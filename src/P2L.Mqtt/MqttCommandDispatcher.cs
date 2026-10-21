@@ -23,6 +23,7 @@ internal sealed class MqttCommandDispatcher
     private readonly ILogger             _log;
     private readonly SemaphoreSlim        _commandLock = new(1, 1);
     private readonly CommandReceiptStore _receipts;
+    private readonly int _diagnosticTimeoutMs;
 
     public MqttCommandDispatcher(PickingEngine engine,
                                  MqttEventPublisher publisher,
@@ -30,7 +31,7 @@ internal sealed class MqttCommandDispatcher
                                  CsvPickTaskRunner? csvRunner,
                                  DeviceLabelStore labels,
                                  DeviceScanService scanService,
-                                 ILogger logger, CommandReceiptStore? receipts = null)
+                                 ILogger logger, CommandReceiptStore? receipts = null, int diagnosticTimeoutMs = 15000)
     {
         _engine      = engine;
         _publisher   = publisher;
@@ -40,6 +41,8 @@ internal sealed class MqttCommandDispatcher
         _scanService = scanService;
         _log         = logger;
         _receipts = receipts ?? new CommandReceiptStore(Path.Combine(AppContext.BaseDirectory, "p2l_commands.db"));
+        if (diagnosticTimeoutMs is < 1 or > 60000) throw new ArgumentOutOfRangeException(nameof(diagnosticTimeoutMs));
+        _diagnosticTimeoutMs = diagnosticTimeoutMs;
     }
 
     public async Task HandleAsync(byte[] payload, CancellationToken ct)
@@ -61,6 +64,22 @@ internal sealed class MqttCommandDispatcher
             correlationId = doc.RootElement.TryGetProperty("correlationId", out var correlation) ? correlation.GetString() : null;
             if (commandId is not null && (string.IsNullOrWhiteSpace(commandId) || commandId.Length > 200))
                 throw new PickingCommandRejectedException("INVALID_COMMAND_ID", "Command ID must contain 1–200 characters.");
+            var hash = Convert.ToHexString(SHA256.HashData(payload));
+            receiptKey = commandId is not null ? "command:" + commandId
+                : !string.IsNullOrWhiteSpace(correlationId) && (type is "batch_start" or "light_on")
+                    ? "legacy:" + hash : null;
+            // An expired retry must return its original durable outcome, not pretend
+            // the earlier hardware operation was never applied.
+            if (receiptKey is not null && _receipts.GetExisting(receiptKey, hash, commandId, correlationId) is { } cached)
+            {
+                outcome = cached;
+                return;
+            }
+            DateTimeOffset? executionDeadline = null;
+            if (doc.RootElement.TryGetProperty("executionDeadlineAt", out var deadline) && deadline.ValueKind != JsonValueKind.Null)
+                executionDeadline = deadline.GetDateTimeOffset();
+            if (executionDeadline <= DateTimeOffset.UtcNow)
+                throw new PickingCommandRejectedException("COMMAND_DEADLINE_EXCEEDED", "Execution budget elapsed before dispatch.");
             DateTimeOffset? expiresAt = null;
             if (doc.RootElement.TryGetProperty("expiresAt", out var expiry) && expiry.ValueKind != JsonValueKind.Null)
                 expiresAt = expiry.GetDateTimeOffset();
@@ -68,6 +87,8 @@ internal sealed class MqttCommandDispatcher
                 throw new PickingCommandRejectedException("MISSING_EXPIRY", "An identified command requires expiresAt.");
             if (expiresAt <= DateTimeOffset.UtcNow)
                 throw new PickingCommandRejectedException("COMMAND_EXPIRED", "Command has expired.");
+            if (type == "scan_devices" && _engine.HasActiveWork)
+                throw new PickingCommandRejectedException("BRIDGE_BUSY", "Device scan is unavailable while picking work is active.");
 
             _gate.Preempt();
             gateTaken = true;
@@ -78,10 +99,10 @@ internal sealed class MqttCommandDispatcher
             // before recording intent and performing any operation.
             if (expiresAt <= DateTimeOffset.UtcNow)
                 throw new PickingCommandRejectedException("COMMAND_EXPIRED", "Command expired while waiting for dispatch.");
-            var hash = Convert.ToHexString(SHA256.HashData(payload));
-            receiptKey = commandId is not null ? "command:" + commandId
-                : !string.IsNullOrWhiteSpace(correlationId) && (type is "batch_start" or "light_on")
-                    ? "legacy:" + hash : null;
+            if (executionDeadline <= DateTimeOffset.UtcNow)
+                throw new PickingCommandRejectedException("COMMAND_DEADLINE_EXCEEDED", "Execution budget elapsed while waiting for dispatch.");
+            if (type == "scan_devices" && _engine.HasActiveWork)
+                throw new PickingCommandRejectedException("BRIDGE_BUSY", "Device scan is unavailable while picking work is active.");
             if (receiptKey is not null)
             {
                 outcome = _receipts.TryBegin(receiptKey, hash, commandId, correlationId);
@@ -111,6 +132,34 @@ internal sealed class MqttCommandDispatcher
                     executionStarted = true;
                     await _engine.ExtinguishAsync(cmd.Address, ct);
                     _log.LogInformation("[MQTT] light_off addr={A}", cmd.Address);
+                    break;
+                }
+
+                case "resolve_confirmation":
+                {
+                    var cmd = JsonSerializer.Deserialize(payload,
+                        P2LMqttJsonContext.Default.ResolveConfirmationCmd)
+                        ?? throw new PickingCommandRejectedException("INVALID_COMMAND", "Recovery command is required.");
+                    if (string.IsNullOrWhiteSpace(cmd.CommandId) || string.IsNullOrWhiteSpace(cmd.CorrelationId))
+                        throw new PickingCommandRejectedException("INVALID_RECOVERY", "Recovery requires a command ID and the original session.");
+                    executionStarted = true;
+                    await _engine.ResolveConfirmationAsync(cmd.Address, cmd.BlockNo, cmd.CorrelationId,
+                        cmd.CommandItemId, cmd.PickingDetailId, cmd.MissingEventId, cmd.Action,
+                        cmd.ActualQuantity, cmd.CommandId, ct);
+                    _log.LogInformation("[MQTT] resolve_confirmation addr={Address} action={Action} session={Session}",
+                        cmd.Address, cmd.Action, cmd.CorrelationId);
+                    break;
+                }
+
+                case "release_session":
+                {
+                    var cmd = JsonSerializer.Deserialize(payload, P2LMqttJsonContext.Default.ReleaseSessionCmd)
+                        ?? throw new PickingCommandRejectedException("INVALID_COMMAND", "Session release is required.");
+                    if (string.IsNullOrWhiteSpace(cmd.CommandId) || string.IsNullOrWhiteSpace(cmd.CorrelationId))
+                        throw new PickingCommandRejectedException("INVALID_RELEASE", "Release requires a command ID and the original session.");
+                    executionStarted = true;
+                    await _engine.ReleaseSessionAsync(cmd.BlockNo, cmd.CorrelationId, ct);
+                    _log.LogInformation("[MQTT] release_session block={Block} session={Session}", cmd.BlockNo, cmd.CorrelationId);
                     break;
                 }
 
@@ -176,7 +225,7 @@ internal sealed class MqttCommandDispatcher
 
                 case "terminate_all":
                     executionStarted = true;
-                    await _engine.FinishBatchAsync("00", ct);
+                    await _engine.EmergencyStopAsync(ct);
                     _log.LogInformation("[MQTT] terminate_all");
                     break;
 
@@ -220,7 +269,9 @@ internal sealed class MqttCommandDispatcher
                     if (cmd is null) break;
 
                     executionStarted = true;
-                    await _scanService.ScanAsync(cmd.From, cmd.To, ct: ct);
+                    using var diagnostic = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    diagnostic.CancelAfter(_diagnosticTimeoutMs);
+                    await _scanService.ScanAsync(cmd.From, cmd.To, ct: diagnostic.Token);
                     _log.LogInformation("[MQTT] scan_devices from={F} to={T}", cmd.From, cmd.To);
                     break;
                 }
@@ -257,6 +308,8 @@ internal sealed class MqttCommandDispatcher
                 // the executing receipt then prevents a blind retry after restart.
                 outcome ??= Result("applied", null, null);
                 if (intentRecorded && receiptKey is not null) _receipts.Complete(receiptKey, outcome);
+                else if (receiptKey is not null && outcome.Status == "rejected")
+                    outcome = _receipts.GetExistingOrReject(receiptKey, Convert.ToHexString(SHA256.HashData(payload)), commandId, correlationId, outcome);
                 _publisher.EnqueueCommandResult(outcome);
             }
             finally

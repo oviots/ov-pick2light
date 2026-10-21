@@ -46,6 +46,8 @@ public sealed class RotatingFileLoggerProvider : ILoggerProvider
     private string        _hour = "";
     private int           _segment;
     private readonly object _lock = new();
+    private DateTime _lastFailureWarning;
+    private bool _disposed;
 
     public RotatingFileLoggerProvider(string directory, long maxBytes, LogLevel minLevel = LogLevel.Debug)
     {
@@ -64,15 +66,28 @@ public sealed class RotatingFileLoggerProvider : ILoggerProvider
     {
         lock (_lock)
         {
-            EnsureWriter();
-            _writer!.WriteLine(line);
-            _writer.Flush();
-            _currentSize += Encoding.UTF8.GetByteCount(line + Environment.NewLine);
-
-            if (_currentSize >= _maxBytes)
+            if (_disposed) return;
+            try
             {
-                _writer.Dispose();
+                EnsureWriter();
+                _writer!.WriteLine(line);
+                _writer.Flush();
+                _currentSize += Encoding.UTF8.GetByteCount(line + Environment.NewLine);
+                if (_currentSize >= _maxBytes)
+                {
+                    _writer.Dispose();
+                    _writer = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                try { _writer?.Dispose(); } catch { }
                 _writer = null;
+                if (DateTime.UtcNow - _lastFailureWarning >= TimeSpan.FromSeconds(30))
+                {
+                    _lastFailureWarning = DateTime.UtcNow;
+                    try { Console.Error.WriteLine("P2L audit log unavailable: " + ex.GetType().Name); } catch { }
+                }
             }
         }
     }
@@ -104,6 +119,11 @@ public sealed class RotatingFileLoggerProvider : ILoggerProvider
 
     public void Dispose()
     {
-        lock (_lock) _writer?.Dispose();
+        lock (_lock)
+        {
+            _disposed = true;
+            try { _writer?.Dispose(); } catch { }
+            _writer = null;
+        }
     }
 }

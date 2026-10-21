@@ -3,6 +3,10 @@
  *
  * Communicates with the P2L .NET bridge via MQTT.
  * The bridge must be running and connected to the Aioi gateway.
+ * Commands return a lazily awaitable CommandHandle. Await it for applied/rejected/
+ * uncertain execution outcome; MQTT acceptance alone is not execution. After an
+ * unknown timeout retry the same handle so ID, expiry and bytes remain unchanged.
+ * This SDK uses one broker; backup transport application ACKs belong to WMS.
  *
  * Install:
  *   npm install mqtt
@@ -21,6 +25,41 @@
 'use strict';
 
 const mqtt = require('mqtt');
+const { randomUUID } = require('node:crypto');
+
+class CommandError extends Error {
+  constructor(result) { super(result.message || `Bridge command ${result.status}: ${result.errorCode || ''}`); this.result = result; }
+}
+
+// Lazily awaitable: ignored handles never create rejected promises.
+class CommandHandle {
+  constructor(client, payload) {
+    this._client = client; this.commandId = payload.commandId; this.correlationId = payload.correlationId;
+    this._encoded = JSON.stringify(payload); this._result = null; this._waiters = new Set();
+  }
+  _resolve(result) { this._result = result; for (const done of [...this._waiters]) done(result); }
+  wait(timeoutMs = 30_000) {
+    const result = new Promise((resolve, reject) => {
+      if (this._result) { resolve(this._result); return; }
+      const done = value => { clearTimeout(timer); this._waiters.delete(done); resolve(value); };
+      const timer = setTimeout(() => { this._waiters.delete(done); reject(new Error(`Bridge outcome unknown for command ${this.commandId}; retry this handle, not a new intent`)); }, timeoutMs);
+      this._waiters.add(done);
+    });
+    return result.then(value => { if (value.status !== 'applied') throw new CommandError(value); return value; });
+  }
+  retry() { this._result = null; this._client._sendHandle(this); return this; }
+  then(resolve, reject) { return this.wait().then(resolve, reject); }
+}
+
+function remember(map, key) { map.set(key, true); if (map.size > 2048) map.delete(map.keys().next().value); }
+function trackOutcome(dispatcher, handle, identities) {
+  if (!handle || typeof handle.wait !== 'function') return;
+  handle.wait().catch(error => {
+    if (!dispatcher._done && identities.some(id => Object.values(dispatcher._identities).includes(id))) {
+      dispatcher._done = true; dispatcher._client._onConfirm = dispatcher._prevHandler; dispatcher._resolve({ error });
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -109,6 +148,9 @@ class P2LClient {
 
     /** @type {Map<string, object>} device state cache: address -> state */
     this._states = new Map();
+    this._pendingCommands = new Map();
+    this._seenEvents = new Map();
+    this._seenItems = new Map();
   }
 
   // -------------------------------------------------------------------------
@@ -131,18 +173,22 @@ class P2LClient {
       }, timeoutMs);
 
       this._client.once('connect', () => {
-        clearTimeout(timer);
-        this._client.subscribe(['p2l/events', 'p2l/devices/#', 'p2l/status'], { qos: 1 });
-        resolve();
+        this._client.subscribe(['p2l/events', 'p2l/devices/#', 'p2l/status'], { qos: 1 }, (error, grants) => {
+          clearTimeout(timer);
+          if (error || grants?.some(grant => grant.qos >= 128)) {
+            this._client.end(true);
+            reject(error || new Error('Broker rejected SDK event subscription'));
+          } else resolve();
+        });
       });
 
-      this._client.once('error', (err) => {
+      this._client.on('error', (err) => {
         clearTimeout(timer);
         reject(err);
       });
 
-      this._client.on('message', (topic, payload) => {
-        this._dispatch(topic, payload);
+      this._client.on('message', (topic, payload, packet) => {
+        this._dispatch(topic, payload, packet?.retain === true);
       });
     });
   }
@@ -165,7 +211,7 @@ class P2LClient {
   // Internal dispatch
   // -------------------------------------------------------------------------
 
-  _dispatch(topic, payload) {
+  _dispatch(topic, payload, retained = false) {
     let data;
     try {
       data = JSON.parse(payload.toString());
@@ -173,7 +219,19 @@ class P2LClient {
       return;
     }
 
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return;
     const kind = data.type;
+    if (retained && ['confirmed', 'batch_completed', 'command_result'].includes(kind)) return;
+    if (kind !== 'command_result' && typeof data.eventId === 'string' && this._seenEvents.has(data.eventId)) return;
+    if (kind === 'command_result') {
+      const handle = this._pendingCommands.get(data.commandId);
+      if (handle && (!handle.correlationId || handle.correlationId === data.correlationId)
+          && ['applied', 'rejected', 'uncertain'].includes(data.status)) {
+        handle._resolve(data); this._pendingCommands.delete(data.commandId);
+      }
+      return;
+    }
+    if (typeof data.eventId === 'string' && data.eventId) remember(this._seenEvents, data.eventId);
 
     if (kind === 'confirmed') {
       const ev = {
@@ -181,11 +239,20 @@ class P2LClient {
         status:          data.status ?? 'Normal',
         adjustedDisplay: data.adjustedDisplay ?? null,
         correlationId:   data.correlationId ?? null,
+        commandItemId:   data.commandItemId ?? null,
+        pickingDetailId: data.pickingDetailId ?? null,
+        eventId:         data.eventId ?? null,
         label:           data.label ?? null,
         displayData:     data.displayData ?? null,
       };
+      if (typeof ev.address !== 'string' || !ev.address || [ev.correlationId, ev.commandItemId, ev.pickingDetailId].some(v => v !== null && typeof v !== 'string')) return;
+      if (ev.correlationId && (ev.commandItemId || ev.pickingDetailId)) {
+        const key = JSON.stringify([ev.correlationId, ev.commandItemId || ['detail', ev.pickingDetailId]]);
+        if (this._seenItems.has(key)) return;
+        remember(this._seenItems, key);
+      }
       const waiter = this._confirmWaiters.get(ev.address);
-      if (waiter) {
+      if (waiter && Object.entries(waiter.filters || {}).every(([key, value]) => value == null || ev[key] === value)) {
         clearTimeout(waiter.timer);
         this._confirmWaiters.delete(ev.address);
         waiter.resolve(ev);
@@ -193,7 +260,7 @@ class P2LClient {
       this._onConfirm?.(ev);
 
     } else if (kind === 'batch_completed') {
-      if (this._batchWaiter) {
+      if (this._batchWaiter && (!this._batchWaiter.correlationId || this._batchWaiter.correlationId === data.correlationId)) {
         clearTimeout(this._batchWaiter.timer);
         this._batchWaiter.resolve({ correlationId: data.correlationId ?? null });
         this._batchWaiter = null;
@@ -304,13 +371,13 @@ class P2LClient {
    * @param {number} [timeoutMs=30000]
    * @returns {Promise<{address, status, adjustedDisplay, correlationId}>}
    */
-  waitConfirm(address, timeoutMs = 30_000) {
+  waitConfirm(address, timeoutMs = 30_000, filters = {}) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this._confirmWaiters.delete(address);
         reject(new Error(`No confirmation from ${address} within ${timeoutMs}ms`));
       }, timeoutMs);
-      this._confirmWaiters.set(address, { resolve, reject, timer });
+      this._confirmWaiters.set(address, { resolve, reject, timer, filters });
     });
   }
 
@@ -319,13 +386,13 @@ class P2LClient {
    * @param {number} [timeoutMs=120000]
    * @returns {Promise<{correlationId}>}
    */
-  waitBatchComplete(timeoutMs = 120_000) {
+  waitBatchComplete(timeoutMs = 120_000, correlationId = null) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this._batchWaiter = null;
         reject(new Error(`Batch not completed within ${timeoutMs}ms`));
       }, timeoutMs);
-      this._batchWaiter = { resolve, reject, timer };
+      this._batchWaiter = { resolve, reject, timer, correlationId };
     });
   }
 
@@ -350,7 +417,29 @@ class P2LClient {
 
   _publish(payload) {
     if (!this._client?.connected) throw new Error('Not connected to broker');
-    this._client.publish('p2l/commands', JSON.stringify(payload), { qos: 1 });
+    const command = { ...payload, commandId: payload.commandId || randomUUID(), expiresAt: payload.expiresAt || new Date(Date.now() + 600_000).toISOString(), executionDeadlineAt: payload.executionDeadlineAt || new Date(Date.now() + 30_000).toISOString() };
+    const handle = new CommandHandle(this, command);
+    const existing = this._pendingCommands.get(handle.commandId);
+    if (existing) {
+      if (existing._encoded !== handle._encoded) throw new Error('Command ID already pending with another payload; retry its handle');
+      return existing.retry();
+    }
+    this._sendHandle(handle);
+    return handle;
+  }
+
+  _sendHandle(handle) {
+    if (!this._client?.connected) throw new Error('Not connected to broker');
+    const existing = this._pendingCommands.get(handle.commandId);
+    if (existing && existing !== handle) throw new Error('Command ID already has another pending handle; await that outcome');
+    if (!this._pendingCommands.has(handle.commandId) && this._pendingCommands.size >= 1024) throw new Error('Too many pending command outcomes');
+    this._pendingCommands.set(handle.commandId, handle);
+    try { this._client.publish('p2l/commands', handle._encoded, { qos: 1 }, error => {
+      if (error && this._pendingCommands.get(handle.commandId) === handle) {
+        this._pendingCommands.delete(handle.commandId);
+        handle._resolve({ commandId: handle.commandId, status: 'uncertain', errorCode: 'TRANSPORT_ERROR', message: error.message });
+      }
+    }); } catch (error) { this._pendingCommands.delete(handle.commandId); throw error; }
   }
 
   /**
@@ -374,8 +463,8 @@ class P2LClient {
     };
     if (opts.buzMode !== undefined) cmd.buzMode = opts.buzMode;
     if (opts.label)                 cmd.label   = opts.label;
-    if (opts.correlationId)         cmd.correlationId = opts.correlationId;
-    this._publish(cmd);
+    for (const key of ['correlationId', 'commandItemId', 'pickingDetailId', 'blockNo', 'commandId', 'expiresAt', 'executionDeadlineAt']) if (opts[key] != null) cmd[key] = opts[key];
+    return this._publish(cmd);
   }
 
   /**
@@ -383,7 +472,7 @@ class P2LClient {
    * @param {string} address
    */
   lightOff(address) {
-    this._publish({ type: 'light_off', address });
+    return this._publish({ type: 'light_off', address });
   }
 
   /**
@@ -410,12 +499,13 @@ class P2LClient {
         if (i.address)             item.address = i.address;
         if (i.label)               item.label   = i.label;
         if (i.buzMode !== undefined) item.buzMode = i.buzMode;
+        for (const key of ['commandItemId', 'pickingDetailId']) if (i[key] != null) item[key] = i[key];
         return item;
       }),
     };
     if (opts.buzMode !== undefined) cmd.buzMode = opts.buzMode;
-    if (opts.correlationId)         cmd.correlationId = opts.correlationId;
-    this._publish(cmd);
+    for (const key of ['correlationId', 'blockNo', 'commandId', 'expiresAt', 'relight', 'executionDeadlineAt']) if (opts[key] != null) cmd[key] = opts[key];
+    return this._publish(cmd);
   }
 
   /**
@@ -423,12 +513,12 @@ class P2LClient {
    * @param {string} [blockNo='00']
    */
   batchFinish(blockNo = '00') {
-    this._publish({ type: 'batch_finish', blockNo });
+    return this._publish({ type: 'batch_finish', blockNo });
   }
 
   /** Emergency: turn off all modules immediately. */
   terminateAll() {
-    this._publish({ type: 'terminate_all' });
+    return this._publish({ type: 'terminate_all' });
   }
 }
 
@@ -483,6 +573,9 @@ class WaveDispatcher {
     this._confirmed = 0;
     this._cancelled = false;
     this._prevHandler = null;
+    this._identities = {};
+    this._correlationId = randomUUID();
+    this._done = false;
 
     let _resolve;
     /** @type {Promise<{total, confirmed, positions, cancelled}>} */
@@ -520,9 +613,9 @@ class WaveDispatcher {
    * @returns {Promise<{total, confirmed, positions, cancelled}>}
    */
   wait(timeoutMs) {
-    if (!timeoutMs) return this._donePromise;
+    if (!timeoutMs) return this._donePromise.then(value => { if (value?.error) throw value.error; return value; });
     return Promise.race([
-      this._donePromise,
+      this._donePromise.then(value => { if (value?.error) throw value.error; return value; }),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error(
           `Wave did not complete within ${timeoutMs}ms ` +
@@ -536,6 +629,7 @@ class WaveDispatcher {
   cancel() {
     if (this._cancelled) return;
     this._cancelled = true;
+    this._done = true;
     this._queue.length = 0;
     for (const [addr, item] of Object.entries(this._active)) {
       if (item !== null) {
@@ -563,14 +657,17 @@ class WaveDispatcher {
     }
     const item = this._queue.shift();
     this._active[address] = item;
-      this._client.lightOn(address, {
+      const identity = randomUUID(); this._identities[address] = identity;
+      const handle = this._client.lightOn(address, {
         quantity: item.quantity,
         color:    item.color   ?? LightColor.GREEN,
         ledMode:  item.ledMode ?? LightMode.ON,
         ...(item.buzMode !== undefined ? { buzMode: item.buzMode } : {}),
         label:    item.sku,
-        correlationId: item.batchId ?? null,
+        correlationId: this._correlationId,
+        commandItemId: identity,
       });
+    trackOutcome(this, handle, [identity]);
     this.onItemSent?.(address, item);
   }
 
@@ -580,13 +677,15 @@ class WaveDispatcher {
       return;
     }
     const item = this._active[evt.address];
-    if (item === null) return;
+    if (item === null || evt.correlationId !== this._correlationId || evt.commandItemId !== this._identities[evt.address]) return;
+    delete this._identities[evt.address];
     this._confirmed++;
     this.onItemConfirmed?.(evt.address, item, evt);
     this._tryDispatch(evt.address);
   }
 
   _finish() {
+    this._done = true;
     this._client._onConfirm = this._prevHandler;
     const stats = {
       total:     this._total,
@@ -663,6 +762,9 @@ class BatchDispatcher {
     this._confirmed   = 0;
     this._cancelled   = false;
     this._prevHandler = null;
+    this._identities = {};
+    this._correlationId = this._batchId || randomUUID();
+    this._done = false;
 
     let _resolve;
     this._donePromise = new Promise(r => { _resolve = r; });
@@ -698,20 +800,22 @@ class BatchDispatcher {
       if (!queue || queue.length === 0) continue;
       const item = queue.shift();
       this._active[addr] = item;
+      const identity = randomUUID(); this._identities[addr] = identity;
       initial.push({
+        commandItemId: identity,
         address:  addr,
         quantity: item.quantity,
         color:    item.color   ?? LightColor.GREEN,
         label:    item.sku,
         ledMode:  item.ledMode ?? LightMode.ON,
-        correlationId: this._batchId,
         ...(item.buzMode !== undefined ? { buzMode: item.buzMode } : {}),
       });
       this.onItemSent?.(addr, item);
     }
 
     if (initial.length > 0) {
-      this._client.batchStart(initial, { correlationId: this._batchId });
+      const handle = this._client.batchStart(initial, { correlationId: this._correlationId });
+      trackOutcome(this, handle, Object.values(this._identities));
     }
   }
 
@@ -721,9 +825,9 @@ class BatchDispatcher {
    * @returns {Promise<{batchId, total, confirmed, cancelled}>}
    */
   wait(timeoutMs) {
-    if (!timeoutMs) return this._donePromise;
+    if (!timeoutMs) return this._donePromise.then(value => { if (value?.error) throw value.error; return value; });
     return Promise.race([
-      this._donePromise,
+      this._donePromise.then(value => { if (value?.error) throw value.error; return value; }),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error(
           `Batch '${this._batchId}' did not complete within ${timeoutMs}ms ` +
@@ -737,6 +841,7 @@ class BatchDispatcher {
   cancel() {
     if (this._cancelled) return;
     this._cancelled = true;
+    this._done = true;
     for (const [addr, item] of Object.entries(this._active)) {
       if (item !== null) {
         this._client.lightOff(addr);
@@ -762,14 +867,17 @@ class BatchDispatcher {
     }
     const item = queue.shift();
     this._active[address] = item;
-    this._client.lightOn(address, {
+    const identity = randomUUID(); this._identities[address] = identity;
+    const handle = this._client.lightOn(address, {
       quantity: item.quantity,
       color:    item.color   ?? LightColor.GREEN,
       ledMode:  item.ledMode ?? LightMode.ON,
       ...(item.buzMode !== undefined ? { buzMode: item.buzMode } : {}),
       label:    item.sku,
-      correlationId: this._batchId,
+      correlationId: this._correlationId,
+      commandItemId: identity,
     });
+    trackOutcome(this, handle, [identity]);
     this.onItemSent?.(address, item);
   }
 
@@ -779,13 +887,15 @@ class BatchDispatcher {
       return;
     }
     const item = this._active[evt.address];
-    if (item === null) return;
+    if (item === null || evt.correlationId !== this._correlationId || evt.commandItemId !== this._identities[evt.address]) return;
+    delete this._identities[evt.address];
     this._confirmed++;
     this.onItemConfirmed?.(evt.address, item, evt);
     this._dispatchNext(evt.address);
   }
 
   _finish() {
+    this._done = true;
     this._client._onConfirm = this._prevHandler;
     const stats = { batchId: this._batchId, total: this._total,
                     confirmed: this._confirmed, cancelled: false };
@@ -825,6 +935,6 @@ class BatchDispatch {
 }
 
 module.exports = {
-  P2LClient, LightColor, LightMode, CompletionStatus,
+  P2LClient, LightColor, LightMode, CompletionStatus, CommandHandle, CommandError,
   WaveDispatcher, BatchDispatch, BatchDispatcher,
 };

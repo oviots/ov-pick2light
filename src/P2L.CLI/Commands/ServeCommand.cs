@@ -24,6 +24,7 @@ public sealed class ServeCommand : AsyncCommand<ServeCommand.Settings>
     private readonly ILogger<ServeCommand> _logger;
     private readonly MqttBridgeService?    _mqtt;
     private readonly OfflineBufferService? _offlineBuffer;
+    private readonly MissingConfirmationMonitor? _confirmationMonitor;
 
     public sealed class Settings : CommandSettings { }
 
@@ -34,7 +35,8 @@ public sealed class ServeCommand : AsyncCommand<ServeCommand.Settings>
         CancellationTokenSource cts,
         ILogger<ServeCommand> logger,
         MqttBridgeService? mqtt = null,
-        OfflineBufferService? offlineBuffer = null)
+        OfflineBufferService? offlineBuffer = null,
+        MissingConfirmationMonitor? confirmationMonitor = null)
     {
         _gateway       = gateway;
         _heartbeat     = heartbeat;
@@ -43,6 +45,7 @@ public sealed class ServeCommand : AsyncCommand<ServeCommand.Settings>
         _logger        = logger;
         _mqtt          = mqtt;
         _offlineBuffer = offlineBuffer;
+        _confirmationMonitor = confirmationMonitor;
     }
 
     public override async Task<int> ExecuteAsync(CommandContext ctx, Settings settings)
@@ -74,6 +77,7 @@ public sealed class ServeCommand : AsyncCommand<ServeCommand.Settings>
             _logger.LogInformation("MQTT offline buffer active (broker not configured).");
         }
 
+        _confirmationMonitor?.Start();
         _logger.LogInformation("P2L service running. Awaiting stop signal...");
 
         try

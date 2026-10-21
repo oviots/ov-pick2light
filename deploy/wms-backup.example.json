@@ -1,0 +1,18 @@
+{
+  "publishTimeoutMs": 30000,
+  "probeIntervalMs": 1000,
+  "probeTimeoutMs": 3000,
+  "commandRouteTimeoutMs": 3000,
+  "failbackStableMs": 10000,
+  "backupBroker": {
+    "broker": "wss://mqtt-local.thesupra.vn/mqtt",
+    "port": 443,
+    "protocol": "wss",
+    "clientId": "wms-p2l-block-01-backup",
+    "username": "wms-block-01",
+    "password": null,
+    "tls": {
+      "rejectUnauthorized": true
+    }
+  }
+}

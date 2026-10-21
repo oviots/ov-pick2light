@@ -19,6 +19,96 @@ namespace P2L.UnitTests;
 public sealed class CommandTests
 {
     [Fact]
+    public async Task SessionReleaseReceiptAndDelayedIntentNeverStopNewOwner()
+    {
+        await using var f = new Fixture();
+        using var dispatcher = f.Dispatcher();
+        await f.Engine.StartBatchAsync([Item("0001", "01", "old", "old-item")]);
+        var command = new ReleaseSessionCmd
+        {
+            Type = "release_session", CommandId = "close-old", CorrelationId = "old", BlockNo = "01",
+            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(1),
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(command, P2LMqttJsonContext.Default.ReleaseSessionCmd);
+        await dispatcher.Value.HandleAsync(bytes, CancellationToken.None);
+        Assert.Equal("applied", dispatcher.Results().Last().Status);
+        Assert.Single(f.Commands(), command => command == "D0001");
+        await f.Engine.StartBatchAsync([Item("0002", "01", "new", "new-item")]);
+        var before = f.Commands().Count;
+        await dispatcher.Value.HandleAsync(bytes, CancellationToken.None);
+        await dispatcher.Value.HandleAsync(JsonSerializer.SerializeToUtf8Bytes(command with { CommandId = "late-close-old" },
+            P2LMqttJsonContext.Default.ReleaseSessionCmd), CancellationToken.None);
+        Assert.Equal(before, f.Commands().Count);
+        Assert.Equal("new", f.Registry.Get("0002")!.CorrelationId);
+        Assert.Equal(ModuleStatus.Operating, f.Registry.Get("0002")!.Status);
+        var lateStart = Encoding.UTF8.GetBytes("""{"type":"batch_start","commandId":"late-old-start","expiresAt":"2099-01-01T00:00:00Z","blockNo":"01","correlationId":"old","items":[{"address":"0001","quantity":1,"commandItemId":"old-item"}]}""");
+        await dispatcher.Value.HandleAsync(lateStart, CancellationToken.None);
+        Assert.Equal("SESSION_CLOSED", dispatcher.Results().Last().ErrorCode);
+        Assert.Equal(before, f.Commands().Count);
+    }
+
+    [Fact]
+    public async Task UnidentifiedSessionReleaseCannotTouchHardware()
+    {
+        await using var f = new Fixture();
+        using var dispatcher = f.Dispatcher();
+        await f.Engine.StartBatchAsync([Item("0001", "01", "active", "item")]);
+        var before = f.Commands().Count;
+        await dispatcher.Value.HandleAsync(Encoding.UTF8.GetBytes("""{"type":"release_session","blockNo":"01","correlationId":"active"}"""), CancellationToken.None);
+        Assert.Equal("INVALID_RELEASE", Assert.Single(dispatcher.Results()).ErrorCode);
+        Assert.Equal(before, f.Commands().Count);
+        Assert.Equal(ModuleStatus.Operating, f.Registry.Get("0001")!.Status);
+    }
+
+    [Fact]
+    public async Task RecoveryCommandPublishesOneDurableConfirmationAndReplaysItsReceipt()
+    {
+        await using var f = new Fixture();
+        using var dispatcher = f.Dispatcher();
+        await f.Engine.QuickLightAsync("0001", 5, blockNo: "01", correlationId: "manual:test",
+            commandItemId: "item", pickingDetailId: "detail");
+        typeof(LightModuleRegistry).GetMethod("SetConfirmationMissing", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(f.Registry, [f.Registry.Get("0001"), ModuleStatus.Standby]);
+        f.Engine.ReplayPendingConfirmations();
+        var command = new ResolveConfirmationCmd
+        {
+            Type = "resolve_confirmation", CommandId = "operator-intent", ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(1),
+            Address = "0001", BlockNo = "01", CorrelationId = "manual:test", CommandItemId = "item", PickingDetailId = "detail",
+            MissingEventId = f.Registry.Get("0001")!.ConfirmationMissingEventId!, Action = "confirm", ActualQuantity = 0,
+        };
+        var payload = JsonSerializer.SerializeToUtf8Bytes(command, P2LMqttJsonContext.Default.ResolveConfirmationCmd);
+        await dispatcher.Value.HandleAsync(payload, CancellationToken.None);
+        var beforeRetry = f.Commands().Count;
+        await dispatcher.Value.HandleAsync(payload, CancellationToken.None);
+        Assert.Equal(beforeRetry, f.Commands().Count);
+        Assert.All(dispatcher.Results(), result => Assert.Equal("applied", result.Status));
+        var events = dispatcher.Payloads().Select(bytes => JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(bytes)!).ToArray();
+        var missing = Assert.Single(events, e => e["type"].GetString() == "light_feedback_missing");
+        Assert.DoesNotContain("confirm", missing["type"].GetString()!);
+        Assert.Equal(command.MissingEventId, missing["eventId"].GetString());
+        Assert.Equal("item", missing["commandItemId"].GetString());
+        var confirmed = Assert.Single(events, e => e["type"].GetString() == "confirmed");
+        Assert.Equal("operator-intent", confirmed["eventId"].GetString());
+        Assert.Equal("manual_recovery", confirmed["source"].GetString());
+        Assert.Equal(0, confirmed["adjustedQuantity"].GetInt32());
+        Assert.Equal("detail", confirmed["pickingDetailId"].GetString());
+        Assert.Null(f.Registry.Get("0001")!.ConfirmationMissingAt);
+    }
+
+    [Fact]
+    public async Task RecoveryCommandWithStaleWarningIsRejectedBeforeHardwareIo()
+    {
+        await using var f = new Fixture();
+        using var dispatcher = f.Dispatcher();
+        var payload = Encoding.UTF8.GetBytes("""{"type":"resolve_confirmation","commandId":"stale-recovery","expiresAt":"2099-01-01T00:00:00Z","address":"0001","blockNo":"01","correlationId":"manual:old","commandItemId":"old-item","missingEventId":"old-warning","action":"retry"}""");
+        await dispatcher.Value.HandleAsync(payload, CancellationToken.None);
+        var result = Assert.Single(dispatcher.Results());
+        Assert.Equal("rejected", result.Status);
+        Assert.Equal("RECOVERY_STALE", result.ErrorCode);
+        Assert.Empty(f.Commands());
+    }
+
+    [Fact]
     public void ReceiptSurvivesRestartAndNeverReexecutesInterruptedIntent()
     {
         var path = TemporaryPath("receipts.db");
@@ -80,13 +170,13 @@ public sealed class CommandTests
         Assert.Equal(before, f.Commands().Count);
         f.Confirm("0001");
         await f.Engine.StartBatchAsync([original[1]], relight: true);
-        var overwrite = f.Commands().Last(c => c.StartsWith("P5"));
+        var overwrite = f.Commands().Last(c => c.StartsWith("PP50500"));
         Assert.DoesNotContain("000100001", overwrite);
         Assert.Contains("000200001", overwrite);
         // WMS captured A/B before the operator confirmed A: completed A must
         // never relight, while B continues without rejecting the whole session.
         await f.Engine.StartBatchAsync(original, relight: true);
-        overwrite = f.Commands().Last(c => c.StartsWith("P5"));
+        overwrite = f.Commands().Last(c => c.StartsWith("PP50500"));
         Assert.DoesNotContain("000100001", overwrite);
         Assert.Contains("000200001", overwrite);
         Assert.Equal(ModuleStatus.Completed, f.Registry.Get("0001")!.Status);
@@ -129,17 +219,17 @@ public sealed class CommandTests
     }
 
     [Fact]
-    public async Task FailedDurableConfirmSubscriberDoesNotCompleteItem()
+    public async Task FailedDurableSubscriberLeavesReplayablePendingConfirmation()
     {
         await using var f = new Fixture();
         await f.Engine.StartBatchAsync([Item("0001", "01", "session", "one")]);
         Action<ConfirmationEvent, LightModuleState?> reject = (_, _) => throw new IOException("disk full");
-        f.Engine.ItemConfirmed += reject;
+        f.Engine.DurableConfirmation += reject;
         Assert.Throws<IOException>(() => f.Confirm("0001"));
-        Assert.Equal(ModuleStatus.Operating, f.Registry.Get("0001")!.Status);
+        Assert.Equal(ModuleStatus.Completed, f.Registry.Get("0001")!.Status);
         Assert.True(f.Engine.IsBatchActive);
-        f.Engine.ItemConfirmed -= reject;
-        f.Confirm("0001");
+        f.Engine.DurableConfirmation -= reject;
+        f.Confirm("0001", 1);
         Assert.False(f.Engine.IsBatchActive);
     }
 
@@ -212,6 +302,244 @@ public sealed class CommandTests
         await Assert.ThrowsAsync<AioiNackException>(() => f.Engine.ExtinguishAsync("0001"));
         Assert.Equal(ModuleStatus.Operating, f.Registry.Get("0001")!.Status);
         Assert.Equal("one", f.Registry.Get("0001")!.CommandItemId);
+        Assert.True(f.Engine.IsBatchActive);
+        var busy = await Assert.ThrowsAsync<PickingCommandRejectedException>(() =>
+            f.Engine.StartBatchAsync([Item("0002", "01", "next-session", "next")]));
+        Assert.Equal("BLOCK_BUSY", busy.Code);
+        f.RejectCommands = false;
+        await f.Engine.ExtinguishAsync("0001");
+        Assert.False(f.Engine.IsBatchActive);
+    }
+
+    [Fact]
+    public async Task ExtinguishOneAddressKeepsRemainingOwnerAndOtherBlockWithoutConfirmingItems()
+    {
+        await using var f = new Fixture();
+        int confirmed = 0, completed = 0;
+        f.Engine.ItemConfirmed += (_, _) => confirmed++;
+        f.Engine.BatchCompleted += _ => completed++;
+        await f.Engine.StartBatchAsync([Item("0001", "01", "session", "one"), Item("0002", "01", "session", "two")]);
+        await f.Engine.StartBatchAsync([Item("0003", "02", "other-session", "three")]);
+
+        await f.Engine.ExtinguishAsync("1");
+
+        Assert.Contains("D0001", f.Commands());
+        Assert.Equal(ModuleStatus.Standby, f.Registry.Get("0001")!.Status);
+        Assert.Null(f.Registry.Get("0001")!.CommandItemId);
+        Assert.Equal(ModuleStatus.Operating, f.Registry.Get("0002")!.Status);
+        Assert.Equal("two", f.Registry.Get("0002")!.CommandItemId);
+        Assert.Equal("other-session", f.Registry.Get("0003")!.CorrelationId);
+        Assert.Equal(ModuleStatus.Operating, f.Registry.Get("0003")!.Status);
+        var busy = await Assert.ThrowsAsync<PickingCommandRejectedException>(() =>
+            f.Engine.StartBatchAsync([Item("0004", "01", "next-session", "next")]));
+        Assert.Equal("BLOCK_BUSY", busy.Code);
+
+        await f.Engine.ExtinguishAsync("0002");
+        await f.Engine.StartBatchAsync([Item("0001", "01", "next-session", "next")]);
+        Assert.Equal("next-session", f.Registry.Get("0001")!.CorrelationId);
+        Assert.Equal("other-session", f.Registry.Get("0003")!.CorrelationId);
+        Assert.Equal(0, confirmed);
+        Assert.Equal(0, completed);
+    }
+
+    [Theory]
+    [InlineData("00")]
+    [InlineData("01")]
+    public async Task ExtinguishLastManualLightReleasesBlockForANewOwner(string block)
+    {
+        await using var f = new Fixture();
+        int confirmed = 0, completed = 0;
+        f.Engine.ItemConfirmed += (_, _) => confirmed++;
+        f.Engine.BatchCompleted += _ => completed++;
+        await f.Engine.QuickLightAsync("0001", 1, blockNo: block, correlationId: "manual-first");
+
+        await f.Engine.ExtinguishAsync("0001");
+
+        Assert.False(f.Engine.IsBatchActive);
+        Assert.False(f.Engine.HasActiveWork);
+        await f.Engine.QuickLightAsync("0001", 2, blockNo: block, correlationId: "manual-next");
+        Assert.Equal("manual-next", f.Registry.Get("0001")!.CorrelationId);
+        Assert.Equal("00002", f.Registry.Get("0001")!.DisplayData);
+        Assert.Equal(0, confirmed);
+        Assert.Equal(0, completed);
+    }
+
+    [Fact]
+    public async Task ExtinguishPersistenceFailureRetainsOwnerUntilSuccessfulRetry()
+    {
+        await using var f = new Fixture();
+        var path = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(f.Path)!, "state.json");
+        using var persistence = new RegistryPersistenceService(f.Registry, NullLogger<RegistryPersistenceService>.Instance, path);
+        persistence.Load();
+        await f.Engine.StartBatchAsync([Item("0001", "01", "session", "one")]);
+        Directory.CreateDirectory(path + ".tmp");
+        try
+        {
+            var error = await Record.ExceptionAsync(() => f.Engine.ExtinguishAsync("0001"));
+            Assert.True(error is IOException or UnauthorizedAccessException);
+            Assert.Contains("D0001", f.Commands());
+            Assert.Equal(ModuleStatus.Operating, f.Registry.Get("0001")!.Status);
+            Assert.Equal("one", f.Registry.Get("0001")!.CommandItemId);
+            var busy = await Assert.ThrowsAsync<PickingCommandRejectedException>(() =>
+                f.Engine.StartBatchAsync([Item("0002", "01", "next-session", "next")]));
+            Assert.Equal("BLOCK_BUSY", busy.Code);
+        }
+        finally { Directory.Delete(path + ".tmp"); }
+
+        await f.Engine.ExtinguishAsync("0001");
+        Assert.False(f.Engine.HasActiveWork);
+        await f.Engine.StartBatchAsync([Item("0001", "01", "next-session", "next")]);
+    }
+
+    [Fact]
+    public async Task ExtinguishKeepsPendingConfirmationOwnerUntilDurableReplay()
+    {
+        await using var f = new Fixture();
+        var eventIds = new List<string?>();
+        int confirmed = 0, completed = 0;
+        f.Engine.ItemConfirmed += (_, _) => confirmed++;
+        f.Engine.BatchCompleted += _ => completed++;
+        Action<ConfirmationEvent, LightModuleState?> reject = (evt, _) =>
+        {
+            eventIds.Add(evt.EventId);
+            throw new IOException("outbox unavailable");
+        };
+        f.Engine.DurableConfirmation += reject;
+        await f.Engine.StartBatchAsync([Item("0001", "01", "session", "one")]);
+        Assert.Throws<IOException>(() => f.Confirm("0001"));
+
+        await f.Engine.ExtinguishAsync("0001");
+
+        Assert.Equal(ModuleStatus.Completed, f.Registry.Get("0001")!.Status);
+        Assert.Equal("one", f.Registry.Get("0001")!.CommandItemId);
+        Assert.True(f.Engine.IsBatchActive);
+        var busy = await Assert.ThrowsAsync<PickingCommandRejectedException>(() =>
+            f.Engine.StartBatchAsync([Item("0002", "01", "next-session", "next")]));
+        Assert.Equal("BLOCK_BUSY", busy.Code);
+        Assert.Equal(0, confirmed);
+        Assert.Equal(0, completed);
+
+        f.Engine.DurableConfirmation -= reject;
+        f.Engine.DurableConfirmation += (evt, _) => eventIds.Add(evt.EventId);
+        f.Engine.ReplayPendingConfirmations();
+        Assert.Equal(eventIds[0], eventIds[1]);
+        Assert.Equal(1, confirmed);
+        Assert.Equal(1, completed);
+        Assert.False(f.Engine.IsBatchActive);
+        await f.Engine.StartBatchAsync([Item("0001", "01", "next-session", "next")]);
+    }
+
+    [Fact]
+    public async Task ExtinguishKeepsPendingBatchCompletionOwnerUntilDurableReplay()
+    {
+        await using var f = new Fixture();
+        var eventIds = new List<string>();
+        int confirmed = 0;
+        f.Engine.ItemConfirmed += (_, _) => confirmed++;
+        Action<BatchCompletionEvent> reject = evt =>
+        {
+            eventIds.Add(evt.EventId);
+            throw new IOException("batch outbox unavailable");
+        };
+        f.Engine.DurableBatchCompleted += reject;
+        await f.Engine.StartBatchAsync([Item("0001", "01", "session", "one")]);
+        Assert.Throws<IOException>(() => f.Confirm("0001"));
+
+        await f.Engine.ExtinguishAsync("0001");
+
+        Assert.True(f.Engine.IsBatchActive);
+        var busy = await Assert.ThrowsAsync<PickingCommandRejectedException>(() =>
+            f.Engine.StartBatchAsync([Item("0002", "01", "next-session", "next")]));
+        Assert.Equal("BLOCK_BUSY", busy.Code);
+        Assert.Equal(1, confirmed);
+
+        f.Engine.DurableBatchCompleted -= reject;
+        f.Engine.DurableBatchCompleted += evt => eventIds.Add(evt.EventId);
+        f.Engine.ReplayPendingConfirmations();
+        Assert.Equal(eventIds[0], eventIds[1]);
+        Assert.Equal(1, confirmed);
+        Assert.False(f.Engine.IsBatchActive);
+        await f.Engine.StartBatchAsync([Item("0001", "01", "next-session", "next")]);
+    }
+
+    [Fact]
+    public async Task ConfirmationWhileExtinguishAwaitsAckPreservesCompletedIdentity()
+    {
+        await using var f = new Fixture();
+        var confirmed = new List<string?>();
+        f.Engine.ItemConfirmed += (_, state) => confirmed.Add(state?.CommandItemId);
+        await f.Engine.StartBatchAsync([Item("0001", "01", "session", "one")]);
+        f.BeforeNextAck(() => f.Confirm("0001"));
+
+        await f.Engine.ExtinguishAsync("0001");
+
+        Assert.Equal(new[] { "one" }, confirmed);
+        Assert.Equal(ModuleStatus.Completed, f.Registry.Get("0001")!.Status);
+        Assert.Equal("one", f.Registry.Get("0001")!.CommandItemId);
+        Assert.False(f.Engine.IsBatchActive);
+        await f.Engine.StartBatchAsync([Item("0001", "01", "next-session", "next")]);
+    }
+
+    [Fact]
+    public async Task RestartRetainsCompletionOnlyOwnerUntilDurableReplay()
+    {
+        string snapshot;
+        string? completionId = null;
+        await using (var first = new Fixture())
+        {
+            var path = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(first.Path)!, "state.json");
+            using var persistence = new RegistryPersistenceService(first.Registry, NullLogger<RegistryPersistenceService>.Instance, path);
+            persistence.Load();
+            first.Engine.DurableBatchCompleted += evt =>
+            {
+                completionId = evt.EventId;
+                throw new IOException("batch outbox unavailable");
+            };
+            await first.Engine.StartBatchAsync([Item("0001", "01", "session", "one")]);
+            Assert.Throws<IOException>(() => first.Confirm("0001"));
+            await first.Engine.ExtinguishAsync("0001");
+            snapshot = File.ReadAllText(path);
+        }
+
+        await using var restored = new Fixture();
+        var restoredPath = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(restored.Path)!, "state.json");
+        File.WriteAllText(restoredPath, snapshot);
+        using var reader = new RegistryPersistenceService(restored.Registry, NullLogger<RegistryPersistenceService>.Instance, restoredPath);
+        reader.Load();
+        var delivered = new List<string>();
+        restored.Engine.DurableBatchCompleted += evt => delivered.Add(evt.EventId);
+
+        var busy = await Assert.ThrowsAsync<PickingCommandRejectedException>(() =>
+            restored.Engine.StartBatchAsync([Item("0002", "01", "next-session", "next")]));
+        Assert.Equal("BLOCK_BUSY", busy.Code);
+        Assert.Empty(restored.Commands());
+        restored.Engine.ReplayPendingConfirmations();
+        Assert.Equal(new[] { completionId }, delivered);
+        Assert.False(restored.Engine.IsBatchActive);
+        await restored.Engine.StartBatchAsync([Item("0001", "01", "next-session", "next")]);
+    }
+
+    [Fact]
+    public async Task ConfirmationAppendFailureWhileExtinguishAwaitsAckRetainsOwnerForReplay()
+    {
+        await using var f = new Fixture();
+        Action<ConfirmationEvent, LightModuleState?> reject = (_, _) => throw new IOException("outbox unavailable");
+        f.Engine.DurableConfirmation += reject;
+        await f.Engine.StartBatchAsync([Item("0001", "01", "session", "one")]);
+        f.BeforeNextAck(() => Assert.Throws<IOException>(() => f.Confirm("0001")));
+
+        await f.Engine.ExtinguishAsync("0001");
+
+        Assert.Equal(ModuleStatus.Completed, f.Registry.Get("0001")!.Status);
+        Assert.Equal("one", f.Registry.Get("0001")!.CommandItemId);
+        var busy = await Assert.ThrowsAsync<PickingCommandRejectedException>(() =>
+            f.Engine.StartBatchAsync([Item("0002", "01", "next-session", "next")]));
+        Assert.Equal("BLOCK_BUSY", busy.Code);
+
+        f.Engine.DurableConfirmation -= reject;
+        f.Engine.ReplayPendingConfirmations();
+        Assert.False(f.Engine.IsBatchActive);
+        await f.Engine.StartBatchAsync([Item("0001", "01", "next-session", "next")]);
     }
 
     [Fact]
@@ -224,7 +552,7 @@ public sealed class CommandTests
         await f.Engine.QuickLightAsync("0001", 2, blockNo: "01", correlationId: "session",
             commandItemId: "next", pickingDetailId: "detail-next");
         await f.Engine.StartBatchAsync([original], relight: true);
-        var command = f.Commands().Last(c => c.StartsWith("P5"));
+        var command = f.Commands().Last(c => c.StartsWith("PP50500"));
         Assert.Contains("000100002", command);
         Assert.DoesNotContain("000100001", command);
         Assert.Equal("next", f.Registry.Get("0001")!.CommandItemId);
@@ -287,16 +615,26 @@ public sealed class CommandTests
         private readonly Task _ackLoop;
         private readonly List<string> _commands = [];
         public bool RejectCommands;
+        private int _interruptSequence;
+        private Action? _beforeAck;
+        public void BeforeNextAck(Action action) => _beforeAck = action;
         public Fixture()
         {
             Engine = new PickingEngine(Gateway, Registry, NullLogger<PickingEngine>.Instance);
+            Engine.DurableConfirmation += (_, _) => { }; // In-process durable-sink fixture; never connects.
+            Engine.DurableBatchCompleted += _ => { };
             // No StartAsync: no TCP connection. ACK only the in-memory pending map.
             _ackLoop = Task.Run(async () =>
             {
                 var pending = (ConcurrentDictionary<int, TaskCompletionSource<AioiDecoder.ParsedResponse>>)typeof(AioiGateway).GetField("_pending", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(Gateway)!;
                 while (!_cts.IsCancellationRequested)
                 {
-                    foreach (var pair in pending) pair.Value.TrySetResult(new AioiDecoder.ParsedResponse { Kind = RejectCommands ? AioiDecoder.ResponseKind.Nack : AioiDecoder.ResponseKind.Ack, Raw = RejectCommands ? "n" : "o" });
+                    foreach (var pair in pending)
+                    {
+                        try { Interlocked.Exchange(ref _beforeAck, null)?.Invoke(); }
+                        catch (Exception ex) { pair.Value.TrySetException(ex); continue; }
+                        pair.Value.TrySetResult(new AioiDecoder.ParsedResponse { Kind = RejectCommands ? AioiDecoder.ResponseKind.Nack : AioiDecoder.ResponseKind.Ack, Raw = RejectCommands ? "n" : "o" });
+                    }
                     await Task.Delay(1);
                 }
             });
@@ -316,10 +654,10 @@ public sealed class CommandTests
             }
             return _commands.ToArray();
         }
-        public void Confirm(string address)
+        public void Confirm(string address, int? sequence = null)
         {
             var handlers = (Action<ConfirmationEvent>?)typeof(AioiGateway).GetField("Confirmed", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(Gateway);
-            handlers?.Invoke(new ConfirmationEvent { Address = address });
+            handlers?.Invoke(new ConfirmationEvent { Address = address, SequenceNo = sequence ?? Interlocked.Increment(ref _interruptSequence) % 1000 });
         }
         public DispatcherFixture Dispatcher() => new(this);
         public async ValueTask DisposeAsync()
@@ -342,8 +680,9 @@ public sealed class CommandTests
             Value = new MqttCommandDispatcher(f.Engine, _publisher, new PreemptionGate(), null, labels,
                 new DeviceScanService(f.Gateway, f.Registry, NullLogger<DeviceScanService>.Instance), NullLogger.Instance, new CommandReceiptStore(f.Path));
         }
-        public CommandResultEvt[] Results() => new DurableEventBuffer(_outbox).ReadBatch()
-            .Select(line => Convert.FromBase64String(DurableEventBuffer.Parse(line).Payload))
+        public byte[][] Payloads() => new DurableEventBuffer(_outbox).ReadBatch()
+            .Select(line => Convert.FromBase64String(DurableEventBuffer.Parse(line).Payload)).ToArray();
+        public CommandResultEvt[] Results() => Payloads()
             .Where(payload =>
             {
                 using var json = JsonDocument.Parse(payload);

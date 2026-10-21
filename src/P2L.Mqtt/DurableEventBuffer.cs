@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using P2L.Mqtt.Messages;
+using P2L.Mqtt.Transport;
 
 namespace P2L.Mqtt;
 
@@ -23,14 +24,15 @@ internal sealed class DurableEventBuffer
 
     public void Append(string topic, bool retain, byte[] payload)
     {
+        if (!retain) payload = EventIdentity.Ensure(payload);
         var entry = new BufferedEntry(topic, retain, Convert.ToBase64String(payload));
         AppendLine(_path, JsonSerializer.Serialize(entry, P2LMqttJsonContext.Default.BufferedEntry));
     }
 
-    public string[] ReadBatch()
+    public string[] ReadBatch(int maxEntries = 256)
     {
         lock (_sync)
-            return File.Exists(_path) ? File.ReadAllLines(_path) : [];
+            return File.Exists(_path) ? File.ReadLines(_path).Take(maxEntries).ToArray() : [];
     }
 
     public static BufferedEntry Parse(string line)
@@ -39,7 +41,15 @@ internal sealed class DurableEventBuffer
                     ?? throw new JsonException("Empty MQTT buffer entry.");
         if (string.IsNullOrWhiteSpace(entry.Topic) || entry.Payload is null)
             throw new JsonException("MQTT buffer entry lacks topic or payload.");
-        _ = Convert.FromBase64String(entry.Payload);
+        using var payload = JsonDocument.Parse(Convert.FromBase64String(entry.Payload));
+        if (payload.RootElement.ValueKind != JsonValueKind.Object)
+            throw new JsonException("MQTT buffer payload must be an object.");
+        if (!payload.RootElement.TryGetProperty("type", out var type)
+            || type.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(type.GetString()))
+            throw new JsonException("MQTT buffer payload requires a type.");
+        if (payload.RootElement.TryGetProperty("eventId", out var id)
+            && (id.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(id.GetString())))
+            throw new JsonException("MQTT buffer eventId must be a non-empty string.");
         return entry;
     }
 
@@ -52,8 +62,8 @@ internal sealed class DurableEventBuffer
         if (count == 0) return;
         lock (_sync)
         {
-            var current = File.Exists(_path) ? File.ReadAllLines(_path) : [];
-            if (current.Length < count || !current.Take(count).SequenceEqual(batch.Take(count)))
+            IEnumerable<string> current = File.Exists(_path) ? File.ReadLines(_path) : [];
+            if (!current.Take(count).SequenceEqual(batch.Take(count)))
                 throw new IOException("MQTT outbox changed during replay; preserving its contents.");
             Replace(current.Skip(count));
         }

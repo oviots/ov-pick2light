@@ -286,6 +286,8 @@ html, body {
 .device-card.status-completed { border-color: rgba(34,197,94,.5); }
 .device-card.status-shortage { border-color: rgba(234,179,8,.5); }
 .device-card.status-malfunction { border-color: rgba(239,68,68,.5); }
+.confirmation-warning { display: grid; gap: .4rem; margin: .7rem 0; padding: .65rem; border: 1px solid var(--yellow); border-radius: var(--radius); color: var(--yellow); font-size: .8rem; }
+#recovery-message { color: var(--yellow); min-height: 1.4rem; }
 
 .device-header {
   display: flex;

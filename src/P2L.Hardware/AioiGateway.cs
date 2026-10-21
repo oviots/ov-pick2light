@@ -43,7 +43,8 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
 
     public bool IsConnected => _transport.IsConnected;
     /// <summary>A TCP connection with no outstanding protocol-health fault.</summary>
-    public bool IsHealthy => IsConnected && Volatile.Read(ref _protocolFaulted) == 0;
+    public bool HasBackgroundFailure => _transport.BackgroundFailure is not null;
+    public bool IsHealthy => IsConnected && !HasBackgroundFailure && Volatile.Read(ref _protocolFaulted) == 0;
 
     /// <summary>Reconnects the TCP link without resetting modules or replaying instructions.</summary>
     public void RequestReconnect()
@@ -133,11 +134,12 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     // ─── Pick operations ──────────────────────────────────────────────────
 
     /// <summary>
-    /// Lights up a batch of modules using P1 (steady) or FP1 (flash).
+    /// Lights up a batch using P1; Am1 supplies each address's color and mode.
     /// Sends Am1 per address before P1 so each module uses the correct color.
     /// </summary>
     public async Task InstructBatchAsync(IReadOnlyList<PickingInstruction> instructions,
-                                         CancellationToken ct = default)
+                                         CancellationToken ct = default,
+                                         Func<Func<IReadOnlyList<PickingInstruction>, ValueTask>, ValueTask>? writeCurrent = null)
     {
         if (instructions.Count == 0) return;
         ValidateBatch(instructions);
@@ -151,23 +153,24 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         {
             var (led2, led1, led0) = inst.Color.ToLedStates(inst.LedMode);
             await SendAndWaitAsync(
-                AioiEncoder.SetModeAm1(inst.Address, led2, led1, led0, LightState.On, inst.BuzMode), ct);
+                AioiEncoder.SetModeAm1(inst.Address, led2, led1, led0, inst.SegMode, inst.BuzMode), ct);
         }
 
         var ledMode = instructions[0].LedMode;
         var blockNo = instructions[0].BlockNo;
-        await SendAndWaitAsync(command, ct);
+        await SendBatchFinalAsync(command, overwrite: false, writeCurrent, ct);
 
         _log.LogInformation("Instructed {Count} modules (block {Block} mode {Mode})",
             instructions.Count, blockNo, ledMode);
     }
 
     /// <summary>
-    /// Overwrites an in-progress batch using P5 (steady) or FP5 (flash).
-    /// Sends Am1 per address before P5 so color is applied correctly.
+    /// Overwrites an in-progress batch using PP5 with its mode array omitted.
+    /// Sends Am1 per address first, preserving different colors and modes in one batch.
     /// </summary>
     public async Task OverwriteBatchAsync(IReadOnlyList<PickingInstruction> instructions,
-                                          CancellationToken ct = default)
+                                          CancellationToken ct = default,
+                                          Func<Func<IReadOnlyList<PickingInstruction>, ValueTask>, ValueTask>? writeCurrent = null)
     {
         if (instructions.Count == 0) return;
         ValidateBatch(instructions);
@@ -178,10 +181,10 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         {
             var (led2, led1, led0) = inst.Color.ToLedStates(inst.LedMode);
             await SendAndWaitAsync(
-                AioiEncoder.SetModeAm1(inst.Address, led2, led1, led0, LightState.On, inst.BuzMode), ct);
+                AioiEncoder.SetModeAm1(inst.Address, led2, led1, led0, inst.SegMode, inst.BuzMode), ct);
         }
 
-        await SendAndWaitAsync(command, ct);
+        await SendBatchFinalAsync(command, overwrite: true, writeCurrent, ct);
     }
 
     /// <summary>
@@ -215,15 +218,24 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         => SendAndWaitAsync(AioiEncoder.ModuleStatusInquiry(address), ct);
 
     /// <summary>
-    /// Reconfigures an active module's display in-place using an L command.
-    /// Note: M (mode array) command is skipped — gateway uses built-in default mode.
+    /// Applies per-address active/after-confirm modes before the display L command.
     /// </summary>
     public async Task ConfigureModuleAsync(string address,
                                            string displayData,
                                            ModuleParameters parameters,
                                            CancellationToken ct = default)
     {
-        await SendAndWaitAsync(AioiEncoder.SingleInstruct(address, displayData), ct);
+        if (!Enum.IsDefined(parameters.Color) || !Enum.IsDefined(parameters.LedMode)
+            || !Enum.IsDefined(parameters.SegMode) || !Enum.IsDefined(parameters.BuzMode)
+            || !Enum.IsDefined(parameters.AfterConfirm) || !Enum.IsDefined(parameters.BuzAfterConfirm))
+            throw new ArgumentException("Invalid module parameters.", nameof(parameters));
+        var command = AioiEncoder.SingleInstruct(address, displayData);
+        _ = new AioiPacket { Command = command }.ToBytes();
+        var (led2, led1, led0) = parameters.Color.ToLedStates(parameters.LedMode);
+        await SendAndWaitAsync(AioiEncoder.SetModeAm1(address, led2, led1, led0, parameters.SegMode, parameters.BuzMode), ct);
+        await SendAndWaitAsync(AioiEncoder.SetModeAm2(address, parameters.AfterConfirm, parameters.AfterConfirm,
+            parameters.AfterConfirm, parameters.AfterConfirm, parameters.BuzAfterConfirm), ct);
+        await SendAndWaitAsync(command, ct);
 
         _log.LogInformation("[CONFIG] addr={Addr} color={C} mode={M}",
             address, parameters.Color, parameters.LedMode);
@@ -237,8 +249,26 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
             throw new ArgumentException("All instructions in one hardware batch must use the same block number.", nameof(instructions));
     }
 
+    private Task<AioiDecoder.ParsedResponse> SendBatchFinalAsync(string original, bool overwrite,
+        Func<Func<IReadOnlyList<PickingInstruction>, ValueTask>, ValueTask>? writeCurrent, CancellationToken ct)
+    {
+        if (writeCurrent is null)
+            return SendAndWaitAsync(original, ct);
+        return SendAndWaitAsync(original, ct, write => writeCurrent(items =>
+        {
+            if (items.Count == 0)
+                return write(null);
+            ValidateBatch(items);
+            var command = overwrite
+                ? AioiEncoder.BlockInstructOverwrite(items[0].BlockNo, items, items[0].LedMode)
+                : AioiEncoder.BlockInstruct(items[0].BlockNo, items, items[0].LedMode);
+            return write(command);
+        }));
+    }
+
     private async Task<AioiDecoder.ParsedResponse> SendAndWaitAsync(string command,
-                                                                      CancellationToken ct)
+                                                                      CancellationToken ct,
+        Func<Func<string?, ValueTask>, ValueTask>? writeCurrent = null)
     {
         var tcs = new TaskCompletionSource<AioiDecoder.ParsedResponse>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -254,7 +284,12 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         {
             if (!_pending.TryAdd(seq, tcs))
                 throw new InvalidOperationException($"Gateway sequence {seq} is still pending.");
-            await _transport.EnqueueAsync(command, seq, timeout.Token);
+            if (writeCurrent is null)
+                await _transport.EnqueueAsync(command, seq, timeout.Token);
+            else
+                await _transport.EnqueueCurrentAsync(command, seq, writeCurrent,
+                    () => tcs.TrySetResult(new AioiDecoder.ParsedResponse { Kind = AioiDecoder.ResponseKind.Ack, Raw = "o" }),
+                    ex => tcs.TrySetException(ex), timeout.Token);
             var response = await tcs.Task.WaitAsync(timeout.Token);
 
             if (response.Kind == AioiDecoder.ResponseKind.Nack)
