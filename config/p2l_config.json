@@ -1,4 +1,11 @@
 {
+  "Axiom": {
+    "Enabled": false,
+    "Endpoint": "https://us-east-1.aws.edge.axiom.co/v1/ingest/p2l-logs",
+    "MinimumLevel": "Debug",
+    "RequestTimeoutMs": 3000,
+    "Environment": "local"
+  },
   "Gateway": {
     "Host": "192.168.1.254",
     "Port": 5003,

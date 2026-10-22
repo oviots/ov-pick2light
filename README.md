@@ -710,6 +710,8 @@ Address,Display,Color,LedMode,SegMode,BuzMode,AfterConfirm,BuzAfterConfirm,Statu
 
 All hardware TX/RX frames are written to rotating files in the `logs/` directory.
 
+Optional cloud logging: [Axiom setup and delivery behavior (Vietnamese)](docs/AXIOM_LOGGING.vi.md).
+
 ```bash
 ls -lh logs/
 tail -f logs/p2l_*.log
