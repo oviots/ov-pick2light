@@ -168,6 +168,9 @@ services.AddLogging(builder =>
             o.TimestampFormat = "HH:mm:ss ";
         });
     }
+    builder.AddAxiom(config, new[] { appSettings.Mqtt.Password, appSettings.Mqtt.BackupBroker?.Password,
+        appSettings.Mqtt.Tls.CertPassword, appSettings.Mqtt.BackupBroker?.Tls.CertPassword }
+        .OfType<string>());
     // Rotating file for hardware TX/RX audit (mis-pick investigation)
     builder.AddProvider(new RotatingFileLoggerProvider(
         appSettings.LogDirectory,
@@ -299,23 +302,22 @@ app.Configure(cfg =>
 #endif
 });
 
-// ─── Windows Service Control Manager mode ────────────────────────────────
-#if WINDOWS_SERVICE
-if (OperatingSystem.IsWindows() && !Environment.UserInteractive)
+// ─── Run and drain owned services, including optional cloud logs ──────────
+try
 {
-    // Launched by SCM: hand lifecycle to ServiceBase so Start/Stop hooks work.
-    using var winsvc = new P2LWindowsService(() => app.RunAsync(args), cts);
-    System.ServiceProcess.ServiceBase.Run(winsvc);
-    await registrar.DisposeAsync();
-    return 0;
-}
+#if WINDOWS_SERVICE
+    if (OperatingSystem.IsWindows() && !Environment.UserInteractive)
+    {
+        using var winsvc = new P2LWindowsService(() => app.RunAsync(args), cts);
+        System.ServiceProcess.ServiceBase.Run(winsvc);
+        return 0;
+    }
 #endif
-
-var exitCode = await app.RunAsync(args);
-
-// Explicitly await async disposal so IAsyncDisposable singletons
-// (HeartbeatService, AioiGateway, etc.) are fully torn down before exit.
-await registrar.DisposeAsync();
-cts.Dispose();
-
-return exitCode;
+    return await app.RunAsync(args);
+}
+finally
+{
+    // Resolver disposal may already have run; providers must tolerate a second call.
+    await registrar.DisposeAsync();
+    cts.Dispose();
+}
