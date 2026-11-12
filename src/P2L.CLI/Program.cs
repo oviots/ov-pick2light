@@ -156,7 +156,7 @@ services.AddLogging(builder =>
     if (axiom is not null)
     {
         builder.AddProvider(axiom);
-        builder.AddFilter<AxiomTelemetry>(null, LogLevel.Trace);
+        builder.AddFilter<AxiomTelemetry>(null, remoteConfig.Axiom?.Mode == "debug" ? LogLevel.Trace : LogLevel.Information);
     }
     if (!isDashboardMode)
     {

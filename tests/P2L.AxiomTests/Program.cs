@@ -11,6 +11,8 @@ config["axiom"] = new JsonObject {["enabled"] = false};
 Require(AxiomSettings.FromRemote(JsonDocument.Parse(config.ToJsonString()).RootElement) is null, "Disabled Axiom must disable export");
 config["axiom"] = new JsonObject {["enabled"] = true, ["endpoint"] = "https://us-east-1.aws.edge.axiom.co", ["dataset"] = "p2l", ["token"] = "AXIOM-SEKRET"};
 var settings = AxiomSettings.FromRemote(JsonDocument.Parse(config.ToJsonString()).RootElement)!;
+Require(settings.Mode == "operational", "Legacy config must default to operational filtering");
+settings = settings with {Mode = "debug"}; // transport/redaction tests exercise the full debug path
 Require(settings.IngestUrl.AbsolutePath == "/v1/ingest/p2l", "Edge URL wrong");
 config["axiom"]!["endpoint"] = "https://api.axiom.co";
 Require(AxiomSettings.FromRemote(JsonDocument.Parse(config.ToJsonString()).RootElement)!.IngestUrl.AbsolutePath == "/v1/datasets/p2l/ingest", "Legacy URL wrong");
@@ -74,9 +76,75 @@ for (var i = 0; i < 2000; i++) bounded.Record("event", "events", "{}");
 Require(stopwatch.Elapsed < TimeSpan.FromSeconds(3) && bounded.Dropped > 0, "Full queue blocked picking thread");
 gate.SetResult(); await bounded.DisposeAsync();
 Console.WriteLine("PASS: outage queue is bounded and producers do not wait for HTTP");
+// Operational filtering is tested with fake HTTP and clock; no sleeping for a 60s aggregation window.
+var clock = new TestClock();
+var operational = new List<JsonObject>();
+var operation = new AxiomTelemetry(settings with {Mode = "operational"}, new FakeHandler(async (request, ct) => {
+    var body = await request.Content!.ReadAsStringAsync(ct);
+    operational.AddRange(JsonNode.Parse(body)!.AsArray().Select(n => n!.AsObject()));
+    return new HttpResponseMessage(HttpStatusCode.OK) {Content = new StringContent("{\"failed\":0}")};
+}), clock);
+using (var factory = LoggerFactory.Create(builder => builder.AddProvider(operation).AddFilter<AxiomTelemetry>(null, LogLevel.Trace)))
+{
+    var hardware = factory.CreateLogger("P2L.Hardware.AioiGateway");
+    var publisher = factory.CreateLogger("P2L.Mqtt.MqttEventPublisher");
+    var bridge = factory.CreateLogger("P2L.Mqtt.MqttBridgeService");
+    var dispatch = factory.CreateLogger("P2L.Mqtt.MqttCommandDispatcher");
+    for (var i = 0; i < 100; i++)
+    {
+        hardware.LogDebug("[TX] SeqNo={Seq} Cmd={Cmd}", i, "Az0000");
+        hardware.LogInformation("[CONFIRM] Address={Addr} Status={Status}", "0008", "Normal");
+        publisher.LogDebug("[MQTT] Published {Type}", "light_changed");
+        operation.Record("event", "devices", "{\"type\":\"light_changed\",\"address\":\"0008\"}");
+        operation.Record("command_received", "commands", "{\"type\":\"get_snapshot\"}");
+        bridge.LogWarning("[MQTT] Connection failed: {Err}. Retrying in {D:F0}s", "token=MQTT-SEKRET", i);
+    }
+    hardware.LogInformation("Connected to gateway {Host}:{Port}", "localhost", 5003);
+    operation.Record("command_received", "commands", """{"type":"batch_start","blockNo":"02","correlationId":"PICK-02","items":[{"address":"0008","quantity":5},{"address":"0009","quantity":7}],"token":"AXIOM-SEKRET"}""");
+    operation.Record("command_received", "commands", """{"type":"light_on","blockNo":"02","correlationId":"PICK-02","address":"0008","quantity":5}""");
+    for (var i = 0; i < 3; i++) operation.Record("event", "events", """{"type":"confirmed","blockNo":"02","correlationId":"PICK-02","address":"0008","status":"Normal"}""");
+    operation.Record("event", "events", """{"type":"batch_completed","blockNo":"02","correlationId":"PICK-02"}""");
+    for (var i = 0; i < 100; i++) operation.Record("event", "status", """{"type":"bridge_status","online":true,"gatewayConnected":true}""");
+    operation.Record("event", "status", """{"type":"bridge_status","online":true,"gatewayConnected":false}""");
+    // Business errors and critical failures must not be sampled or grouped.
+    for (var i = 0; i < 2; i++) dispatch.LogError("[MQTT] Command dispatch failed: {T}", "batch_start");
+    for (var i = 0; i < 2; i++) bridge.LogCritical("[MQTT] Connection failed: {Err}", "fatal");
+}
+await operation.DisposeAsync();
+Require(operational.Count == 15, "Unexpected operational record count: " + operational.Count);
+Require(!operational.Any(e => (string?)e["type"] == "light_changed" || (string?)e["level"] == "Debug" || (string?)e["type"] == "get_snapshot"), "Noise was exported");
+Require(operational.Count(e => (string?)e["type"] == "confirmed") == 3, "Business confirmations were dropped");
+Require(operational.Count(e => (string?)e["type"] == "bridge_status") == 2, "Bridge state transitions were lost or repeated");
+var command = operational.Single(e => (string?)e["type"] == "batch_start");
+Require((string?)command["correlationId"] == "PICK-02" && (string?)command["blockNo"] == "02", "Summary lost session routing");
+Require(command["data"]!["items"] is null && (int?)command["data"]!["itemCount"] == 2 && (long?)command["data"]!["totalQuantity"] == 12, "Batch payload was not compacted");
+var repeat = operational.Single(e => e["data"]?["summary"]?.GetValue<bool>() == true);
+Require((long?)repeat["data"]!["repeatCount"] == 99, "Repeat count must exclude the first occurrence");
+Require(!string.Join("", operational.Select(e => e.ToJsonString())).Contains("SEKRET"), "Summarized errors leaked credentials");
+Require(operational.Count(e => (string?)e["level"] == "Critical") == 2 && operational.Count(e => (string?)e["level"] == "Error") == 2, "Business/critical errors were aggregated");
+Console.WriteLine("PASS: operational noise filter, compact commands, complete business events, transition-only status, error counting and secret redaction");
+
+var policyClock = new TestClock();
+var policy = new AxiomLogPolicy(false, policyClock);
+var warning = JsonNode.Parse("""{"level":"Warning","category":"P2L.Mqtt.MqttBridgeService","message":"connection lost","properties":{"Err":"offline"}}""")!;
+const string warningTemplate = "[MQTT] Connection failed: {Err}";
+Require(policy.Filter("service_log", warning.DeepClone(), warningTemplate) is not null, "First warning must be immediate");
+Require(policy.Filter("service_log", warning.DeepClone(), warningTemplate) is null, "Repeat must be grouped");
+policyClock.Advance(TimeSpan.FromSeconds(59)); Require(policy.FlushRepeated().Count == 0, "Summary flushed before 60s");
+policyClock.Advance(TimeSpan.FromSeconds(1)); Require(policy.FlushRepeated().Single()["repeatCount"]!.GetValue<long>() == 1, "60s summary missing");
+Require(policy.Filter("service_log", warning.DeepClone(), warningTemplate) is not null, "New warning window must send its first error");
+Console.WriteLine("PASS: exact aggregation window and first-error delivery with fake time");
+
 Console.WriteLine("All Axiom checks passed. Fake HTTP only; no Axiom/UAT/controller access.");
 
 sealed class FakeHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => send(request, ct);
+}
+
+sealed class TestClock : TimeProvider
+{
+    private long _ticks = DateTimeOffset.UtcNow.UtcTicks;
+    public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _ticks), TimeSpan.Zero);
+    public void Advance(TimeSpan elapsed) => Interlocked.Add(ref _ticks, elapsed.Ticks);
 }

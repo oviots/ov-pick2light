@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace P2L.CLI.Observability;
 
-internal sealed record AxiomSettings(Uri IngestUrl, string Token, string SiteCode, string ClientId, string BlockNo, string MqttPassword)
+internal sealed record AxiomSettings(Uri IngestUrl, string Token, string SiteCode, string ClientId, string BlockNo, string MqttPassword, string Mode = "operational")
 {
     public static AxiomSettings? FromRemote(JsonElement config)
     {
@@ -13,11 +13,13 @@ internal sealed record AxiomSettings(Uri IngestUrl, string Token, string SiteCod
             throw new InvalidDataException("Invalid Axiom endpoint");
         var dataset = axiom.GetProperty("dataset").GetString()!;
         var token = axiom.GetProperty("token").GetString()!;
+        var mode = axiom.TryGetProperty("mode", out var modeValue) ? modeValue.GetString() : "operational";
+        if (mode is not ("operational" or "debug")) throw new InvalidDataException("Invalid Axiom log mode");
         if (string.IsNullOrWhiteSpace(dataset) || string.IsNullOrWhiteSpace(token) || token.Any(char.IsWhiteSpace))
             throw new InvalidDataException("Invalid Axiom configuration");
         var path = endpoint.EndsWith("//api.axiom.co", StringComparison.Ordinal) ? $"/v1/datasets/{Uri.EscapeDataString(dataset)}/ingest" : $"/v1/ingest/{Uri.EscapeDataString(dataset)}";
         return new(new Uri(endpoint + path), token, config.GetProperty("siteCode").GetString()!,
             config.GetProperty("mqtt").GetProperty("clientId").GetString()!, config.GetProperty("gateway").GetProperty("blockNo").GetString()!,
-            config.GetProperty("mqtt").GetProperty("password").GetString()!);
+            config.GetProperty("mqtt").GetProperty("password").GetString()!, mode);
     }
 }

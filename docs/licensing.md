@@ -102,6 +102,7 @@ Example addition to the admin config save payload:
     "enabled": true,
     "endpoint": "https://us-east-1.aws.edge.axiom.co",
     "dataset": "p2l-logs",
+    "mode": "operational",
     "token": "<ingest-only API token>"
   }
 }
@@ -109,13 +110,19 @@ Example addition to the admin config save payload:
 
 The token is encrypted with the existing `P2L_ENCRYPTION_KEY` and stored in the same Mongo configuration document. Admin list/save responses return `hasToken`, never the token or ciphertext. Only the signed Bridge config API returns the decrypted token. Blank token on edit preserves it; omitting `axiom` preserves the previous settings. Set `axiom.enabled: false` to disable export. Restart P2L at a safe time after changing the settings. No token or telemetry spool is written to local JSON.
 
-The integrated .NET P2L exports three record kinds:
+The integrated .NET P2L supports `axiom.mode: "operational" | "debug"`. Missing mode defaults to **operational**, including old saved configs, when running the new binary. Choose the mode in Authen and restart P2L to apply it. Existing older binaries ignore the field and keep their old behavior, so install the updated P2L as well. Debug has no automatic expiry; switch back to operational and restart after diagnosis.
 
-- `service_log`: Trace through Critical service logs, including hardware TX/RX logs emitted by the service. Bootstrap failures before licensed config loads cannot be exported.
-- `command_received`: every payload entering the shared MQTT/local UI dispatcher, before validation. Receipt does not mean the command completed.
-- `event`: every generated MQTT event, including device state/snapshots, confirmations, batch completion, CSV lifecycle and Bridge status. Captured before MQTT delivery, including while the broker is offline. Broker-generated Last Will messages after a process crash cannot be captured by the stopped process. Replayed MQTT buffers are not emitted again to Axiom.
+Operational mode exports:
 
-Records contain `_time`, `recordId`, `siteCode`, `clientId`, machine and block. `type`, `correlationId` and `address` are promoted when present for PickSession filtering. Token/password/license/private-key fields and known runtime secrets are redacted. Invalid JSON is represented by metadata instead of raw contents. Large records are truncated and marked; no event sampling is applied.
+- `service_log`: Warning/Error/Critical, plus service start/stop, Controller/MQTT connection changes, watchdog, scan summaries and MQTT buffer replay summaries. Routine Info, Debug/Trace, TX/RX, heartbeat OK, publish-success and per-light service logs are excluded from Axiom.
+- `command_received`: compact summaries of `batch_start`, `light_on`, `light_off`, `batch_finish`, `terminate_all`, CSV run/control and scan commands. `batch_start` keeps `itemCount` and `totalQuantity` instead of the complete items array. `get_snapshot` and invalid/unknown command payload copies are excluded; their service warnings/errors remain available. Receipt still does not mean dispatch completed.
+- `event`: all `confirmed` and `batch_completed` records, CSV errors/completion, and `bridge_status` only when online/gateway state changes. `light_changed`, snapshots and routine per-row CSV task events are excluded from Axiom. MQTT and local UI delivery are unchanged.
+
+Repeated connection/reconnect/heartbeat failures send the first occurrence immediately, then summarize additional repeats about every 60 seconds (or at shutdown). A summary has `summary: true`, `repeatCount` (additional occurrences excluding the already-sent first record), `windowStartedAt` and `lastSeenAt` under `data`. Full exception details are kept on the first record. A different error or severity sends a new first record; business dispatch/NACK errors and Critical logs are never aggregated. The grouping map is bounded; excess error variants are sent normally instead of silently dropped. Flush can be delayed by HTTP retries/backpressure.
+
+Debug mode retains the previous full export: Trace through Critical service logs, full command payloads and every generated MQTT event, subject to existing redaction/record-size/queue limits. Neither mode changes Controller commands, picking/session processing, MQTT event delivery or local file/console log settings. Bootstrap errors before licensed configuration loads cannot be exported; broker-generated LWT after a crash cannot be captured by a stopped process. MQTT buffer replay does not emit another copy to Axiom.
+
+Records retain `_time`, `recordId`, `siteCode`, `clientId`, machine and block. `type`, `correlationId` and `address` remain available for PickSession filtering. Token/password/license/private-key fields and known runtime secrets are redacted. In Debug, malformed JSON is represented by metadata rather than raw contents. Oversized records are truncated and marked. Operational filtering does not sample confirmations or batch completions; transport remains best-effort.
 
 Export uses a separate bounded queue (1,000 records), batches up to 50 and retries transient HTTP/network errors up to three attempts. Redirects are disabled. P2L never waits for Axiom on a picking thread. This is best-effort diagnostics, not a durable audit ledger: a full queue, prolonged outage, process crash or failed shutdown flush can lose records. Warnings go to local stderr without credentials or response bodies. Shutdown permits up to five seconds to flush. The existing MQTT event buffer is independent of Axiom.
 

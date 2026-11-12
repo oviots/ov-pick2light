@@ -14,6 +14,8 @@ internal sealed class AxiomTelemetry : ILoggerProvider, IP2LTelemetry, IAsyncDis
     private readonly AxiomSettings _settings;
     private readonly TelemetryRedactor _redactor;
     private readonly HttpClient _http;
+    private readonly AxiomLogPolicy _policy;
+    private readonly TimeProvider _clock;
     private readonly CancellationTokenSource _stop = new();
     private readonly Channel<string> _queue = Channel.CreateBounded<string>(new BoundedChannelOptions(1000)
         {FullMode = BoundedChannelFullMode.Wait, SingleReader = true, SingleWriter = false});
@@ -23,9 +25,11 @@ internal sealed class AxiomTelemetry : ILoggerProvider, IP2LTelemetry, IAsyncDis
     private long _lastWarning;
     internal long Dropped => Interlocked.Read(ref _dropped);
 
-    public AxiomTelemetry(AxiomSettings settings, HttpMessageHandler? handler = null)
+    public AxiomTelemetry(AxiomSettings settings, HttpMessageHandler? handler = null, TimeProvider? clock = null)
     {
         _settings = settings;
+        _clock = clock ?? TimeProvider.System;
+        _policy = new(settings.Mode == "debug", _clock);
         _redactor = new(settings.Token, settings.MqttPassword);
         _http = new(handler ?? new HttpClientHandler {AllowAutoRedirect = false}) {Timeout = TimeSpan.FromSeconds(5)};
         _worker = Task.Run(DrainAsync);
@@ -53,12 +57,14 @@ internal sealed class AxiomTelemetry : ILoggerProvider, IP2LTelemetry, IAsyncDis
         catch { Interlocked.Increment(ref _dropped); }
     }
 
-    private void Enqueue(string kind, string? topic, JsonNode? data)
+    private void Enqueue(string kind, string? topic, JsonNode? data, string? template = null, bool filtered = false)
     {
         var clean = _redactor.Clean(data);
+        if (!filtered) clean = _policy.Filter(kind, clean, template);
+        if (clean is null) return;
         var entry = new JsonObject
         {
-            ["_time"] = DateTime.UtcNow.ToString("O"), ["recordId"] = Guid.NewGuid().ToString("N"),
+            ["_time"] = _clock.GetUtcNow().ToString("O"), ["recordId"] = Guid.NewGuid().ToString("N"),
             ["service"] = "p2l", ["kind"] = kind, ["siteCode"] = _settings.SiteCode,
             ["clientId"] = _settings.ClientId, ["machine"] = Environment.MachineName,
             ["blockNo"] = _settings.BlockNo, ["topic"] = topic
@@ -81,13 +87,15 @@ internal sealed class AxiomTelemetry : ILoggerProvider, IP2LTelemetry, IAsyncDis
     {
         try
         {
-            while (await _queue.Reader.WaitToReadAsync(_stop.Token))
+            while (!_stop.IsCancellationRequested)
             {
+                foreach (var summary in _policy.FlushRepeated()) Enqueue("service_log", null, summary, filtered: true);
                 if (_queue.Reader.Count < 50 && !_queue.Reader.Completion.IsCompleted && Volatile.Read(ref _disposed) == 0)
                     await Task.Delay(1000, _stop.Token);
                 var batch = new List<string>(50);
                 while (batch.Count < 50 && _queue.Reader.TryRead(out var item)) batch.Add(item);
-                await SendAsync(batch);
+                if (batch.Count > 0) await SendAsync(batch);
+                else if (_queue.Reader.Completion.IsCompleted) break;
             }
         }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
@@ -134,6 +142,7 @@ internal sealed class AxiomTelemetry : ILoggerProvider, IP2LTelemetry, IAsyncDis
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        foreach (var summary in _policy.FlushRepeated(force: true)) Enqueue("service_log", null, summary, filtered: true);
         _queue.Writer.TryComplete();
         try { await _worker.WaitAsync(TimeSpan.FromSeconds(5)); }
         catch (TimeoutException) { await _stop.CancelAsync(); await _worker; }
@@ -143,12 +152,13 @@ internal sealed class AxiomTelemetry : ILoggerProvider, IP2LTelemetry, IAsyncDis
     private sealed class EntryLogger(AxiomTelemetry owner, string category) : ILogger
     {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel level) => level is >= LogLevel.Trace and < LogLevel.None;
+        public bool IsEnabled(LogLevel level) => level >= (owner._settings.Mode == "debug" ? LogLevel.Trace : LogLevel.Information) && level < LogLevel.None;
         public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> format)
         {
             if (!IsEnabled(level)) return;
             try
             {
+                string? template = null;
                 var data = new JsonObject {["level"] = level.ToString(), ["category"] = category,
                     ["message"] = owner._redactor.Text(format(state, error)), ["eventId"] = id.Id};
                 if (error is not null) data["exception"] = owner._redactor.Text(error.ToString());
@@ -156,10 +166,13 @@ internal sealed class AxiomTelemetry : ILoggerProvider, IP2LTelemetry, IAsyncDis
                 {
                     var properties = new JsonObject();
                     foreach (var field in fields)
-                        if (field.Key != "{OriginalFormat}") properties[field.Key] = owner._redactor.IsSensitive(field.Key) ? "[REDACTED]" : owner._redactor.Text(field.Value?.ToString() ?? "");
+                    {
+                        if (field.Key == "{OriginalFormat}") template = field.Value?.ToString();
+                        else properties[field.Key] = owner._redactor.IsSensitive(field.Key) ? "[REDACTED]" : owner._redactor.Text(field.Value?.ToString() ?? "");
+                    }
                     data["properties"] = properties;
                 }
-                owner.Enqueue("service_log", null, data);
+                owner.Enqueue("service_log", null, data, template);
             }
             catch { Interlocked.Increment(ref owner._dropped); }
         }
