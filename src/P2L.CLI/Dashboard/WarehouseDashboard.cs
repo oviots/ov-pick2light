@@ -77,7 +77,7 @@ public sealed class WarehouseDashboard
         var pending = _registry.PendingConfirmCount;
 
         return new Panel(
-            new Markup($"  {status}  |  [yellow]Active:[/] {active}  |  [cyan]Awaiting terminate:[/] {pending}  |  {DateTime.Now:HH:mm:ss}"))
+            new Markup($"  {status}  |  [yellow]Active:[/] {active}  |  [cyan]Confirmed:[/] {pending}  |  {DateTime.Now:HH:mm:ss}"))
         {
             Header = new PanelHeader("[bold]Pick2Light (P2L) — Warehouse Control System[/]"),
             Border = BoxBorder.Heavy,
