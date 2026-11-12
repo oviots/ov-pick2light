@@ -23,6 +23,10 @@ internal static class SelfHealHandler
     private static SelfHealSettings _settings  = new();
     private static string[]         _launchArgs = [];
     private static string           _crashHistoryFile = CrashHistoryFileName;
+    private static int              _stopping;
+
+    /// <summary>Intentional shutdown must never spawn a replacement process.</summary>
+    public static void BeginShutdown() => Interlocked.Exchange(ref _stopping, 1);
 
     // ─── Public API ───────────────────────────────────────────────────────
 
@@ -61,6 +65,7 @@ internal static class SelfHealHandler
     /// </summary>
     public static void TriggerWatchdog(string reason)
     {
+        if (Volatile.Read(ref _stopping) != 0) return;
         WriteCrashLog($"[Watchdog] {reason}");
         RestartIfAllowed();
     }
@@ -69,7 +74,7 @@ internal static class SelfHealHandler
 
     private static void RestartIfAllowed()
     {
-        if (!_settings.Enabled) return;
+        if (!_settings.Enabled || Volatile.Read(ref _stopping) != 0) return;
 
         if (IsInCrashLoop())
         {
@@ -79,6 +84,7 @@ internal static class SelfHealHandler
         }
 
         Thread.Sleep(_settings.BackOffSeconds * 1_000);
+        if (Volatile.Read(ref _stopping) != 0) return;
         Restart();
     }
 
@@ -126,6 +132,7 @@ internal static class SelfHealHandler
 
     private static void Restart()
     {
+        if (Volatile.Read(ref _stopping) != 0) return;
         try
         {
             var exe = Environment.ProcessPath

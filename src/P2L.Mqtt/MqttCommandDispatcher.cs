@@ -20,6 +20,8 @@ internal sealed class MqttCommandDispatcher
     private readonly DeviceScanService   _scanService;
     private readonly ILogger             _log;
     private readonly SemaphoreSlim        _commandLock = new(1, 1);
+    private readonly P2L.Shared.IP2LTelemetry? _telemetry;
+    private readonly string? _commandTopic;
 
     public MqttCommandDispatcher(PickingEngine engine,
                                  MqttEventPublisher publisher,
@@ -27,7 +29,9 @@ internal sealed class MqttCommandDispatcher
                                  CsvPickTaskRunner? csvRunner,
                                  DeviceLabelStore labels,
                                  DeviceScanService scanService,
-                                 ILogger logger)
+                                 ILogger logger,
+                                 P2L.Shared.IP2LTelemetry? telemetry = null,
+                                 string? commandTopic = null)
     {
         _engine      = engine;
         _publisher   = publisher;
@@ -36,10 +40,13 @@ internal sealed class MqttCommandDispatcher
         _labels      = labels;
         _scanService = scanService;
         _log         = logger;
+        _telemetry = telemetry;
+        _commandTopic = commandTopic;
     }
 
     public async Task HandleAsync(byte[] payload, CancellationToken ct)
     {
+        _telemetry?.Record("command_received", _commandTopic, System.Text.Encoding.UTF8.GetString(payload));
         string type;
         try
         {

@@ -41,6 +41,8 @@ public sealed class TcpTransport : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private Task? _sendLoop;
     private Task? _recvLoop;
+    private readonly object _disposeLock = new();
+    private Task? _disposeTask;
 
     private int               _reconnectAttempts;
     private readonly SemaphoreSlim _reconnectLock = new(1, 1);
@@ -65,6 +67,7 @@ public sealed class TcpTransport : IAsyncDisposable
     /// <summary>Starts background connect/send/receive loops.</summary>
     public Task StartAsync(CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         _sendLoop = Task.Run(() => SendLoopAsync(_cts.Token), _cts.Token);
         _recvLoop = Task.Run(() => ReceiveLoopAsync(_cts.Token), _cts.Token);
         return Task.CompletedTask;
@@ -274,14 +277,25 @@ public sealed class TcpTransport : IAsyncDisposable
 
     // ─── Disposal ─────────────────────────────────────────────────────────
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
+    {
+        lock (_disposeLock) return new ValueTask(_disposeTask ??= DisposeCoreAsync());
+    }
+
+    private async Task DisposeCoreAsync()
     {
         _sendQueue.Writer.TryComplete();
         await _cts.CancelAsync();
-        if (_sendLoop is not null) await _sendLoop.ConfigureAwait(false);
-        if (_recvLoop is not null) await _recvLoop.ConfigureAwait(false);
-        DropConnection();
-        _cts.Dispose();
-        _reconnectLock.Dispose();
+        try
+        {
+            await Task.WhenAll(_sendLoop ?? Task.CompletedTask, _recvLoop ?? Task.CompletedTask).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested) { }
+        finally
+        {
+            DropConnection();
+            _cts.Dispose();
+            _reconnectLock.Dispose();
+        }
     }
 }

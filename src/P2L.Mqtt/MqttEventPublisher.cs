@@ -33,6 +33,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
     private readonly DeviceLabelStore     _labels;
     private readonly ILogger              _log;
     private readonly string?              _bufferPath;
+    private readonly P2L.Shared.IP2LTelemetry? _telemetry;
 
     private readonly Channel<MqttEvent> _queue =
         Channel.CreateBounded<MqttEvent>(new BoundedChannelOptions(1000)
@@ -48,7 +49,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
     public MqttEventPublisher(IMqttClient client, MqttSettings settings,
                                PickingEngine engine, LightModuleRegistry registry,
                                DeviceLabelStore labels,
-                               ILogger<MqttEventPublisher> log)
+                               ILogger<MqttEventPublisher> log, P2L.Shared.IP2LTelemetry? telemetry = null)
     {
         _client     = client;
         _settings   = settings;
@@ -56,6 +57,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
         _registry   = registry;
         _labels     = labels;
         _log        = log;
+        _telemetry = telemetry;
         _bufferPath = string.IsNullOrWhiteSpace(settings.OfflineBufferPath)
                       ? null
                       : settings.OfflineBufferPath;
@@ -90,11 +92,18 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
 
     // ─── Event handlers ───────────────────────────────────────────────────
 
+    private void Enqueue(MqttEvent evt)
+    {
+        if (_telemetry is not null && BuildMessage(evt) is { } message)
+            _telemetry.Record("event", message.Topic, System.Text.Encoding.UTF8.GetString(message.Payload));
+        _queue.Writer.TryWrite(evt);
+    }
+
     private void OnStateChanged(LightModuleState state)
-        => _queue.Writer.TryWrite(StateToEvt(state));
+        => Enqueue(StateToEvt(state));
 
     private void OnItemConfirmed(ConfirmationEvent evt, LightModuleState? state)
-        => _queue.Writer.TryWrite(new ConfirmedEvt
+        => Enqueue(new ConfirmedEvt
         {
             Type             = "confirmed",
             Address          = evt.Address,
@@ -107,7 +116,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
         });
 
     private void OnBatchCompleted(string? correlationId)
-        => _queue.Writer.TryWrite(new BatchCompletedEvt
+        => Enqueue(new BatchCompletedEvt
         {
             Type = "batch_completed",
             CorrelationId = correlationId,
@@ -118,11 +127,11 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
     public void EnqueueSnapshot()
     {
         foreach (var module in _registry.All)
-            _queue.Writer.TryWrite(StateToEvt(module));
+            Enqueue(StateToEvt(module));
     }
 
     public void EnqueueTaskEvent(CsvTaskEvent taskEvt)
-        => _queue.Writer.TryWrite(new TaskEvt
+        => Enqueue(new TaskEvt
         {
             Type     = taskEvt.EventType,
             Address  = taskEvt.Row?.Address  ?? "",
@@ -132,7 +141,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
         });
 
     public void EnqueueStatus(bool online, bool gatewayConnected)
-        => _queue.Writer.TryWrite(new BridgeStatusEvt
+        => Enqueue(new BridgeStatusEvt
         {
             Type             = "bridge_status",
             Online           = online,

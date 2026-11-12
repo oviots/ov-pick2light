@@ -284,7 +284,7 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
 
     /// <summary>
     /// Synchronous disposal for DI containers that call <see cref="IDisposable.Dispose"/>.
-    /// Fire-and-forget: the OS will reclaim the TCP socket at process exit.
+    /// Waits for background transport tasks and sockets to close.
     /// </summary>
-    public void Dispose() => _ = DisposeAsync().AsTask();
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 }

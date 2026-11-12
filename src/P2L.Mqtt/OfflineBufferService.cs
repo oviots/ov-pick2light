@@ -26,19 +26,22 @@ public sealed class OfflineBufferService : IAsyncDisposable
     private readonly LightModuleRegistry _registry;
     private readonly CsvPickTaskRunner?  _csvRunner;
     private readonly ILogger             _log;
+    private readonly P2L.Shared.IP2LTelemetry? _telemetry;
 
     public OfflineBufferService(
         MqttSettings settings,
         PickingEngine engine,
         LightModuleRegistry registry,
         ILogger<OfflineBufferService> log,
-        CsvPickTaskRunner? csvRunner = null)
+        CsvPickTaskRunner? csvRunner = null,
+        P2L.Shared.IP2LTelemetry? telemetry = null)
     {
         _settings  = settings;
         _engine    = engine;
         _registry  = registry;
         _csvRunner = csvRunner;
         _log       = log;
+        _telemetry = telemetry;
     }
 
     // ─── Lifecycle ────────────────────────────────────────────────────────
@@ -142,6 +145,7 @@ public sealed class OfflineBufferService : IAsyncDisposable
 
     private void Append(string topic, bool retain, byte[] payload)
     {
+        _telemetry?.Record("event", topic, System.Text.Encoding.UTF8.GetString(payload));
         try
         {
             var entry = new BufferedEntry(topic, retain, Convert.ToBase64String(payload));

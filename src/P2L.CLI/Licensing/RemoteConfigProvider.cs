@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using P2L.CLI.Observability;
 
 namespace P2L.CLI.Licensing;
 
@@ -9,6 +10,7 @@ internal sealed class RemoteConfigProvider : IDisposable
 {
     private readonly LicenseApiClient _api;
     private string? _startupConfig;
+    public AxiomSettings? Axiom { get; private set; }
     public RemoteConfigProvider() => _api = new(Environment.GetEnvironmentVariable("P2L_LICENSE_API_URL"));
 
     public async Task<Dictionary<string, string?>> LoadAsync(CancellationToken ct = default)
@@ -43,6 +45,7 @@ internal sealed class RemoteConfigProvider : IDisposable
             if (value.IndexOfAny(['+', '#', '\0']) >= 0) throw new InvalidDataException("Remote topic invalid");
             values["Mqtt:" + char.ToUpperInvariant(topic[0]) + topic[1..]] = value;
         }
+        Axiom = AxiomSettings.FromRemote(result);
         _startupConfig = result.GetRawText();
         return values;
     }

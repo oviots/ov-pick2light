@@ -15,6 +15,7 @@ using P2L.Shared.Enums;
 
 static void Require(bool condition, string message) { if (!condition) throw new Exception(message); }
 var directory = Path.Combine(Path.GetTempPath(), "p2l-web-test-" + Guid.NewGuid().ToString("N"));
+var telemetry = new CaptureTelemetry();
 await TlsChecks.RunAsync();
 Directory.CreateDirectory(directory);
 var trap = new TcpListener(IPAddress.Loopback, 0); trap.Start();
@@ -138,7 +139,7 @@ try
     Console.WriteLine("PASS: disconnect and offline broker fail closed without stopping/resetting hardware");
     var offlinePath = Path.Combine(directory, "missing", "offline", "events.jsonl");
     await using (var offline = new OfflineBufferService(new MqttSettings {OfflineBufferPath = offlinePath},
-        engine, registry, NullLogger<OfflineBufferService>.Instance))
+        engine, registry, NullLogger<OfflineBufferService>.Instance, telemetry: telemetry))
     {
         offline.Start();
         registry.SetInstructed(new PickingInstruction {Address = "0017", Quantity = 3});
@@ -155,8 +156,12 @@ try
             Port = ((IPEndPoint)blackhole.LocalEndpoint).Port, Tls = new MqttTlsSettings {Enabled = false},
             OfflineBufferPath = publisherPath}, gateway, engine, registry, new P2L.Core.Services.PreemptionGate(), null,
             labels, new P2L.Core.Services.DeviceScanService(gateway, registry, NullLogger<P2L.Core.Services.DeviceScanService>.Instance),
-            NullLoggerFactory.Instance);
+            NullLoggerFactory.Instance, telemetry: telemetry);
         await mqtt.StartAsync();
+        var dispatcher = typeof(MqttBridgeService).GetField("_dispatcher", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(mqtt)!;
+        var handle = dispatcher.GetType().GetMethod("HandleAsync")!;
+        await (Task)handle.Invoke(dispatcher, new object[] {Encoding.UTF8.GetBytes("{\"type\":\"get_snapshot\",\"correlationId\":\"SESSION-TEST\"}"), CancellationToken.None})!;
+        await (Task)handle.Invoke(dispatcher, new object[] {Encoding.UTF8.GetBytes("malformed-command"), CancellationToken.None})!;
         registry.SetInstructed(new PickingInstruction {Address = "0018", Quantity = 4});
         var until = DateTime.UtcNow.AddSeconds(5);
         while (!File.Exists(publisherPath) || !File.ReadAllText(publisherPath).EndsWith('\n'))
@@ -169,11 +174,22 @@ try
     }
     finally { blackhole.Stop(); }
     Console.WriteLine("PASS: disconnected MQTT publisher creates parent directories and persists events");
-    Console.WriteLine("All 9 integrated/buffer checks passed. Local fixtures only; no UAT/keychain/controller accessed.");
+    Require(telemetry.Entries.Any(x => x.Kind == "command_received" && x.Payload.Contains("SESSION-TEST")) &&
+        telemetry.Entries.Any(x => x.Kind == "command_received" && x.Payload == "malformed-command") &&
+        telemetry.Entries.Any(x => x.Kind == "event" && x.Payload.Contains("light_changed")),
+        "Telemetry must capture commands before validation and events even while MQTT is offline");
+    Console.WriteLine("PASS: command and event telemetry hooks preserve offline dispatch behavior");
+    Console.WriteLine("All 10 integrated/buffer/telemetry checks passed. Local fixtures only; no UAT/keychain/controller accessed.");
 }
 finally
 {
     await server.DisposeAsync(); catalog.Dispose(); trap.Stop();
     Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
     Directory.Delete(directory, true);
+}
+
+sealed class CaptureTelemetry : P2L.Shared.IP2LTelemetry
+{
+    public readonly System.Collections.Concurrent.ConcurrentQueue<(string Kind, string? Topic, string Payload)> Entries = new();
+    public void Record(string kind, string? topic, string payload) => Entries.Enqueue((kind, topic, payload));
 }

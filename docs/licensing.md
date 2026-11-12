@@ -90,6 +90,45 @@ P2L loads the CA directly into memory. It continues to check the server's hostna
 
 Deploy the Authen changes and run the new P2L binary to use custom CAs. Existing P2L binaries support the unchanged no-CA response only. This feature does not write or synchronize `P2L.Blocks`.
 
+## Optional Axiom export
+
+Authen's P2L config editor includes an Axiom section. Enable it and enter the dataset, an ingest-only API token and its endpoint: `https://us-east-1.aws.edge.axiom.co`, `https://eu-central-1.aws.edge.axiom.co`, or the legacy `https://api.axiom.co`. Use the edge where the dataset lives. The edge ingest path is `/v1/ingest/{dataset}`; legacy uses `/v1/datasets/{dataset}/ingest` (https://axiom.co/docs/restapi/ingest).
+
+Example addition to the admin config save payload:
+
+```json
+{
+  "axiom": {
+    "enabled": true,
+    "endpoint": "https://us-east-1.aws.edge.axiom.co",
+    "dataset": "p2l-logs",
+    "token": "<ingest-only API token>"
+  }
+}
+```
+
+The token is encrypted with the existing `P2L_ENCRYPTION_KEY` and stored in the same Mongo configuration document. Admin list/save responses return `hasToken`, never the token or ciphertext. Only the signed Bridge config API returns the decrypted token. Blank token on edit preserves it; omitting `axiom` preserves the previous settings. Set `axiom.enabled: false` to disable export. Restart P2L at a safe time after changing the settings. No token or telemetry spool is written to local JSON.
+
+The integrated .NET P2L exports three record kinds:
+
+- `service_log`: Trace through Critical service logs, including hardware TX/RX logs emitted by the service. Bootstrap failures before licensed config loads cannot be exported.
+- `command_received`: every payload entering the shared MQTT/local UI dispatcher, before validation. Receipt does not mean the command completed.
+- `event`: every generated MQTT event, including device state/snapshots, confirmations, batch completion, CSV lifecycle and Bridge status. Captured before MQTT delivery, including while the broker is offline. Broker-generated Last Will messages after a process crash cannot be captured by the stopped process. Replayed MQTT buffers are not emitted again to Axiom.
+
+Records contain `_time`, `recordId`, `siteCode`, `clientId`, machine and block. `type`, `correlationId` and `address` are promoted when present for PickSession filtering. Token/password/license/private-key fields and known runtime secrets are redacted. Invalid JSON is represented by metadata instead of raw contents. Large records are truncated and marked; no event sampling is applied.
+
+Export uses a separate bounded queue (1,000 records), batches up to 50 and retries transient HTTP/network errors up to three attempts. Redirects are disabled. P2L never waits for Axiom on a picking thread. This is best-effort diagnostics, not a durable audit ledger: a full queue, prolonged outage, process crash or failed shutdown flush can lose records. Warnings go to local stderr without credentials or response bodies. Shutdown permits up to five seconds to flush. The existing MQTT event buffer is independent of Axiom.
+
+Verification: `dotnet run --project tests/P2L.AxiomTests -p:UseSharedCompilation=false` uses fake HTTP only. Web tests exercise command/event hooks with local fixtures. Actual dataset ingestion requires deployed Authen settings and a user-provided Axiom API token; it has not been verified by local tests.
+
+## Stopping P2L
+
+`Ctrl+C` (SIGINT) and SIGTERM cancel `serve`, stop the local UI, MQTT reconnect loop, heartbeat and gateway transport, and close sockets. Intentional stops disable self-heal before cleanup, so they do not spawn a replacement process. TCP loop cancellation is normal shutdown and disposal can safely be repeated. This does not send a reset or terminate-light command to the controller.
+
+A few shutdown lines and up to five seconds of Axiom flush may occur before the shell prompt returns. The service should not keep reconnecting or writing heartbeat logs afterwards. Use the latest binary; an orphan from an older version must be stopped separately.
+
+Regression check: `dotnet run --project tests/P2L.ShutdownTests -p:PublishAot=false -p:SelfContained=false -p:UseSharedCompilation=false`. It signals child processes with UI WebSockets open, controller connected/offline and MQTT awaiting CONNACK, using loopback fixtures only.
+
 ## Verification
 
 Run Python/.NET commands in the `light` repo and Node/frontend commands in `wms-authen`.

@@ -62,6 +62,7 @@ public sealed class ServeCommand : AsyncCommand<ServeCommand.Settings>
                 ui = (WebClientService)_services.GetService(typeof(WebClientService))!;
                 await ui.StartAsync(settings.UiPort, _cts.Token);
             }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested) { return 0; }
             catch (Exception) { _logger.LogError("Cannot start local UI on port {Port}. Check port availability and device database permissions, or use --no-ui.", settings.UiPort); return 1; }
             if (!settings.NoBrowser && Environment.UserInteractive && !Console.IsInputRedirected)
             {
@@ -83,12 +84,14 @@ public sealed class ServeCommand : AsyncCommand<ServeCommand.Settings>
             await _gateway.StartAsync(_cts.Token);
             _logger.LogInformation("Gateway connected.");
         }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested) { return 0; }
         catch (Exception ex)
         {
             // Don't abort: gateway has built-in auto-reconnect; service keeps running.
             _logger.LogWarning(ex, "Gateway connection failed on startup; auto-reconnect active.");
         }
 
+        if (_cts.IsCancellationRequested) return 0;
         _heartbeat.Start();
         _watchdog.Start();
 

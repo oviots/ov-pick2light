@@ -50,7 +50,8 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                               PreemptionGate gate, CsvPickTaskRunner? csvRunner,
                               DeviceLabelStore labelStore, DeviceScanService scanService,
                               ILoggerFactory loggerFactory,
-                              Func<CancellationToken, Task>? authorizeReconnect = null)
+                              Func<CancellationToken, Task>? authorizeReconnect = null,
+                              P2L.Shared.IP2LTelemetry? telemetry = null)
     {
         _authorizeReconnect = authorizeReconnect;
         _settings    = settings;
@@ -62,10 +63,10 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
         _client      = new MqttClientFactory().CreateMqttClient();
         _publisher   = new MqttEventPublisher(_client, settings, engine, registry,
                            labelStore,
-                           loggerFactory.CreateLogger<MqttEventPublisher>());
+                           loggerFactory.CreateLogger<MqttEventPublisher>(), telemetry);
         _dispatcher  = new MqttCommandDispatcher(engine, _publisher, gate, csvRunner,
                            labelStore, scanService,
-                           loggerFactory.CreateLogger<MqttCommandDispatcher>());
+                           loggerFactory.CreateLogger<MqttCommandDispatcher>(), telemetry, settings.CommandTopic);
         _options     = BuildOptions(settings);
 
         _client.ApplicationMessageReceivedAsync += OnMessageReceivedAsync;
