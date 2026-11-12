@@ -21,6 +21,7 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
     private readonly PickingEngine  _engine;
     private readonly PreemptionGate _gate;
     private readonly ILogger        _log;
+    private readonly string _blockNo;
 
     private CancellationTokenSource? _cts;
     private Task?                    _loop;
@@ -32,11 +33,12 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
     public bool IsRunning => _loop is { IsCompleted: false };
 
     public CsvPickTaskRunner(PickingEngine engine, PreemptionGate gate,
-                              ILogger<CsvPickTaskRunner> log)
+                              ILogger<CsvPickTaskRunner> log, string blockNo = "00")
     {
         _engine = engine;
         _gate   = gate;
         _log    = log;
+        _blockNo = blockNo;
     }
 
     // ─── Lifecycle ────────────────────────────────────────────────────────
@@ -99,6 +101,7 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
                 Color    = r.Color,
                 LedMode  = LightState.On,
                 CorrelationId = correlationId,
+                BlockNo = _blockNo,
             })
             .ToList();
 
@@ -164,7 +167,7 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
         try
         {
             await batchDone.Task.WaitAsync(ct);
-            await _engine.FinishBatchAsync(ct: ct);
+            await _engine.FinishBatchAsync(_blockNo, ct, correlationId);
 
             // Delete confirmed rows in reverse line order so earlier line numbers stay valid
             CsvPickRow[] confirmedSnapshot;
@@ -180,7 +183,7 @@ public sealed class CsvPickTaskRunner : IAsyncDisposable
         catch (OperationCanceledException)
         {
             if (_engine.IsBatchActive)
-                try { await _engine.FinishBatchAsync(ct: CancellationToken.None); } catch { }
+                try { await _engine.FinishBatchAsync(_blockNo, CancellationToken.None, correlationId); } catch { }
         }
         finally
         {

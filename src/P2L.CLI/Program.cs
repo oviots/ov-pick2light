@@ -72,6 +72,7 @@ var appSettings = new AppSettings
 {
     Gateway = new GatewaySettings
     {
+        BlockNos = remoteConfig.BlockNos,
         Host    = Cfg_String(config, "Gateway:Host",    AioiConstants.DefaultGatewayIp),
         Port    = Cfg_Int   (config, "Gateway:Port",    AioiConstants.DefaultTcpPort),
         BlockNo = Cfg_String(config, "Gateway:BlockNo", "00"),
@@ -182,6 +183,7 @@ services.AddSingleton<AioiGateway>(sp =>
 
 // Core
 services.AddSingleton<LightModuleRegistry>();
+services.AddSingleton(new BlockPolicy(appSettings.Gateway.BlockNos));
 services.AddSingleton<PickingEngine>();
 services.AddSingleton<HeartbeatService>();
 services.AddSingleton<WatchdogService>(sp =>
@@ -196,7 +198,8 @@ services.AddSingleton<WatchdogService>(sp =>
 });
 services.AddSingleton<DeviceScanService>();
 services.AddSingleton<PreemptionGate>();
-services.AddSingleton<CsvPickTaskRunner>();
+services.AddSingleton(sp => new CsvPickTaskRunner(sp.GetRequiredService<PickingEngine>(),
+    sp.GetRequiredService<PreemptionGate>(), sp.GetRequiredService<ILogger<CsvPickTaskRunner>>(), appSettings.Gateway.BlockNo));
 if (appSettings.EnableStatePersistence)
     services.AddSingleton<RegistryPersistenceService>();
 

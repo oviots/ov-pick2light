@@ -64,7 +64,7 @@ internal sealed class AxiomTelemetry : ILoggerProvider, IP2LTelemetry, IAsyncDis
             ["blockNo"] = _settings.BlockNo, ["topic"] = topic
         };
         if (clean is JsonObject obj)
-            foreach (var key in new[] {"correlationId", "address", "type", "level", "category"})
+            foreach (var key in new[] {"correlationId", "blockNo", "address", "type", "level", "category"})
                 if (obj.TryGetPropertyValue(key, out var value)) entry[key] = value?.DeepClone();
         // Bound each queued record, including large device snapshots or malformed input.
         var serialized = clean?.ToJsonString() ?? "null";

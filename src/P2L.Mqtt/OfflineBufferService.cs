@@ -59,7 +59,7 @@ public sealed class OfflineBufferService : IAsyncDisposable
 
         _registry.StateChanged += OnStateChanged;
         _engine.ItemConfirmed  += OnItemConfirmed;
-        _engine.BatchCompleted += OnBatchCompleted;
+        _engine.BlockBatchCompleted += OnBatchCompleted;
         if (_csvRunner is not null)
             _csvRunner.TaskEvent += OnTaskEvent;
 
@@ -71,7 +71,7 @@ public sealed class OfflineBufferService : IAsyncDisposable
     {
         _registry.StateChanged -= OnStateChanged;
         _engine.ItemConfirmed  -= OnItemConfirmed;
-        _engine.BatchCompleted -= OnBatchCompleted;
+        _engine.BlockBatchCompleted -= OnBatchCompleted;
         if (_csvRunner is not null)
             _csvRunner.TaskEvent -= OnTaskEvent;
 
@@ -111,17 +111,19 @@ public sealed class OfflineBufferService : IAsyncDisposable
             Status          = evt.Status,
             AdjustedDisplay = evt.AdjustedDisplay,
             CorrelationId   = state?.CorrelationId,
+            BlockNo = state?.BlockNo,
         };
         Append(_settings.EventTopic, retain: false,
                JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.ConfirmedEvt));
     }
 
-    private void OnBatchCompleted(string? correlationId)
+    private void OnBatchCompleted(string blockNo, string? correlationId)
     {
         var e = new BatchCompletedEvt
         {
             Type = "batch_completed",
             CorrelationId = correlationId,
+            BlockNo = blockNo,
         };
         Append(_settings.EventTopic, retain: false,
                JsonSerializer.SerializeToUtf8Bytes(e, P2LMqttJsonContext.Default.BatchCompletedEvt));

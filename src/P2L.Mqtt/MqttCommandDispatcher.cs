@@ -84,7 +84,7 @@ internal sealed class MqttCommandDispatcher
                     var cmd = JsonSerializer.Deserialize(payload,
                         P2LMqttJsonContext.Default.LightOffCmd);
                     if (cmd is null) break;
-                    await _engine.ExtinguishAsync(cmd.Address, ct);
+                    await _engine.ExtinguishAsync(cmd.Address, ct, cmd.CorrelationId);
                     _log.LogInformation("[MQTT] light_off addr={A}", cmd.Address);
                     break;
                 }
@@ -141,7 +141,8 @@ internal sealed class MqttCommandDispatcher
                     var cmd = JsonSerializer.Deserialize(payload,
                         P2LMqttJsonContext.Default.BatchFinishCmd);
                     if (cmd is null) break;
-                    await _engine.FinishBatchAsync(cmd.BlockNo, ct);
+                    _engine.ValidateBlock(cmd.BlockNo);
+                    await _engine.FinishBatchAsync(cmd.BlockNo, ct, cmd.CorrelationId);
                     _log.LogInformation("[MQTT] batch_finish block={B}", cmd.BlockNo);
                     break;
                 }

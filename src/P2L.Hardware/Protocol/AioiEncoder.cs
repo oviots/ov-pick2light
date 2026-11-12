@@ -184,7 +184,7 @@ public static class AioiEncoder
 
     /// <summary>
     /// D — Terminate all modules in a block (and extinguishes signal light).
-    /// BlockNo format: 2-digit BCD, e.g. "00" for all.
+    /// BlockNo format: 2-digit BCD. "00" targets block 00; the engine expands global stops.
     /// </summary>
     public static string TerminateBlock(string blockNo)
         => $"D{blockNo.PadLeft(2, '0')}";

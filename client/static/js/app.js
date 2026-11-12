@@ -110,6 +110,9 @@ function connectWs() {
 function handleWsMessage(msg) {
   switch (msg.type) {
     case 'init':
+      state.defaultBlock = msg.data.block_no || '00';
+      state.allowedBlocks = msg.data.block_nos || null;
+      if (state.allowedBlocks && $('batch-block') && !state.allowedBlocks.includes($('batch-block').value)) $('batch-block').value = state.defaultBlock;
       state.connected = msg.data.connected;
       state.mqttConnected = msg.data.mqtt_connected || false;
       state.host = msg.data.host;
@@ -195,7 +198,8 @@ function handleWsMessage(msg) {
     }
 
     case 'batch_completed':
-      pushEvent('batch_completed', {});
+      pushEvent('batch_completed', msg.data || {});
+      if (msg.data?.block_no && msg.data.block_no !== ($('batch-block')?.value || state.defaultBlock)) break;
       toast('Batch complete! All items confirmed.', 'success');
       state.batchActive = false;
       state.batchPending.clear();
@@ -445,7 +449,7 @@ function openLightModal(address) {
   if (d) {
     $('light-qty').value = parseInt(d.display_data) || 1;
     selectColor(d.color || 'GREEN');
-    $('light-block').value = d.block_no || '00';
+    $('light-block').value = state.allowedBlocks && !state.allowedBlocks.includes(d.block_no) ? state.defaultBlock : (d.block_no || state.defaultBlock || '00');
     $('light-label').value = d.label || '';
   }
   $('light-modal').classList.remove('hidden');
@@ -831,7 +835,7 @@ async function startBatch() {
 
 async function finishBatch() {
   try {
-    await api('POST', '/api/batch/finish');
+    await api('POST', '/api/batch/finish', {block_no: $('batch-block').value || state.defaultBlock || '00'});
     state.batchActive = false;
     state.batchPending.clear();
     updateBatchStatus();
@@ -860,7 +864,8 @@ function updateBatchStatus() {
   if (!tbody) return;
   const devices = Object.values(state.devices);
   tbody.innerHTML = '';
-  devices.filter(d => d.status === 'OPERATING' || d.status === 'COMPLETED' || d.status === 'SHORTAGE')
+  devices.filter(d => (!state.allowedBlocks || d.block_no === ($('batch-block')?.value || state.defaultBlock)) &&
+      (d.status === 'OPERATING' || d.status === 'COMPLETED' || d.status === 'SHORTAGE'))
     .sort((a, b) => a.address.localeCompare(b.address))
     .forEach(d => {
       const confirmed = d.status === 'COMPLETED' || d.status === 'SHORTAGE';
@@ -1452,12 +1457,10 @@ $('btn-clear-events')?.addEventListener('click', () => {
   setInterval(async () => {
     if (!state.connected) return;
     try {
-      const bs = await api('GET', '/api/batch/status');
+      const bs = await api('GET', '/api/batch/status?block_no=' + encodeURIComponent($('batch-block').value || state.defaultBlock || '00'));
       state.batchActive = bs.active;
-      if (bs.active) {
-        state.batchPending = new Set(bs.pending);
-        updateBatchStatus();
-      }
+      state.batchPending = new Set(bs.pending);
+      updateBatchStatus();
     } catch { /* ignore */ }
   }, 5000);
 }

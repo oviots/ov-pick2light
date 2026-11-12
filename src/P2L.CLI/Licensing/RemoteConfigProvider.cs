@@ -11,12 +11,14 @@ internal sealed class RemoteConfigProvider : IDisposable
     private readonly LicenseApiClient _api;
     private string? _startupConfig;
     public AxiomSettings? Axiom { get; private set; }
+    public string[]? BlockNos { get; private set; }
     public RemoteConfigProvider() => _api = new(Environment.GetEnvironmentVariable("P2L_LICENSE_API_URL"));
 
     public async Task<Dictionary<string, string?>> LoadAsync(CancellationToken ct = default)
     {
         var result = await FetchAsync(ct);
         var gateway = result.GetProperty("gateway");
+        BlockNos = RemoteBlocks.Read(gateway);
         var mqtt = result.GetProperty("mqtt");
         static string Text(JsonElement node, string name)
         {

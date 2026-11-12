@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/P2L.Mqtt/P2L.Mqtt.csproj" />
+    <Compile Include="../../src/P2L.CLI/Licensing/RemoteBlocks.cs" Link="RemoteBlocks.cs" />
+  </ItemGroup>
+</Project>

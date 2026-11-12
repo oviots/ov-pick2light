@@ -70,7 +70,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
         _labels.Load();
         _registry.StateChanged += OnStateChanged;
         _engine.ItemConfirmed  += OnItemConfirmed;
-        _engine.BatchCompleted += OnBatchCompleted;
+        _engine.BlockBatchCompleted += OnBatchCompleted;
         _drain = Task.Run(() => DrainAsync(_cts.Token));
     }
 
@@ -78,7 +78,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
     {
         _registry.StateChanged -= OnStateChanged;
         _engine.ItemConfirmed  -= OnItemConfirmed;
-        _engine.BatchCompleted -= OnBatchCompleted;
+        _engine.BlockBatchCompleted -= OnBatchCompleted;
 
         _queue.Writer.TryComplete();
         await _cts.CancelAsync();
@@ -111,15 +111,17 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
             AdjustedQuantity = state?.AdjustedQuantity,
             AdjustedDisplay  = evt.AdjustedDisplay,
             CorrelationId    = state?.CorrelationId,
+            BlockNo = state?.BlockNo,
             DisplayData      = state?.DisplayData,
             Label            = _labels.GetLabel(evt.Address) is { Length: > 0 } l ? l : null,
         });
 
-    private void OnBatchCompleted(string? correlationId)
+    private void OnBatchCompleted(string blockNo, string? correlationId)
         => Enqueue(new BatchCompletedEvt
         {
             Type = "batch_completed",
             CorrelationId = correlationId,
+            BlockNo = blockNo,
         });
 
     // ─── Snapshot / task events ───────────────────────────────────────────

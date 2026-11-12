@@ -38,6 +38,7 @@ public sealed class AppSettings
 
 public sealed class GatewaySettings
 {
+    public string[]? BlockNos { get; init; }
     public string Host    { get; init; } = AioiConstants.DefaultGatewayIp;
     public int    Port    { get; init; } = AioiConstants.DefaultTcpPort;
     public string BlockNo { get; init; } = "00";

@@ -15,6 +15,7 @@ public abstract record MqttEvent
 /// <summary>Published when an operator presses CONFIRM on a module.</summary>
 public sealed record ConfirmedEvt : MqttEvent
 {
+    public string? BlockNo { get; init; }
     public required string   Address          { get; init; }
     public CompletionStatus  Status           { get; init; }
     /// <summary>Parsed integer quantity after Fn/+- key adjustment. Null when no adjustment was made.</summary>
@@ -57,6 +58,7 @@ public sealed record LightChangedEvt : MqttEvent
 /// <summary>Published when every module in the active batch is confirmed.</summary>
 public sealed record BatchCompletedEvt : MqttEvent
 {
+    public string? BlockNo { get; init; }
     public string? CorrelationId { get; init; }
 }
 

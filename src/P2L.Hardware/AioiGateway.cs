@@ -116,6 +116,8 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     {
         if (instructions.Count == 0) return;
 
+        ValidateBlockInstructions(instructions);
+
         // Am1 sets per-address color AND mode (On/Flash/HighFlash nibbles).
         // Am1's state nibbles are the authoritative "display status during instruction" —
         // they control whether the LED is steady or flashing. P1 just triggers the instruction.
@@ -143,6 +145,8 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
     {
         if (instructions.Count == 0) return;
 
+        ValidateBlockInstructions(instructions);
+
         foreach (var inst in instructions)
         {
             var (led2, led1, led0) = inst.Color.ToLedStates(inst.LedMode);
@@ -153,6 +157,13 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         var ledMode = instructions[0].LedMode;
         var blockNo = instructions[0].BlockNo;
         await SendAndWaitAsync(AioiEncoder.BlockInstructOverwrite(blockNo, instructions, ledMode), ct);
+    }
+
+    private static void ValidateBlockInstructions(IReadOnlyList<PickingInstruction> instructions)
+    {
+        var block = instructions[0].BlockNo;
+        if (block.Length != 2 || !block.All(char.IsAsciiDigit) || instructions.Any(i => i.BlockNo != block))
+            throw new InvalidOperationException("A controller instruction cannot mix blocks.");
     }
 
     /// <summary>

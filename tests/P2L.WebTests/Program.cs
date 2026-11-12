@@ -138,6 +138,12 @@ try
     Require(!trap.Pending(), "Unexpected hardware connection");
     Console.WriteLine("PASS: disconnect and offline broker fail closed without stopping/resetting hardware");
     var offlinePath = Path.Combine(directory, "missing", "offline", "events.jsonl");
+    registry.SetInstructed(new PickingInstruction {Address = "0091", Quantity = 1, BlockNo = "01", CorrelationId = "ROW-A"});
+    registry.SetInstructed(new PickingInstruction {Address = "0092", Quantity = 1, BlockNo = "02", CorrelationId = "ROW-B"});
+    var scopedStatus = JsonNode.Parse(await http.GetStringAsync("/api/batch/status?block_no=02"))!;
+    Require(scopedStatus["pending"]!.AsArray().Count == 1 && (string?)scopedStatus["pending"]![0] == "0092",
+        "Batch status mixed two rows");
+    Console.WriteLine("PASS: batch status is isolated by the selected block");
     await using (var offline = new OfflineBufferService(new MqttSettings {OfflineBufferPath = offlinePath},
         engine, registry, NullLogger<OfflineBufferService>.Instance, telemetry: telemetry))
     {
@@ -179,7 +185,7 @@ try
         telemetry.Entries.Any(x => x.Kind == "event" && x.Payload.Contains("light_changed")),
         "Telemetry must capture commands before validation and events even while MQTT is offline");
     Console.WriteLine("PASS: command and event telemetry hooks preserve offline dispatch behavior");
-    Console.WriteLine("All 10 integrated/buffer/telemetry checks passed. Local fixtures only; no UAT/keychain/controller accessed.");
+    Console.WriteLine("All 11 integrated/buffer/telemetry checks passed. Local fixtures only; no UAT/keychain/controller accessed.");
 }
 finally
 {

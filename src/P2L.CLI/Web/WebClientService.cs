@@ -65,23 +65,25 @@ internal sealed class WebClientService : IAsyncDisposable
         Url = app.Urls.Single().TrimEnd('/');
         _registry.StateChanged += OnState;
         _engine.ItemConfirmed += OnConfirmation;
-        _engine.BatchCompleted += OnBatch;
+        _engine.BlockBatchCompleted += OnBatch;
         _logs.EntryAdded += OnLog;
         _pump = PumpAsync(_stop.Token);
         _logger.LogInformation("Local P2L client: {Url}", Url);
     }
     private void OnState(LightModuleState state) => Interlocked.Exchange(ref _dirty, 1);
     private void OnLog(JsonObject entry) => Broadcast("log", entry.DeepClone());
-    private void OnBatch(string? correlationId) => Broadcast("batch_completed", new JsonObject {["correlation_id"] = correlationId});
+    private void OnBatch(string blockNo, string? correlationId) => Broadcast("batch_completed", new JsonObject {["correlation_id"] = correlationId, ["block_no"] = blockNo});
     private void OnConfirmation(ConfirmationEvent evt, LightModuleState? state) => Broadcast("confirmation", new JsonObject
     {
         ["address"] = evt.Address, ["status"] = evt.Status.ToString().ToUpperInvariant(), ["adjusted_display"] = evt.AdjustedDisplay,
-        ["received_at"] = evt.ReceivedAt.ToString("O"), ["correlation_id"] = state?.CorrelationId, ["display_data"] = state?.DisplayData
+        ["received_at"] = evt.ReceivedAt.ToString("O"), ["correlation_id"] = state?.CorrelationId, ["block_no"] = state?.BlockNo, ["display_data"] = state?.DisplayData
     });
     private JsonObject Connection() => new()
     {
         ["connected"] = true, ["mqtt_connected"] = _visible && _mqttConnected(), ["gateway_connected"] = _gateway.IsConnected,
-        ["host"] = _settings.Mqtt.Host, ["port"] = _settings.Mqtt.Port
+        ["host"] = _settings.Mqtt.Host, ["port"] = _settings.Mqtt.Port,
+        ["block_no"] = _settings.Gateway.BlockNo,
+        ["block_nos"] = new JsonArray((_settings.Gateway.BlockNos ?? new[] {_settings.Gateway.BlockNo}).Select(b => (JsonNode)JsonValue.Create(b)!).ToArray())
     };
     private JsonObject Status()
     {
@@ -189,6 +191,7 @@ internal sealed class WebClientService : IAsyncDisposable
         else if (method == "GET" && path == "/api/config") result = new JsonObject
         {
             ["integrated"] = true, ["block_no"] = _settings.Gateway.BlockNo,
+            ["block_nos"] = new JsonArray((_settings.Gateway.BlockNos ?? new[] {_settings.Gateway.BlockNo}).Select(b => (JsonNode)JsonValue.Create(b)!).ToArray()),
             ["mqtt"] = new JsonObject {["enabled"] = true, ["host"] = _settings.Mqtt.Host, ["port"] = _settings.Mqtt.Port, ["client_id"] = _settings.Mqtt.ClientId,
                 ["command_topic"] = _settings.Mqtt.CommandTopic, ["event_topic"] = _settings.Mqtt.EventTopic, ["devices_topic"] = _settings.Mqtt.DevicesTopic,
                 ["status_topic"] = _settings.Mqtt.StatusTopic, ["tls"] = new JsonObject {["enabled"] = _settings.Mqtt.Tls.Enabled}},
@@ -215,6 +218,7 @@ internal sealed class WebClientService : IAsyncDisposable
             else if (method == "DELETE" && parts.Length == 4) { _devices.Remove(address); OnState(null!); result = new JsonObject {["status"] = "removed"}; }
             else if (method == "POST" && parts.Length == 5 && parts[4] is "light" or "off")
             {
+                if (body["block_no"] is null) body["block_no"] = _settings.Gateway.BlockNo;
                 await SendAsync(parts[4] == "light" ? WebCommandMapper.Light(address, body) : new JsonObject {["type"] = "light_off", ["address"] = address}, context.RequestAborted);
                 result = new JsonObject {["status"] = "sent", ["address"] = address};
             }
@@ -222,10 +226,12 @@ internal sealed class WebClientService : IAsyncDisposable
         }
         else if (method == "GET" && path == "/api/batch/status")
         {
-            var modules = _registry.All;
+            var block = request.Query["block_no"].FirstOrDefault() ?? _settings.Gateway.BlockNo;
+            _engine.ValidateBlock(block);
+            var modules = _registry.All.Where(m => m.BlockNo == block).ToArray();
             var active = modules.Any(m => m.Status is ModuleStatus.Operating or ModuleStatus.Operating2);
-            var pending = new JsonArray(modules.Where(m => m.Status == ModuleStatus.Completed).Select(m => (JsonNode)JsonValue.Create(m.Address)!).ToArray());
-            result = new JsonObject {["active"] = active, ["pending"] = pending, ["complete"] = !active && pending.Count == 0};
+            var pending = new JsonArray(modules.Where(m => m.Status is ModuleStatus.Operating or ModuleStatus.Operating2).Select(m => (JsonNode)JsonValue.Create(m.Address)!).ToArray());
+            result = new JsonObject {["block_no"] = block, ["active"] = active, ["pending"] = pending, ["complete"] = !active};
         }
         else if (method == "POST" && path == "/api/connect")
         {
@@ -234,11 +240,11 @@ internal sealed class WebClientService : IAsyncDisposable
         }
         else if (method == "POST" && path == "/api/disconnect") { _visible = false; result = new JsonObject {["status"] = "disconnected"}; }
         else if (method == "POST" && path == "/api/batch/start")
-        { var command = WebCommandMapper.Batch(body); await SendAsync(command, context.RequestAborted); result = new JsonObject {["status"] = "sent", ["count"] = command["items"]!.AsArray().Count}; }
+        { if (body["block_no"] is null) body["block_no"] = _settings.Gateway.BlockNo; var command = WebCommandMapper.Batch(body); await SendAsync(command, context.RequestAborted); result = new JsonObject {["status"] = "sent", ["count"] = command["items"]!.AsArray().Count}; }
         else if (method == "POST" && path is "/api/batch/finish" or "/api/terminate-all")
         {
             var command = new JsonObject {["type"] = path.EndsWith("finish", StringComparison.Ordinal) ? "batch_finish" : "terminate_all"};
-            if (path.EndsWith("finish", StringComparison.Ordinal)) command["blockNo"] = _settings.Gateway.BlockNo;
+            if (path.EndsWith("finish", StringComparison.Ordinal)) command["blockNo"] = WebCommandMapper.Text(body, "block_no", _settings.Gateway.BlockNo);
             await SendAsync(command, context.RequestAborted);
             result = new JsonObject {["status"] = "sent"};
         }
@@ -294,7 +300,7 @@ internal sealed class WebClientService : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     {
-        _registry.StateChanged -= OnState; _engine.ItemConfirmed -= OnConfirmation; _engine.BatchCompleted -= OnBatch; _logs.EntryAdded -= OnLog;
+        _registry.StateChanged -= OnState; _engine.ItemConfirmed -= OnConfirmation; _engine.BlockBatchCompleted -= OnBatch; _logs.EntryAdded -= OnLog;
         await _stop.CancelAsync();
         if (_pump is not null) await _pump;
         if (_app is not null) { await _app.StopAsync(); await _app.DisposeAsync(); }

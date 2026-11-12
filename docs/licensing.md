@@ -129,6 +129,40 @@ A few shutdown lines and up to five seconds of Axiom flush may occur before the 
 
 Regression check: `dotnet run --project tests/P2L.ShutdownTests -p:PublishAot=false -p:SelfContained=false -p:UseSharedCompilation=false`. It signals child processes with UI WebSockets open, controller connected/offline and MQTT awaiting CONNACK, using loopback fixtures only.
 
+## One Controller, multiple picking blocks
+
+Run one `p2l serve` instance per Controller. In Authen, keep one license/configuration and set the gateway default plus its allowed blocks:
+
+```json
+{
+  "gateway": {
+    "host": "192.168.1.254",
+    "port": 5003,
+    "blockNo": "01",
+    "blockNos": ["01", "02"]
+  }
+}
+```
+
+The admin editor accepts `01,02` in "Các block được phép". Each entry is two digits, the default must be included, and `00` cannot coexist with other blocks. Older API responses without `blockNos` remain readable; save/deploy the new Authen settings to enforce an allowlist. Changes apply after a safe restart.
+
+Configure the two Rocket `P2L.Blocks` records to publish to the same Controller's MQTT prefix, using distinct block numbers, PickSession codes and MQTT client IDs. Never copy the same MQTT clientId into both Rocket blocks; it would cause broker disconnects. No direct Mongo updates or Rocket deployment are performed by this change. Rocket already sends `blockNo` and `correlationId`; keep those fields on every session command. For example:
+
+```json
+{"type":"batch_start","blockNo":"01","correlationId":"PICK-A","items":[{"address":"0001","quantity":2}]}
+{"type":"batch_start","blockNo":"02","correlationId":"PICK-B","items":[{"address":"0021","quantity":3}]}
+```
+
+Each block admits one active session. An identical `batch_start` retry is ignored. A different session cannot overwrite an active block. `light_on` may append a light to the same session/block and only rebuilds that block's P1/P5 instruction. A session cannot span blocks; active session address ownership is Controller-wide because hardware confirmation packets contain an address, not a session/block ID. Physically assign unique addresses across the two rows.
+
+`confirmed` and `batch_completed` MQTT events now include both `blockNo` and `correlationId`. Legacy `BatchCompleted` callbacks remain available for CSV. The integrated UI exposes allowed blocks, filters batch status and completion by the selected block, and finishes only that block. Axiom event metadata uses the payload's block number.
+
+Scoped stop: `{"type":"batch_finish","blockNo":"01","correlationId":"PICK-A"}` stops only row A; a mismatching session is rejected. Omitting the session on a scoped stop is an explicit operator cancellation of that block. Use `{"type":"terminate_all"}` for an explicit global stop; it sends D to each configured/known block. Hardware `D00` itself targets block 00; it is not a wildcard for blocks 01/02. The engine expands its legacy global-stop operation accordingly.
+
+If a hardware write fails after dispatch may have started, keep that block reserved as uncertain until confirmation or explicit reconciliation/stop. Other blocks remain usable. Restored Operating lights are not silently adopted by a new session. This is not durable PickSession recovery: runtime batch tracking remains in memory, and a delayed hardware confirmation after address reassignment cannot identify its old session. Keep WMS reconciliation/quarantine rules for uncertain work.
+
+Validation: `dotnet run --project tests/P2L.MultiBlockTests -p:UseSharedCompilation=false` uses one real loopback TCP connection and a synthetic Controller. It tests JSON dispatch, P1/P5 block separation, interleaved confirmations, scoped cancellation, global stop, conflicts, uncertain dispatch and CSV cleanup. Authen tests cover saving/preserving the list and returning it through the signed device API. Real Controller/broker/UAT validation is still required.
+
 ## Verification
 
 Run Python/.NET commands in the `light` repo and Node/frontend commands in `wms-authen`.
