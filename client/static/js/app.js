@@ -232,7 +232,7 @@ function updateConnectionUI() {
 
   // Show "Scan Devices" sub-tab only when MQTT is connected
   const scanTabBtn = $('sub-tab-btn-scan');
-  if (scanTabBtn) {
+  if (scanTabBtn && scanTabBtn.dataset.integrated !== 'true') {
     scanTabBtn.style.display = state.mqttConnected ? '' : 'none';
     // If scan sub-tab is active but we just disconnected, switch back to client sub-tab
     if (!state.mqttConnected && scanTabBtn.classList.contains('active')) {
@@ -1123,119 +1123,20 @@ async function loadConfig() {
 
 async function saveConfig() {
   const val = id => $(id)?.value ?? '';
-  const chkd = id => $(id)?.checked ?? false;
-  const argsRaw = val('cfg-svc-args').trim();
-  const body = {
-    block_no: val('cfg-block'),
-    auto_connect: false,
-    mqtt_host: val('cfg-mqtt-host'),
-    mqtt_port: parseInt(val('cfg-mqtt-port')) || 8883,
-    mqtt_client_id: val('cfg-mqtt-client-id'),
-    mqtt_username: val('cfg-mqtt-username') || null,
-    mqtt_password: val('cfg-mqtt-password') || null,
-    mqtt_command_topic: val('cfg-mqtt-cmd-topic'),
-    mqtt_event_topic: val('cfg-mqtt-event-topic'),
-    mqtt_devices_topic: val('cfg-mqtt-devices-topic'),
-    mqtt_tls_enabled: chkd('cfg-mqtt-tls'),
-    mqtt_tls_allow_untrusted: chkd('cfg-mqtt-tls-untrusted'),
-    mqtt_tls_ca_cert_path: val('cfg-mqtt-ca-cert') || null,
-    service_binary_path: val('cfg-svc-path') || null,
-    service_args: argsRaw ? argsRaw.split(/\s+/) : [],
-    service_working_dir: val('cfg-svc-workdir') || null,
-    service_auto_start: chkd('cfg-svc-autostart'),
-  };
   try {
-    await api('PUT', '/api/config', body);
-    toast('Settings saved — restarting service…', 'success');
-    try {
-      await api('POST', '/api/self/restart');
-    } catch (_) { /* service is restarting, connection will drop */ }
-  } catch (e) {
-    toast(e.message, 'error');
-  }
+    await api('PUT', '/api/config', {
+      service_binary_path: val('cfg-svc-path'),
+      service_args: val('cfg-svc-args').trim().split(/\s+/).filter(Boolean),
+      service_working_dir: val('cfg-svc-workdir'),
+      service_auto_start: $('cfg-svc-autostart')?.checked ?? false,
+    });
+    toast('Đã lưu thiết lập local', 'success');
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 // ── Bridge Appsettings ─────────────────────────────────────────────────────
-async function loadAppsettings() {
-  try {
-    const d = await api('GET', '/api/appsettings');
-    const set = (id, val) => { const el = $(id); if (el) el.value = val; };
-    const chk = (id, val) => { const el = $(id); if (el) el.checked = val; };
+async function loadAppsettings() { /* Config is managed at authen. */ }
 
-    if ($('appsettings-path')) $('appsettings-path').textContent = d.path || '—';
-
-    const gw = d.gateway || {};
-    set('as-gw-host',  gw.host || '');
-    set('as-gw-port',  gw.port ?? '');
-    set('as-gw-block', gw.block_no || '');
-
-    const mq = d.mqtt || {};
-    chk('as-mqtt-enabled',    mq.enabled ?? true);
-    set('as-mqtt-host',       mq.host || '');
-    set('as-mqtt-port',       mq.port ?? '');
-    set('as-mqtt-client-id',  mq.client_id || '');
-    set('as-mqtt-username',   mq.username || '');
-    set('as-mqtt-password',   '');   // never pre-fill passwords
-    set('as-mqtt-db-path',    mq.client_db_path || '');
-    set('as-mqtt-cmd-topic',  mq.command_topic || '');
-    set('as-mqtt-event-topic',mq.event_topic || '');
-
-    const tls = mq.tls || {};
-    chk('as-mqtt-tls',          tls.enabled ?? false);
-    chk('as-mqtt-tls-untrusted',tls.allow_untrusted ?? false);
-    set('as-mqtt-ca-cert',      tls.ca_cert_path || '');
-
-    const sh = d.selfheal || {};
-    chk('as-sh-enabled',      sh.enabled ?? true);
-    chk('as-state-persist',   d.enable_state_persistence ?? false);
-    set('as-sh-max-restarts', sh.max_restarts ?? '');
-    set('as-sh-window',       sh.restart_window_minutes ?? '');
-    set('as-sh-backoff',      sh.backoff_seconds ?? '');
-
-    const lvlSel = $('as-log-level');
-    if (lvlSel) lvlSel.value = d.log_level || 'Information';
-
-    if ($('appsettings-save-status')) $('appsettings-save-status').textContent = '';
-  } catch (e) {
-    if ($('appsettings-save-status')) $('appsettings-save-status').textContent = 'Load failed: ' + e.message;
-  }
-}
-
-async function saveAppsettings() {
-  const body = {
-    gateway_host: $('as-gw-host').value || null,
-    gateway_port: parseInt($('as-gw-port').value) || null,
-    gateway_block_no: $('as-gw-block').value || null,
-    mqtt_enabled: $('as-mqtt-enabled').checked,
-    mqtt_host: $('as-mqtt-host').value || null,
-    mqtt_port: parseInt($('as-mqtt-port').value) || null,
-    mqtt_client_id: $('as-mqtt-client-id').value || null,
-    mqtt_username: $('as-mqtt-username').value || null,
-    mqtt_password: $('as-mqtt-password').value || null,
-    mqtt_client_db_path: $('as-mqtt-db-path').value || null,
-    mqtt_command_topic: $('as-mqtt-cmd-topic').value || null,
-    mqtt_event_topic: $('as-mqtt-event-topic').value || null,
-    mqtt_tls_enabled: $('as-mqtt-tls').checked,
-    mqtt_tls_allow_untrusted: $('as-mqtt-tls-untrusted').checked,
-    mqtt_tls_ca_cert_path: $('as-mqtt-ca-cert').value || null,
-    selfheal_enabled: $('as-sh-enabled').checked,
-    enable_state_persistence: $('as-state-persist').checked,
-    selfheal_max_restarts: parseInt($('as-sh-max-restarts').value) || null,
-    selfheal_restart_window_minutes: parseInt($('as-sh-window').value) || null,
-    selfheal_backoff_seconds: parseInt($('as-sh-backoff').value) || null,
-    log_level: $('as-log-level')?.value || null,
-  };
-  const status = $('appsettings-save-status');
-  try {
-    await api('PUT', '/api/appsettings', body);
-    status.style.color = 'var(--success)';
-    status.textContent = '✓ Saved';
-    setTimeout(() => { status.textContent = ''; }, 3000);
-  } catch (e) {
-    status.style.color = 'var(--danger)';
-    status.textContent = 'Error: ' + e.message;
-  }
-}
 
 // ── Device Export ──────────────────────────────────────────────────────────
 function exportDevicesCSV() {
@@ -1487,7 +1388,7 @@ async function init() {
 
   // Wire up settings
   $('btn-save-config')?.addEventListener('click', saveConfig);
-  $('btn-save-appsettings')?.addEventListener('click', saveAppsettings);
+
 
   // Wire up data processing tab
   $('btn-clear-address-table')?.addEventListener('click', () => {
@@ -1562,3 +1463,23 @@ $('btn-clear-events')?.addEventListener('click', () => {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+async function activateLicense() {
+  const button = $('btn-activate-license');
+  const input = $('license-code');
+  button.disabled = true;
+  try {
+    await api('POST', '/api/license/activate', {license_code: input.value.trim()});
+    $('license-status').textContent = 'Đã kích hoạt. Bấm Connect để kết nối.';
+    await loadConfig();
+  } catch (e) { $('license-status').textContent = e.message; }
+  finally { input.value = ''; button.disabled = false; }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  $('btn-activate-license').addEventListener('click', activateLicense);
+  api('GET', '/api/license').then(d => {
+    $('license-status').textContent = d.startup_error || (d.has_device_key ? 'Máy đã có khóa kích hoạt. Mỗi lần kết nối sẽ xác thực online.' : 'Máy chưa kích hoạt. Vui lòng nhập license.');
+  }).catch(e => { $('license-status').textContent = e.message; });
+  // Licensed fields are readonly, including the legacy block selector.
+  if ($('cfg-block')) $('cfg-block').disabled = true;
+});

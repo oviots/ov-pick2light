@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/P2L.CLI/Licensing/DeviceActivation.cs" Link="DeviceActivation.cs" />
+    <Compile Include="../../src/P2L.CLI/Licensing/LicenseApiClient.cs" Link="LicenseApiClient.cs" />
+    <Compile Include="../../src/P2L.CLI/Licensing/RemoteTls.cs" Link="RemoteTls.cs" />
+  </ItemGroup>
+</Project>

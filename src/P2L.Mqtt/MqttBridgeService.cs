@@ -24,6 +24,7 @@ namespace P2L.Mqtt;
 /// </summary>
 public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
 {
+    private readonly Func<CancellationToken, Task>? _authorizeReconnect;
     private readonly MqttSettings          _settings;
     private readonly AioiGateway           _gateway;
     private readonly MqttCommandDispatcher _dispatcher;
@@ -48,8 +49,10 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                               PickingEngine engine, LightModuleRegistry registry,
                               PreemptionGate gate, CsvPickTaskRunner? csvRunner,
                               DeviceLabelStore labelStore, DeviceScanService scanService,
-                              ILoggerFactory loggerFactory)
+                              ILoggerFactory loggerFactory,
+                              Func<CancellationToken, Task>? authorizeReconnect = null)
     {
+        _authorizeReconnect = authorizeReconnect;
         _settings    = settings;
         _gateway     = gateway;
         _gate        = gate;
@@ -76,6 +79,15 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
 
         if (_csvRunner is not null)
             _csvRunner.TaskEvent += e => _publisher.EnqueueTaskEvent(e);
+    }
+
+    public bool IsConnected => _client.IsConnected;
+
+    /// <summary>Local UI commands share the MQTT dispatcher's gate and ordering without requiring extra broker ACLs.</summary>
+    public Task HandleLocalCommandAsync(byte[] payload, CancellationToken ct = default)
+    {
+        if (!_client.IsConnected) throw new InvalidOperationException("MQTT broker is disconnected");
+        return _dispatcher.HandleAsync(payload, ct);
     }
 
     // ─── Lifecycle ────────────────────────────────────────────────────────
@@ -135,6 +147,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                     using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     connectCts.CancelAfter(TimeSpan.FromSeconds(15));
 
+                    if (_authorizeReconnect is not null) await _authorizeReconnect(connectCts.Token);
                     await _client.ConnectAsync(_options, connectCts.Token);
                     delay = TimeSpan.FromSeconds(0.5); // reset back-off on success
 
@@ -253,7 +266,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                     tls.WithAllowUntrustedCertificates();
                     tls.WithIgnoreCertificateChainErrors();
                 }
-                else if (s.Tls.CaCertPath is null)
+                else if (s.Tls.CaCertPath is null && string.IsNullOrWhiteSpace(s.Tls.CaCertPem))
                 {
                     // MQTTnet v5 does not fall back to the OS trust store by default on macOS.
                     // Explicitly delegate to .NET's built-in SSL validation (OS keychain).
@@ -261,7 +274,15 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                         ctx.SslPolicyErrors == SslPolicyErrors.None);
                 }
 
-                if (s.Tls.CaCertPath is not null)
+                if (!string.IsNullOrWhiteSpace(s.Tls.CaCertPem))
+                {
+                    var certificates = new X509Certificate2Collection();
+                    certificates.ImportFromPem(s.Tls.CaCertPem);
+                    if (certificates.Count == 0) throw new InvalidDataException("Invalid MQTT CA certificate");
+                    tls.WithTrustChain(certificates);
+                    tls.WithCertificateValidationHandler(ctx => ctx.SslPolicyErrors == SslPolicyErrors.None);
+                }
+                else if (s.Tls.CaCertPath is not null)
                 {
                     var ca = new X509Certificate2(s.Tls.CaCertPath);
                     tls.WithTrustChain(new X509Certificate2Collection { ca });

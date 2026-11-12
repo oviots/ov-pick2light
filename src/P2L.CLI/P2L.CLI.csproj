@@ -20,6 +20,11 @@
     <ProjectReference Include="..\P2L.Mqtt\P2L.Mqtt.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <EmbeddedResource Include="../../client/templates/index.html" LogicalName="P2L.Web/index.html" />
+    <EmbeddedResource Include="../../client/static/**/*" LogicalName="P2L.Web/static/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+  <ItemGroup>
     <RdXmlFile Include="rd.xml" />
   </ItemGroup>
   <ItemGroup>

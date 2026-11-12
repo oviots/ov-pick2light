@@ -64,6 +64,10 @@ a = Analysis(
         "jinja2.ext",
         # utils
         "psutil",
+        "cryptography.hazmat.primitives.serialization",
+        "cryptography.hazmat.primitives.asymmetric.rsa",
+        "cryptography.hazmat.primitives.asymmetric.padding",
+        "cryptography.hazmat.primitives.hashes",
         "anyio",
         "anyio._backends._asyncio",
         "starlette.routing",

@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using P2L.CLI.Web;
 using Microsoft.Extensions.Logging;
 using P2L.Core.Services;
 using P2L.Hardware;
@@ -6,17 +8,10 @@ using Spectre.Console.Cli;
 
 namespace P2L.CLI.Commands;
 
-/// <summary>
-/// Headless daemon mode — the entry point for the Windows Service and systemd unit.
-///
-/// Starts the Aioi gateway connection, heartbeat, watchdog, and (if configured)
-/// the MQTT bridge, then blocks until the process is stopped by SCM / SIGTERM.
-///
-/// Unlike <see cref="RootCommand"/>, this command requires no interactive console
-/// and produces no ANSI UI output — all status is written to the rotating log file.
-/// </summary>
+/// <summary>Runs the Bridge and its embedded browser UI. Service hosts can use --no-ui or --no-browser.</summary>
 public sealed class ServeCommand : AsyncCommand<ServeCommand.Settings>
 {
+    private readonly IServiceProvider _services;
     private readonly AioiGateway           _gateway;
     private readonly HeartbeatService      _heartbeat;
     private readonly WatchdogService       _watchdog;
@@ -25,9 +20,18 @@ public sealed class ServeCommand : AsyncCommand<ServeCommand.Settings>
     private readonly MqttBridgeService?    _mqtt;
     private readonly OfflineBufferService? _offlineBuffer;
 
-    public sealed class Settings : CommandSettings { }
+    public sealed class Settings : CommandSettings
+    {
+        [CommandOption("--no-ui")]
+        public bool NoUi { get; init; }
+        [CommandOption("--no-browser")]
+        public bool NoBrowser { get; init; }
+        [CommandOption("--ui-port")]
+        public int UiPort { get; init; } = 8765;
+    }
 
     public ServeCommand(
+        IServiceProvider services,
         AioiGateway gateway,
         HeartbeatService heartbeat,
         WatchdogService watchdog,
@@ -36,6 +40,7 @@ public sealed class ServeCommand : AsyncCommand<ServeCommand.Settings>
         MqttBridgeService? mqtt = null,
         OfflineBufferService? offlineBuffer = null)
     {
+        _services = services;
         _gateway       = gateway;
         _heartbeat     = heartbeat;
         _watchdog      = watchdog;
@@ -47,7 +52,31 @@ public sealed class ServeCommand : AsyncCommand<ServeCommand.Settings>
 
     public override async Task<int> ExecuteAsync(CommandContext ctx, Settings settings)
     {
-        _logger.LogInformation("P2L service starting (daemon mode).");
+        _logger.LogInformation("P2L service starting.");
+        if (!settings.NoUi)
+        {
+            if (settings.UiPort is < 1 or > 65535) { _logger.LogError("UI port must be 1–65535"); return 1; }
+            WebClientService ui;
+            try
+            {
+                ui = (WebClientService)_services.GetService(typeof(WebClientService))!;
+                await ui.StartAsync(settings.UiPort, _cts.Token);
+            }
+            catch (Exception) { _logger.LogError("Cannot start local UI on port {Port}. Check port availability and device database permissions, or use --no-ui.", settings.UiPort); return 1; }
+            if (!settings.NoBrowser && Environment.UserInteractive && !Console.IsInputRedirected)
+            {
+                try
+                {
+                    if (OperatingSystem.IsWindows()) Process.Start(new ProcessStartInfo(ui.Url) {UseShellExecute = true});
+                    else
+                    {
+                        var browser = new ProcessStartInfo(OperatingSystem.IsMacOS() ? "open" : "xdg-open") {UseShellExecute = false};
+                        browser.ArgumentList.Add(ui.Url); Process.Start(browser);
+                    }
+                }
+                catch (Exception) { _logger.LogInformation("Open {Url} in your browser.", ui.Url); }
+            }
+        }
 
         try
         {

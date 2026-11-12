@@ -107,6 +107,7 @@ class MqttClient:
     def __init__(self, config) -> None:
         from ..config import MqttConfig  # local import avoids circularity
         self._cfg: MqttConfig = config
+        self.before_connect = None
         self._publish_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=128)
         self._is_connected = False
         self._connected_event: asyncio.Event = asyncio.Event()
@@ -184,6 +185,8 @@ class MqttClient:
         delay = 1.0
         while not self._stop.is_set():
             try:
+                if self.before_connect is not None:
+                    self._cfg = await self.before_connect()
                 kwargs = self._build_kwargs()
                 logger.info("MQTT connecting to %s:%d …", self._cfg.host, self._cfg.port)
 
@@ -309,7 +312,9 @@ class MqttClient:
         tls = self._cfg.tls
         if tls.enabled:
             ctx = ssl.create_default_context()
-            if tls.ca_cert_path:
+            if tls.ca_cert_pem:
+                ctx.load_verify_locations(cadata=tls.ca_cert_pem)
+            elif tls.ca_cert_path:
                 ctx.load_verify_locations(tls.ca_cert_path)
             if tls.client_cert_path and tls.client_key_path:
                 ctx.load_cert_chain(tls.client_cert_path, tls.client_key_path,

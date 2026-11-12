@@ -146,6 +146,7 @@ public sealed class OfflineBufferService : IAsyncDisposable
         {
             var entry = new BufferedEntry(topic, retain, Convert.ToBase64String(payload));
             var line  = JsonSerializer.Serialize(entry, P2LMqttJsonContext.Default.BufferedEntry);
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_settings.OfflineBufferPath))!);
             File.AppendAllText(_settings.OfflineBufferPath, line + "\n");
             _log.LogDebug("[OfflineBuffer] Buffered → {Topic}", topic);
         }

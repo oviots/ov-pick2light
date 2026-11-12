@@ -180,11 +180,27 @@ async def _do_connect() -> None:
     global mqtt_client
     if mqtt_client and mqtt_client.is_connected:
         return
+    from .licensing.provider import load_config
+    licensed = await load_config(config)
     mc = MqttClient(config.mqtt)
+    first_attempt = True
+    async def authorize():
+        nonlocal first_attempt
+        if first_attempt:
+            first_attempt = False
+            return config.mqtt
+        await load_config(config, licensed['fingerprint'])
+        return config.mqtt
+    mc.before_connect = authorize
     _setup_mqtt_client(mc)
     await mc.start()
     mqtt_client = mc
-    await mc.wait_connected(timeout=15.0)
+    try:
+        await mc.wait_connected(timeout=15.0)
+    except Exception:
+        await mc.stop()
+        mqtt_client = None
+        raise
 
 
 async def _do_disconnect() -> None:
@@ -246,6 +262,13 @@ async def lifespan(app: FastAPI):
     init_db()
     for dev in load_devices():
         registry.add_device(dev["address"], dev["label"], dev.get("order_no", 0))
+    from .licensing.provider import load_config
+    try:
+        await load_config(config)
+        app.state.license_error = None
+    except Exception:
+        # Keep the enrollment UI available; never connect using old JSON on failure.
+        app.state.license_error = "Chưa xác thực được license. Kiểm tra kích hoạt và kết nối API."
     _setup_registry_callbacks()
     ws_manager.on_empty    = _on_ws_empty
     ws_manager.on_nonempty = _on_ws_nonempty
@@ -265,6 +288,8 @@ app.state.do_disconnect = _do_disconnect
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+from .licensing.local_access import LocalAccessMiddleware
+app.add_middleware(LocalAccessMiddleware)
 app.include_router(router)
 
 app.state.config     = config

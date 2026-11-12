@@ -292,6 +292,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
         {
             var entry = new BufferedEntry(topic, retain, Convert.ToBase64String(payload));
             var line  = JsonSerializer.Serialize(entry, P2LMqttJsonContext.Default.BufferedEntry);
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_bufferPath))!);
             File.AppendAllText(_bufferPath, line + "\n");
             _log.LogDebug("[MQTT] Offline buffered → {Topic}", topic);
         }

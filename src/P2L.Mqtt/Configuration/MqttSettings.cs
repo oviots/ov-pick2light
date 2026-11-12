@@ -46,6 +46,9 @@ public sealed class MqttTlsSettings
     /// Leave null to use the OS trust store.</summary>
     public string? CaCertPath          { get; init; }
 
+    /// <summary>Optional public CA PEM bundle loaded from the license API, kept in memory.</summary>
+    public string? CaCertPem           { get; init; }
+
     /// <summary>Client certificate for mutual TLS. PFX or PEM bundle (cert + key).</summary>
     public string? ClientCertPath      { get; init; }
 

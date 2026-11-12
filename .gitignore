@@ -7,3 +7,6 @@ logs/
 .vs/
 .idea/
 *.suo
+
+__pycache__/
+*.py[cod]

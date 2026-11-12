@@ -3,9 +3,7 @@
 All commands are forwarded to the P2L service via MQTT.
 No direct Aioi hardware communication happens in this process.
 """
-import json
 import logging
-from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -67,23 +65,8 @@ class BatchRequest(BaseModel):
 
 
 class ConfigRequest(BaseModel):
-    block_no: Optional[str] = None
-    auto_connect: Optional[bool] = None
-    mqtt_enabled: Optional[bool] = None
-    mqtt_host: Optional[str] = None
-    mqtt_port: Optional[int] = None
-    mqtt_client_id: Optional[str] = None
-    mqtt_username: Optional[str] = None
-    mqtt_password: Optional[str] = None
-    mqtt_command_topic: Optional[str] = None
-    mqtt_event_topic: Optional[str] = None
-    mqtt_devices_topic: Optional[str] = None
-    mqtt_status_topic: Optional[str] = None
-    mqtt_tls_enabled: Optional[bool] = None
-    mqtt_tls_allow_untrusted: Optional[bool] = None
-    mqtt_tls_ca_cert_path: Optional[str] = None
     service_binary_path: Optional[str] = None
-    service_args: Optional[list] = None
+    service_args: Optional[list[str]] = None
     service_working_dir: Optional[str] = None
     service_auto_start: Optional[bool] = None
 
@@ -199,6 +182,12 @@ async def connect(request: Request):
     from .. import service as svc
     cfg = _config(request)
     svc_cfg = cfg.service
+
+    from ..licensing.provider import load_config
+    try:
+        await load_config(cfg)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Không lấy được cấu hình. Kiểm tra license và API trước khi kết nối") from None
 
     # ── 1. Optionally start the P2L .NET service ─────────────────────────────
     service_started = False
@@ -572,221 +561,70 @@ async def terminate_all(request: Request):
 @router.get("/api/config")
 async def get_config(request: Request):
     cfg = _config(request).to_dict()
-    # Strip password from API response
-    cfg["mqtt"].pop("password", None)
     return cfg
 
 
 @router.put("/api/config")
-async def update_config(request: Request, body: ConfigRequest):
+async def update_config(request: Request, body: dict):
+    allowed = {"service_binary_path", "service_args", "service_working_dir", "service_auto_start"}
+    if set(body) - allowed:
+        raise HTTPException(status_code=403, detail="Cấu hình vận hành do quản trị license quản lý")
     cfg = _config(request)
-    if body.block_no is not None:
-        cfg.block_no = body.block_no
-    if body.auto_connect is not None:
-        cfg.auto_connect = body.auto_connect
-    if body.mqtt_enabled is not None:
-        cfg.mqtt.enabled = body.mqtt_enabled
-    if body.mqtt_host is not None:
-        cfg.mqtt.host = body.mqtt_host
-    if body.mqtt_port is not None:
-        cfg.mqtt.port = body.mqtt_port
-    if body.mqtt_client_id is not None:
-        cfg.mqtt.client_id = body.mqtt_client_id
-    if body.mqtt_username is not None:
-        cfg.mqtt.username = body.mqtt_username
-    if body.mqtt_password is not None:
-        cfg.mqtt.password = body.mqtt_password
-    if body.mqtt_command_topic is not None:
-        cfg.mqtt.command_topic = body.mqtt_command_topic
-    if body.mqtt_event_topic is not None:
-        cfg.mqtt.event_topic = body.mqtt_event_topic
-    if body.mqtt_devices_topic is not None:
-        cfg.mqtt.devices_topic = body.mqtt_devices_topic
-    if body.mqtt_status_topic is not None:
-        cfg.mqtt.status_topic = body.mqtt_status_topic
-    if body.mqtt_tls_enabled is not None:
-        cfg.mqtt.tls.enabled = body.mqtt_tls_enabled
-    if body.mqtt_tls_allow_untrusted is not None:
-        cfg.mqtt.tls.allow_untrusted_certs = body.mqtt_tls_allow_untrusted
-    if body.mqtt_tls_ca_cert_path is not None:
-        cfg.mqtt.tls.ca_cert_path = body.mqtt_tls_ca_cert_path
-    if body.service_binary_path is not None:
-        cfg.service.binary_path = body.service_binary_path
-    if body.service_args is not None:
-        cfg.service.args = body.service_args
-    if body.service_working_dir is not None:
-        cfg.service.working_dir = body.service_working_dir
-    if body.service_auto_start is not None:
-        cfg.service.auto_start = body.service_auto_start
+    from pydantic import ValidationError
+    try:
+        validated = ConfigRequest(**body)
+    except ValidationError:
+        raise HTTPException(status_code=400, detail="Cấu hình local không hợp lệ") from None
+    for field in allowed:
+        value = getattr(validated, field)
+        if value is not None:
+            setattr(cfg.service, field.removeprefix("service_"), value)
     cfg.save()
     out = cfg.to_dict()
-    out["mqtt"].pop("password", None)
     return out
 
 
-# ─── appsettings.json (P2L .NET bridge config) ───────────────────────────────
-
-def _appsettings_path(request: Request) -> Path:
-    """Locate p2l_config.json: config/ subdir next to p2l binary, or in ProgramData/P2L/config/."""
-    from .._paths import app_data_dir
-    cfg = _config(request)
-    if cfg.service.binary_path:
-        candidate = Path(cfg.service.binary_path).parent / "config" / "p2l_config.json"
-        if candidate.exists():
-            return candidate
-    return app_data_dir() / "config" / "p2l_config.json"
+class LicenseActivationRequest(BaseModel):
+    license_code: str = Field(min_length=52, max_length=80)
 
 
-def _read_appsettings(path: Path) -> dict:
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
+@router.get("/api/license")
+async def license_status(request: Request):
+    import asyncio
+    from ..licensing import credential_store
+    try:
+        has_key = bool(await asyncio.to_thread(credential_store.load))
+        return {"has_device_key": has_key, "requires_online_validation": True, "startup_error": getattr(request.app.state, "license_error", None)}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Không đọc được kho bảo mật hệ điều hành") from None
 
 
-def _deep_merge(base: dict, overlay: dict) -> dict:
-    """Recursively merge overlay into base (modifies base in-place)."""
-    for k, v in overlay.items():
-        if isinstance(v, dict) and isinstance(base.get(k), dict):
-            _deep_merge(base[k], v)
-        else:
-            base[k] = v
-    return base
-
-
-class AppSettingsRequest(BaseModel):
-    # Gateway
-    gateway_host: Optional[str] = None
-    gateway_port: Optional[int] = None
-    gateway_block_no: Optional[str] = None
-    # MQTT (bridge)
-    mqtt_enabled: Optional[bool] = None
-    mqtt_host: Optional[str] = None
-    mqtt_port: Optional[int] = None
-    mqtt_client_id: Optional[str] = None
-    mqtt_username: Optional[str] = None
-    mqtt_password: Optional[str] = None
-    mqtt_command_topic: Optional[str] = None
-    mqtt_event_topic: Optional[str] = None
-    mqtt_devices_topic: Optional[str] = None
-    mqtt_status_topic: Optional[str] = None
-    mqtt_client_db_path: Optional[str] = None
-    mqtt_tls_enabled: Optional[bool] = None
-    mqtt_tls_allow_untrusted: Optional[bool] = None
-    mqtt_tls_ca_cert_path: Optional[str] = None
-    # SelfHeal
-    selfheal_enabled: Optional[bool] = None
-    selfheal_max_restarts: Optional[int] = None
-    selfheal_restart_window_minutes: Optional[int] = None
-    selfheal_backoff_seconds: Optional[int] = None
-    # Misc
-    enable_state_persistence: Optional[bool] = None
-    log_level: Optional[str] = None
+@router.post("/api/license/activate")
+async def license_activate(request: Request, body: LicenseActivationRequest):
+    from ..licensing.provider import activate_async, load_config
+    from ..licensing.api import LicenseError
+    if _mqtt(request) and _mqtt(request).is_connected:
+        raise HTTPException(status_code=409, detail="Ngắt kết nối trước khi kích hoạt license")
+    try:
+        result = await activate_async(body.license_code)
+        await load_config(_config(request))
+        request.app.state.license_error = None
+        return {"status": "activated", **result}
+    except LicenseError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from None
+    except Exception:
+        raise HTTPException(status_code=503, detail="Không kích hoạt được thiết bị. Kiểm tra API và kho bảo mật hệ điều hành") from None
 
 
 @router.get("/api/appsettings")
 async def get_appsettings(request: Request):
-    path = _appsettings_path(request)
-    data = _read_appsettings(path)
-    gw   = data.get("Gateway", {})
-    mq   = data.get("Mqtt", {})
-    tls  = mq.get("Tls", {})
-    sh   = data.get("SelfHeal", {})
-    log  = data.get("Logging", {}).get("LogLevel", {})
-    return {
-        "path": str(path),
-        "exists": path.exists(),
-        "gateway": {
-            "host":     gw.get("Host", ""),
-            "port":     gw.get("Port", 5003),
-            "block_no": gw.get("BlockNo", "00"),
-        },
-        "mqtt": {
-            "enabled":        mq.get("Enabled", True),
-            "host":           mq.get("Host", ""),
-            "port":           mq.get("Port", 8883),
-            "client_id":      mq.get("ClientId", ""),
-            "username":       mq.get("Username", ""),
-            "command_topic":  mq.get("CommandTopic", "p2l/commands"),
-            "event_topic":    mq.get("EventTopic", "p2l/events"),
-            "devices_topic":  mq.get("DevicesTopic", "p2l/devices"),
-            "status_topic":   mq.get("StatusTopic", "p2l/status"),
-            "client_db_path": mq.get("ClientDbPath", ""),
-            "tls": {
-                "enabled":            tls.get("Enabled", True),
-                "allow_untrusted":    tls.get("AllowUntrustedCerts", False),
-                "ca_cert_path":       tls.get("CaCertPath") or "",
-            },
-        },
-        "selfheal": {
-            "enabled":                 sh.get("Enabled", True),
-            "max_restarts":            sh.get("MaxRestarts", 5),
-            "restart_window_minutes":  sh.get("RestartWindowMinutes", 10),
-            "backoff_seconds":         sh.get("BackOffSeconds", 3),
-        },
-        "enable_state_persistence": data.get("EnableStatePersistence", False),
-        "log_level": log.get("Default", "Information"),
-    }
+    raise HTTPException(status_code=403, detail="Cấu hình bridge được quản lý tại authen")
 
 
 @router.put("/api/appsettings")
-async def update_appsettings(request: Request, body: AppSettingsRequest):
-    path = _appsettings_path(request)
-    data = _read_appsettings(path)
+async def update_appsettings(request: Request):
+    raise HTTPException(status_code=403, detail="Cấu hình bridge được quản lý tại authen")
 
-    # Build overlay from non-None fields
-    overlay: dict[str, Any] = {}
-
-    gw_patch: dict = {}
-    if body.gateway_host       is not None: gw_patch["Host"]    = body.gateway_host
-    if body.gateway_port       is not None: gw_patch["Port"]    = body.gateway_port
-    if body.gateway_block_no   is not None: gw_patch["BlockNo"] = body.gateway_block_no
-    if gw_patch: overlay["Gateway"] = gw_patch
-
-    tls_patch: dict = {}
-    if body.mqtt_tls_enabled        is not None: tls_patch["Enabled"]           = body.mqtt_tls_enabled
-    if body.mqtt_tls_allow_untrusted is not None: tls_patch["AllowUntrustedCerts"] = body.mqtt_tls_allow_untrusted
-    if body.mqtt_tls_ca_cert_path   is not None: tls_patch["CaCertPath"]        = body.mqtt_tls_ca_cert_path or None
-
-    mq_patch: dict = {}
-    if body.mqtt_enabled        is not None: mq_patch["Enabled"]      = body.mqtt_enabled
-    if body.mqtt_host           is not None: mq_patch["Host"]          = body.mqtt_host
-    if body.mqtt_port           is not None: mq_patch["Port"]          = body.mqtt_port
-    if body.mqtt_client_id      is not None: mq_patch["ClientId"]      = body.mqtt_client_id
-    if body.mqtt_username       is not None: mq_patch["Username"]      = body.mqtt_username or None
-    if body.mqtt_password       is not None: mq_patch["Password"]      = body.mqtt_password or None
-    if body.mqtt_command_topic  is not None: mq_patch["CommandTopic"]  = body.mqtt_command_topic
-    if body.mqtt_event_topic    is not None: mq_patch["EventTopic"]    = body.mqtt_event_topic
-    if body.mqtt_devices_topic  is not None: mq_patch["DevicesTopic"]  = body.mqtt_devices_topic
-    if body.mqtt_status_topic   is not None: mq_patch["StatusTopic"]   = body.mqtt_status_topic
-    if body.mqtt_client_db_path is not None: mq_patch["ClientDbPath"]  = body.mqtt_client_db_path
-    if tls_patch:                            mq_patch["Tls"]           = tls_patch
-    if mq_patch: overlay["Mqtt"] = mq_patch
-
-    sh_patch: dict = {}
-    if body.selfheal_enabled                is not None: sh_patch["Enabled"]              = body.selfheal_enabled
-    if body.selfheal_max_restarts           is not None: sh_patch["MaxRestarts"]          = body.selfheal_max_restarts
-    if body.selfheal_restart_window_minutes is not None: sh_patch["RestartWindowMinutes"] = body.selfheal_restart_window_minutes
-    if body.selfheal_backoff_seconds        is not None: sh_patch["BackOffSeconds"]       = body.selfheal_backoff_seconds
-    if sh_patch: overlay["SelfHeal"] = sh_patch
-
-    if body.enable_state_persistence is not None:
-        overlay["EnableStatePersistence"] = body.enable_state_persistence
-    if body.log_level is not None:
-        overlay.setdefault("Logging", {}).setdefault("LogLevel", {})["Default"] = body.log_level
-
-    _deep_merge(data, overlay)
-    try:
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Cannot write {path}: {e}")
-
-    return {"status": "saved", "path": str(path)}
-
-
-# ─── Logs ─────────────────────────────────────────────────────────────────────
 
 @router.get("/api/logs")
 async def get_logs(request: Request):

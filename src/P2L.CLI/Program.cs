@@ -1,3 +1,5 @@
+using P2L.CLI.Web;
+using P2L.CLI.Licensing;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -13,6 +15,19 @@ using P2L.Mqtt.Configuration;
 using P2L.Shared.Constants;
 using Spectre.Console.Cli;
 
+// Enrollment must run before remote config bootstrap and without constructing hardware services.
+if (args.Length > 0 && args[0] == "license")
+{
+    var licenseApp = new CommandApp();
+    licenseApp.Configure(options =>
+    {
+        options.SetApplicationName("p2l license");
+        options.AddCommand<ActivateLicenseCommand>("activate").WithDescription("Activate this machine using a license entered privately in the terminal");
+        options.AddCommand<CheckLicenseCommand>("check").WithDescription("Validate license and fetch config without connecting to hardware");
+    });
+    return await licenseApp.RunAsync(args[1..]);
+}
+
 // ─── Configuration ────────────────────────────────────────────────────────
 
 // ProgramData\P2L — writable by NT SERVICE\* accounts; used for logs and DB.
@@ -25,6 +40,25 @@ var config = new ConfigurationBuilder()
     .AddJsonFile(Path.Combine("config", "p2l_config.json"), optional: true)   // exe-dir config
     .AddEnvironmentVariables("P2L_")
     .Build();
+
+// Resolve operational settings before creating the gateway or starting any services.
+// No fallback to local MQTT/gateway config when the API is unavailable.
+RemoteConfigProvider? remoteConfig = null;
+try
+{
+    remoteConfig = new RemoteConfigProvider();
+    using var startupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    var remoteValues = await remoteConfig.LoadAsync(startupTimeout.Token);
+    config = new ConfigurationBuilder().AddConfiguration(config).AddInMemoryCollection(remoteValues).Build();
+}
+catch
+{
+    remoteConfig?.Dispose();
+    Console.Error.WriteLine("Cannot load licensed configuration. Check activation, OS service account and HTTPS license API. No hardware connection was started.");
+    return 1;
+}
+
+using var remoteConfigLifetime = remoteConfig;
 
 // config.Get<T>() uses reflection which is trimmed under Native AOT.
 // Read all values explicitly via the string-key indexer (no reflection).
@@ -57,12 +91,13 @@ var appSettings = new AppSettings
         EventTopic        = Cfg_String(config, "Mqtt:EventTopic",        "p2l/events"),
         DevicesTopic      = Cfg_String(config, "Mqtt:DevicesTopic",      "p2l/devices"),
         StatusTopic       = Cfg_String(config, "Mqtt:StatusTopic",       "p2l/status"),
-        OfflineBufferPath = Cfg_String(config, "Mqtt:OfflineBufferPath", Path.Combine(appDataBase, "mqtt_offline_buffer.jsonl")),
-        ClientDbPath      = config["Mqtt:ClientDbPath"] ?? Path.Combine(appDataBase, "p2l_devices.db"),
+        OfflineBufferPath = Cfg_String(config, "Mqtt:OfflineBufferPath", Path.Combine(AppContext.BaseDirectory, "mqtt_offline_buffer.jsonl")),
+        ClientDbPath      = config["Mqtt:ClientDbPath"] ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "P2L", "p2l_devices.db"),
         Tls = new MqttTlsSettings
         {
             Enabled             = Cfg_Bool  (config, "Mqtt:Tls:Enabled",             true),
             CaCertPath          = config["Mqtt:Tls:CaCertPath"],
+            CaCertPem           = config["Mqtt:Tls:CaCertPem"],
             ClientCertPath      = config["Mqtt:Tls:ClientCertPath"],
             ClientKeyPath       = config["Mqtt:Tls:ClientKeyPath"],
             CertPassword        = config["Mqtt:Tls:CertPassword"],
@@ -107,14 +142,18 @@ if (!OperatingSystem.IsWindows())
 // ─── Service registration ─────────────────────────────────────────────────
 
 var services = new ServiceCollection();
+var webLogs = new WebLogProvider();
+services.AddSingleton(webLogs);
 var isDashboardMode = args.Length == 0;
 
+services.AddSingleton<Func<CancellationToken, Task>>(remoteConfig.AuthorizeReconnectAsync);
 services.AddSingleton(appSettings);
 services.AddSingleton(appSettings.Gateway);
 
 // Logging — console + rotating file audit trail
 services.AddLogging(builder =>
 {
+    builder.AddProvider(webLogs);
     builder.AddConfiguration(config.GetSection("Logging"));
     if (!isDashboardMode)
     {
@@ -178,6 +217,18 @@ else if (!string.IsNullOrWhiteSpace(appSettings.Mqtt.OfflineBufferPath))
     services.AddSingleton<OfflineBufferService>();
 }
 
+// Embedded browser UI uses this process's state and MQTT connection; no Python or second credential reader.
+services.AddSingleton(sp => new DeviceCatalog(appSettings.Mqtt.ClientDbPath!,
+    sp.GetRequiredService<DeviceLabelStore>(), sp.GetRequiredService<LightModuleRegistry>()));
+services.AddSingleton(sp =>
+{
+    var mqtt = sp.GetRequiredService<MqttBridgeService>();
+    return new WebClientService(appSettings, sp.GetRequiredService<AioiGateway>(),
+        sp.GetRequiredService<LightModuleRegistry>(), sp.GetRequiredService<PickingEngine>(),
+        sp.GetRequiredService<DeviceCatalog>(), webLogs, mqtt.HandleLocalCommandAsync, () => mqtt.IsConnected,
+        sp.GetRequiredService<ILogger<WebClientService>>());
+});
+
 // CLI Commands
 services.AddTransient<RootCommand>();
 services.AddTransient<LightOnCommand>();
@@ -233,7 +284,7 @@ app.Configure(cfg =>
        .WithDescription("Run a CSV pick-task file sequentially with auto-delete on confirmation");
 
     cfg.AddCommand<ServeCommand>("serve")
-       .WithDescription("Run as a headless daemon (Windows Service / systemd unit entry point)");
+       .WithDescription("Run Bridge and open the integrated local web client");
 
 #if DEBUG
     cfg.PropagateExceptions();
