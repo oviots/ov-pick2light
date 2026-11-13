@@ -1,0 +1,218 @@
+{
+  "checkedAt": "2026-11-13T04:18:17.794Z",
+  "database": "sft_uat_p2l_local_3lights_20261113",
+  "sessions": [
+    {
+      "Code": "430100000001",
+      "BlockCode": "01",
+      "TotalQty": 5,
+      "PickedQty": 5,
+      "Status": "Completed",
+      "StartTime": "2026-11-13T04:02:29.144Z",
+      "EndTime": "2026-11-13T04:09:43.767Z",
+      "CreatedDate": "2026-11-13T04:02:29.144Z"
+    },
+    {
+      "Code": "430200000001",
+      "BlockCode": "02",
+      "TotalQty": 4,
+      "PickedQty": 4,
+      "Status": "Completed",
+      "StartTime": "2026-11-13T04:02:30.650Z",
+      "EndTime": "2026-11-13T04:04:43.463Z",
+      "CreatedDate": "2026-11-13T04:02:30.650Z"
+    },
+    {
+      "Code": "430200000002",
+      "BlockCode": "02",
+      "TotalQty": 1,
+      "PickedQty": 1,
+      "Status": "Completed",
+      "StartTime": "2026-11-13T04:04:44.272Z",
+      "EndTime": "2026-11-13T04:11:08.935Z",
+      "CreatedDate": "2026-11-13T04:04:44.272Z"
+    },
+    {
+      "Code": "430100000002",
+      "BlockCode": "01",
+      "TotalQty": 3,
+      "PickedQty": 3,
+      "Status": "Completed",
+      "StartTime": "2026-11-13T04:09:44.560Z",
+      "EndTime": "2026-11-13T04:12:28.947Z",
+      "CreatedDate": "2026-11-13T04:09:44.560Z"
+    }
+  ],
+  "details": [
+    {
+      "SessionCode": "430100000001",
+      "BlockCode": "01",
+      "DemandQty": 2,
+      "PickedQty": 2,
+      "LightAddress": "0008",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430100000001",
+      "BlockCode": "01",
+      "DemandQty": 3,
+      "PickedQty": 3,
+      "LightAddress": "0014",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430200000001",
+      "BlockCode": "02",
+      "DemandQty": 4,
+      "PickedQty": 4,
+      "LightAddress": "0017",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430200000002",
+      "BlockCode": "02",
+      "DemandQty": 1,
+      "PickedQty": 1,
+      "LightAddress": "0017",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430100000002",
+      "BlockCode": "01",
+      "DemandQty": 1,
+      "PickedQty": 1,
+      "LightAddress": "0008",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430100000002",
+      "BlockCode": "01",
+      "DemandQty": 2,
+      "PickedQty": 2,
+      "LightAddress": "0014",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    }
+  ],
+  "signals": [
+    {
+      "Key": "96f08936c4b54245b4f0c219cf90e706",
+      "SessionCode": "430200000001",
+      "Name": "LightConfirm",
+      "Status": "Done",
+      "Data": {
+        "eventId": "96f08936c4b54245b4f0c219cf90e706",
+        "address": "0017",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "cf734035dfdf4704a893b0825fd8565f",
+      "SessionCode": "430100000001",
+      "Name": "LightConfirm",
+      "Status": "Done",
+      "Data": {
+        "eventId": "cf734035dfdf4704a893b0825fd8565f",
+        "address": "0008",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "9602174718b340eb9f6033d45b8545c6",
+      "SessionCode": "430100000001",
+      "Name": "LightConfirm",
+      "Status": "Done",
+      "Data": {
+        "eventId": "9602174718b340eb9f6033d45b8545c6",
+        "address": "0014",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "76d3a9592f424b468871ee7e8224b532",
+      "SessionCode": "430100000002",
+      "Name": "LightConfirm",
+      "Status": "Done",
+      "Data": {
+        "eventId": "76d3a9592f424b468871ee7e8224b532",
+        "address": "0014",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "78652c569c584153adc7bb2d595d59f8",
+      "SessionCode": "430200000002",
+      "Name": "LightConfirm",
+      "Status": "Done",
+      "Data": {
+        "eventId": "78652c569c584153adc7bb2d595d59f8",
+        "address": "0017",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "a1b1e1dc9a8943a6b663c134f9b50d9c",
+      "SessionCode": "430100000002",
+      "Name": "LightConfirm",
+      "Status": "Done",
+      "Data": {
+        "eventId": "a1b1e1dc9a8943a6b663c134f9b50d9c",
+        "address": "0008",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    }
+  ],
+  "stock": [
+    {
+      "_id": "STORE",
+      "qty": 13,
+      "pending": 0
+    },
+    {
+      "_id": "BIN",
+      "qty": 287,
+      "pending": 0
+    }
+  ],
+  "transactions": [
+    {
+      "_id": "OUT",
+      "count": 6,
+      "qty": -13
+    },
+    {
+      "_id": "RESERVE",
+      "count": 6,
+      "qty": 13
+    },
+    {
+      "_id": "IN",
+      "count": 6,
+      "qty": 13
+    }
+  ],
+  "duplicateTransactions": [],
+  "localConfirmationOutbox": {
+    "readOnly": true,
+    "pendingCount": 0
+  },
+  "nativeLog": {
+    "file": "artifacts/uat-integrated-osx-arm64-20261113-r14/bridge/logs/p2l_20261113_11.log",
+    "acceptedConfirmCount": 6,
+    "block01FirstStart": "11:02:33",
+    "block02FirstStart": "11:02:33",
+    "block02NextStart": "11:04:46",
+    "block01FirstComplete": "11:09:39"
+  }
+}

@@ -35,6 +35,8 @@ public sealed class MqttSettings
     /// </summary>
     public string? ClientDbPath { get; init; }
 
+    public ConfirmApiSettings ConfirmApi { get; init; } = new();
+
     public MqttTlsSettings Tls  { get; init; } = new();
 }
 

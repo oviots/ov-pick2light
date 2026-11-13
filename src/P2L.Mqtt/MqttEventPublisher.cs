@@ -103,7 +103,9 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
         => Enqueue(StateToEvt(state));
 
     private void OnItemConfirmed(ConfirmationEvent evt, LightModuleState? state)
-        => Enqueue(new ConfirmedEvt
+    {
+        if (_engine.HasConfirmationJournal && !string.IsNullOrEmpty(state?.PickingDetailId)) return; // Durable worker owns this event until business ACK.
+        Enqueue(new ConfirmedEvt
         {
             Type             = "confirmed",
             Address          = evt.Address,
@@ -115,6 +117,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
             DisplayData      = state?.DisplayData,
             Label            = _labels.GetLabel(evt.Address) is { Length: > 0 } l ? l : null,
         });
+    }
 
     private void OnBatchCompleted(string blockNo, string? correlationId)
         => Enqueue(new BatchCompletedEvt

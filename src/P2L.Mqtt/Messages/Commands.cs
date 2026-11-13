@@ -15,6 +15,8 @@ public abstract record MqttCommand
 /// <summary>Light up a single module.</summary>
 public sealed record LightOnCmd : MqttCommand
 {
+    public string? CommandItemId { get; init; }
+    public string? PickingDetailId { get; init; }
     public required string  Address  { get; init; }
     public required int     Quantity { get; init; }
     public string           BlockNo  { get; init; } = "00";
@@ -48,6 +50,8 @@ public sealed record BatchStartCmd : MqttCommand
 
 public sealed record BatchItemDto
 {
+    public string? CommandItemId { get; init; }
+    public string? PickingDetailId { get; init; }
     /// <summary>
     /// 4-digit hardware address of the target module.
     /// If omitted, <see cref="Label"/> is used to resolve the address from the

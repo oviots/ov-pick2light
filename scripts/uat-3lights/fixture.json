@@ -1,0 +1,20 @@
+{
+  "database": "sft_uat_p2l_local_3lights_20261113",
+  "fixture": "P2L-LOCAL-3LIGHTS-20261113",
+  "scope": {"ClientCode":"P2L_TEST", "WarehouseCode":"LOCAL", "WarehouseSiteId":"LOCAL_3LIGHTS"},
+  "rocketCode":"P2L-LOCAL-3LIGHTS-20261113",
+  "gateway":{"host":"192.168.1.254","port":5003,"blockNos":["01","02"]},
+  "blocks":[
+    {"code":"01","zone":"TEST_ZONE_01","lamps":[{"address":"0008","bin":"TEST_BIN_0008","sku":"TEST_SKU_0008","stock":100},{"address":"0014","bin":"TEST_BIN_0014","sku":"TEST_SKU_0014","stock":100}]},
+    {"code":"02","zone":"TEST_ZONE_02","lamps":[{"address":"0017","bin":"TEST_BIN_0017","sku":"TEST_SKU_0017","stock":100}]}
+  ],
+  "demands":[
+    {"block":"01","store":"TEST_STORE_01_A","route":"01","lines":[{"address":"0008","qty":2},{"address":"0014","qty":3}]},
+    {"block":"02","store":"TEST_STORE_02_A","route":"01","lines":[{"address":"0017","qty":4}]},
+    {"block":"01","store":"TEST_STORE_01_B","route":"02","lines":[{"address":"0008","qty":1},{"address":"0014","qty":2}]},
+    {"block":"02","store":"TEST_STORE_02_B","route":"02","lines":[{"address":"0017","qty":1}]}
+  ],
+  "expectedFinalStock":{"TEST_BIN_0008":97,"TEST_BIN_0014":95,"TEST_BIN_0017":95},
+  "expected":{"sessions":4,"pickingDetails":6,"pickedQty":13,"pendingOutQty":0},
+  "productionReference":{"database":"sft_prod_ops_mml_aba_rocket","readOnly":true,"sessionsRead":12,"detailsRead":31,"description":"Synthetic names, quantities and identifiers; schema/relations checked against recent production records."}
+}

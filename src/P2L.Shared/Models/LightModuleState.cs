@@ -44,6 +44,10 @@ public sealed class LightModuleState
     /// <summary>
     /// Caller-supplied trace ID for the currently active pick/batch session.
     /// </summary>
+    public string? CommandItemId { get; set; }
+    public string? PickingDetailId { get; set; }
+    public string AssignmentId { get; set; } = Guid.NewGuid().ToString("N");
+
     public string? CorrelationId { get; set; }
 
     public override string ToString() =>

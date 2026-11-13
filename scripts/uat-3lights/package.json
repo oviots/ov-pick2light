@@ -1,0 +1,1 @@
+{"name":"p2l-uat-3lights-harness","private":true,"version":"1.0.0","dependencies":{"mongoose":"8.24.5","mqtt":"5.10.1","moment-timezone":"0.5.46"}}

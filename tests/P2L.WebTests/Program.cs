@@ -32,6 +32,7 @@ var settings = new AppSettings
 {
     Gateway = new GatewaySettings {Host = "127.0.0.1", Port = gatewayPort, BlockNo = "01"},
     Mqtt = new MqttSettings {Host = "fixture.example", Password = "SECRET-MUST-NOT-LEAK", Username = "fixture",
+        ConfirmApi = new() {Enabled=true, Url="https://fixture.example/confirm/events", Token="CONFIRM-API-SECRET-MUST-NOT-LEAK-123456"},
         ClientDbPath = path, ClientId = "fixture-bridge", CommandTopic = "fixture/commands"}
 };
 var catalog = new DeviceCatalog(path, labels, registry);

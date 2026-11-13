@@ -15,6 +15,10 @@ public abstract record MqttEvent
 /// <summary>Published when an operator presses CONFIRM on a module.</summary>
 public sealed record ConfirmedEvt : MqttEvent
 {
+    public string? EventId { get; init; }
+    public int? ConfirmProtocol { get; init; }
+    public string? CommandItemId { get; init; }
+    public string? PickingDetailId { get; init; }
     public string? BlockNo { get; init; }
     public required string   Address          { get; init; }
     public CompletionStatus  Status           { get; init; }

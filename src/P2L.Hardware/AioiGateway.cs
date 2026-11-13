@@ -261,15 +261,21 @@ public sealed class AioiGateway : IAsyncDisposable, IDisposable
         {
             case AioiDecoder.ResponseKind.Interrupt:
                 // "t" packet: ACK must echo the same SeqNo as the interrupt (always 0)
-                // and must be sent immediately — bypass the send queue so it never waits
-                // behind a queued heartbeat or P1 command.
-                _ = _transport.SendImmediateAsync(AioiEncoder.Ack(), packet.SequenceNo);
-
-                if (response.Event is not null)
+                // Bypass the send queue after Confirm handlers have committed the receipt.
+                try
                 {
-                    _log.LogInformation("[CONFIRM] Address={Addr} Status={Status}",
-                        response.Event.Address, response.Event.Status);
-                    Confirmed?.Invoke(response.Event);
+                    if (response.Event is not null)
+                    {
+                        _log.LogInformation("[CONFIRM] Address={Addr} Status={Status}",
+                            response.Event.Address, response.Event.Status);
+                        Confirmed?.Invoke(response.Event);
+                    }
+                    _ = _transport.SendImmediateAsync(AioiEncoder.Ack(), packet.SequenceNo);
+                }
+                catch (Exception ex)
+                {
+                    // Do not acknowledge a physical Confirm that could not be persisted.
+                    _log.LogCritical(ex, "Confirm could not be recorded; controller ACK withheld");
                 }
                 break;
 

@@ -32,6 +32,7 @@ public sealed class PickingEngine : IDisposable
     private readonly object             _lock             = new();
     private readonly SemaphoreSlim _operations = new(1, 1);
     private readonly BlockPolicy _blocks;
+    private readonly P2L.Shared.IConfirmationJournal? _confirmations;
 
     /// <summary>Fires when an operator presses CONFIRM on any module in any active batch.</summary>
     public event Action<ConfirmationEvent, LightModuleState?>? ItemConfirmed;
@@ -41,15 +42,17 @@ public sealed class PickingEngine : IDisposable
     public event Action<string, string?>? BlockBatchCompleted;
 
     /// <summary>True if any batch is currently active.</summary>
+    public bool HasConfirmationJournal => _confirmations is not null;
     public bool IsBatchActive => !_activeBatches.IsEmpty;
     public void ValidateBlock(string blockNo) => _blocks.Validate(blockNo);
 
-    public PickingEngine(AioiGateway gateway, LightModuleRegistry registry, ILogger<PickingEngine> logger, BlockPolicy? blocks = null)
+    public PickingEngine(AioiGateway gateway, LightModuleRegistry registry, ILogger<PickingEngine> logger, BlockPolicy? blocks = null, P2L.Shared.IConfirmationJournal? confirmations = null)
     {
         _gateway  = gateway;
         _registry = registry;
         _log      = logger;
         _blocks = blocks ?? new BlockPolicy();
+        _confirmations = confirmations;
 
         _gateway.Confirmed += OnConfirmed;
     }
@@ -87,6 +90,10 @@ public sealed class PickingEngine : IDisposable
                     }
                     throw new InvalidOperationException($"Block {block} is busy; finish its current session first.");
                 }
+                // A retry may contain already-confirmed items from an earlier batch.
+                instructions = instructions.Where(i => !WasConfirmed(i.PickingDetailId)).ToArray();
+                if (instructions.Count == 0) return;
+                addresses = instructions.Select(i => Address(i.Address)).ToArray();
                 ValidateOwnership(block, ids[0], addresses);
                 batch = new BatchState {BlockNo = block, CorrelationId = ids[0], Signature = signature};
                 batch.Addresses.UnionWith(addresses);
@@ -149,12 +156,12 @@ public sealed class PickingEngine : IDisposable
                                       LightState ledMode = LightState.On,
                                       LightState buzMode = LightState.Off,
                                       string? label = null, string? blockNo = "00",
-                                      string? correlationId = null, CancellationToken ct = default)
+                                      string? correlationId = null, CancellationToken ct = default, string? commandItemId = null, string? pickingDetailId = null)
     {
         var block = blockNo ?? "00";
         _blocks.Validate(block);
         var inst = new PickingInstruction {Address = Address(address), Quantity = quantity, Color = color,
-            LedMode = ledMode, BuzMode = buzMode, Label = label, BlockNo = block, CorrelationId = correlationId};
+            LedMode = ledMode, BuzMode = buzMode, Label = label, BlockNo = block, CorrelationId = correlationId, CommandItemId = commandItemId, PickingDetailId = pickingDetailId};
         await _operations.WaitAsync(ct);
         try
         {
@@ -162,6 +169,16 @@ public sealed class PickingEngine : IDisposable
             List<PickingInstruction> lights;
             lock (_lock)
             {
+                if (WasConfirmed(pickingDetailId)) return; // Ignore this item, never lock the entire block.
+                var previous = _registry.Get(inst.Address);
+                if (commandItemId is not null && previous?.CommandItemId == commandItemId &&
+                    previous.PickingDetailId == pickingDetailId && previous.BlockNo == block && previous.CorrelationId == correlationId)
+                {
+                    if (_activeBatches.TryGetValue(block, out var retryBatch) && (retryBatch.DispatchUncertain || retryBatch.Finishing))
+                        throw new InvalidOperationException("Command dispatch is uncertain; reconcile this block before retrying.");
+                    if (previous.DisplayData != inst.FormattedDisplay) throw new InvalidOperationException("A command item cannot change quantity when retried.");
+                    return; // MQTT retry must not relight a confirmed item or change its receipt identity.
+                }
                 ValidateOwnership(block, correlationId, new[] {inst.Address});
                 if (_activeBatches.TryGetValue(block, out var current))
                 {
@@ -196,6 +213,9 @@ public sealed class PickingEngine : IDisposable
         }
         finally { _operations.Release(); }
     }
+
+    private bool WasConfirmed(string? pickingDetailId) =>
+        !string.IsNullOrEmpty(pickingDetailId) && (_confirmations?.HasRecorded(pickingDetailId) ?? false);
 
     // Controller confirmations identify only an address, so ownership is controller-wide.
     private void ValidateOwnership(string block, string? correlationId, IEnumerable<string> addresses)
@@ -285,6 +305,8 @@ public sealed class PickingEngine : IDisposable
             if (current?.Status != ModuleStatus.Operating) return; // ignore duplicate/late confirmations for idle lights
             _activeBatches.TryGetValue(current.BlockNo, out var batch);
             if (batch is not null && (batch.CorrelationId != current.CorrelationId || batch.Finishing || !batch.PendingAddresses.Contains(addr))) return;
+            // Manual dashboard/CSV commands have no WMS detail to acknowledge.
+            if (!string.IsNullOrEmpty(current.PickingDetailId)) _confirmations?.Record(evt, current);
             state = _registry.SetConfirmed(evt);
             if (batch is not null && batch.PendingAddresses.Remove(addr) && batch.PendingAddresses.Count == 0)
             {
@@ -318,7 +340,7 @@ public sealed class PickingEngine : IDisposable
                 i.SegMode,
                 i.BuzMode,
                 i.Label ?? "",
-                i.CorrelationId ?? ""))
+                i.CorrelationId ?? "", i.CommandItemId ?? "", i.PickingDetailId ?? ""))
             .Order(StringComparer.Ordinal));
 
     public void Dispose()

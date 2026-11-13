@@ -20,6 +20,8 @@ namespace P2L.Mqtt.Messages;
 [JsonSerializable(typeof(CsvRunCmd))]
 [JsonSerializable(typeof(CsvControlCmd))]
 [JsonSerializable(typeof(BufferedEntry))]
+[JsonSerializable(typeof(ConfirmApiBatch))]
+[JsonSerializable(typeof(ConfirmApiReceipt))]
 [JsonSerializable(typeof(ConfirmedEvt))]
 [JsonSerializable(typeof(LightChangedEvt))]
 [JsonSerializable(typeof(BatchCompletedEvt))]

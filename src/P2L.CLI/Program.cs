@@ -16,6 +16,16 @@ using P2L.Mqtt.Configuration;
 using P2L.Shared.Constants;
 using Spectre.Console.Cli;
 
+// Inspect local business receipts even when authen or MQTT is unreachable.
+if (args is ["confirms"])
+{
+    if (!File.Exists(ConfirmationOutbox.DefaultPath)) { Console.WriteLine("No pending Confirm receipts."); return 0; }
+    var pending = new ConfirmationOutbox(ConfirmationOutbox.DefaultPath).ReadPending();
+    Console.WriteLine($"Pending Confirm receipts: {pending.Count} ({ConfirmationOutbox.DefaultPath})");
+    foreach (var payload in pending) Console.WriteLine(payload);
+    return 0;
+}
+
 // Enrollment must run before remote config bootstrap and without constructing hardware services.
 if (args.Length > 0 && args[0] == "license")
 {
@@ -83,6 +93,7 @@ var appSettings = new AppSettings
     StartMinimizedOnWindows = Cfg_Bool(config, "StartMinimizedOnWindows", true),
     Mqtt = new MqttSettings
     {
+        ConfirmApi = remoteConfig.ConfirmApi,
         Enabled           = Cfg_Bool  (config, "Mqtt:Enabled",           false),
         Host              = Cfg_String(config, "Mqtt:Host",              "localhost"),
         Port              = Cfg_Int   (config, "Mqtt:Port",              8883),
@@ -211,6 +222,11 @@ if (appSettings.Mqtt.Enabled)
         new DeviceLabelStore(
             appSettings.Mqtt.ClientDbPath,
             sp.GetRequiredService<ILogger<DeviceLabelStore>>()));
+    // Stable across versioned publish folders. Never store pending business events beside an updateable binary.
+    services.AddSingleton(sp => new ConfirmationOutbox(ConfirmationOutbox.DefaultPath,
+        $"{appSettings.Gateway.Host}:{appSettings.Gateway.Port}|{appSettings.Mqtt.Host}:{appSettings.Mqtt.Port}|{appSettings.Mqtt.CommandTopic}|{appSettings.Mqtt.EventTopic}",
+        sp.GetService<IP2LTelemetry>(), appSettings.Mqtt.EventTopic, sp.GetRequiredService<DeviceLabelStore>()));
+    services.AddSingleton<IConfirmationJournal>(sp => sp.GetRequiredService<ConfirmationOutbox>());
     services.AddSingleton<MqttBridgeService>();
 }
 // Offline buffer-only mode: MQTT disabled but OfflineBufferPath is configured.

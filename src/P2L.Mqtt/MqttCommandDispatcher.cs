@@ -74,7 +74,7 @@ internal sealed class MqttCommandDispatcher
                         P2LMqttJsonContext.Default.LightOnCmd);
                     if (cmd is null) break;
                     var buzMode = cmd.BuzMode ?? cmd.LedMode;
-                    await _engine.QuickLightAsync(cmd.Address, cmd.Quantity, cmd.Color, cmd.LedMode, buzMode, cmd.Label, cmd.BlockNo, cmd.CorrelationId, ct);
+                    await _engine.QuickLightAsync(cmd.Address, cmd.Quantity, cmd.Color, cmd.LedMode, buzMode, cmd.Label, cmd.BlockNo, cmd.CorrelationId, ct, cmd.CommandItemId, cmd.PickingDetailId);
                     _log.LogInformation("[MQTT] light_on addr={A} qty={Q} block={B}", cmd.Address, cmd.Quantity, cmd.BlockNo);
                     break;
                 }
@@ -124,6 +124,7 @@ internal sealed class MqttCommandDispatcher
                             BlockNo  = cmd.BlockNo,
                             Label    = i.Label,
                             CorrelationId = cmd.CorrelationId,
+                            CommandItemId = i.CommandItemId, PickingDetailId = i.PickingDetailId,
                         });
                     }
                     if (instructions.Count == 0)

@@ -14,6 +14,8 @@ using P2L.Hardware;
 using P2L.Hardware.Transport;
 using P2L.Mqtt;
 using P2L.Mqtt.Configuration;
+using P2L.Shared;
+using P2L.Shared.Models;
 using Spectre.Console.Cli;
 
 if (args.FirstOrDefault() == "--child") return await RunChild(args);
@@ -61,6 +63,7 @@ foreach (var connected in new[] {false, true})
         Require(elapsed.Elapsed < TimeSpan.FromSeconds(8), "Shutdown took too long");
         Require(File.ReadAllLines(Path.Combine(directory, "starts.txt")).Length == 1, "Self-heal spawned a replacement");
         Require(!File.Exists(Path.Combine(directory, "crash_history.jsonl")), "Clean shutdown was recorded as a crash");
+        Require(new ConfirmationOutbox(Path.Combine(directory, "confirms.db")).ReadPending().Count == 1, "Shutdown lost the unacknowledged Confirm");
         if (controller is not null)
         {
             var buffer = new byte[1];
@@ -71,7 +74,7 @@ foreach (var connected in new[] {false, true})
     finally
     {
         if (!process.HasExited) {process.Kill(entireProcessTree: true); await process.WaitForExitAsync();}
-        controller?.Dispose(); gateway.Stop(); mqtt.Stop(); Directory.Delete(directory, true);
+        controller?.Dispose(); gateway.Stop(); mqtt.Stop(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(directory, true);
     }
 }
 Console.WriteLine("All shutdown checks passed. Child fixtures only; no license API, vault or physical controller accessed.");
@@ -92,11 +95,15 @@ static async Task<int> RunChild(string[] arguments)
     services.AddSingleton(sp => new AioiGateway("127.0.0.1", int.Parse(arguments[2]), sp.GetRequiredService<ILogger<AioiGateway>>()));
     services.AddSingleton<LightModuleRegistry>(); services.AddSingleton<PickingEngine>();
     services.AddSingleton<HeartbeatService>(); services.AddSingleton<WatchdogService>(); services.AddSingleton<PreemptionGate>();
+    var outbox = new ConfirmationOutbox(Path.Combine(directory, "confirms.db"));
+    outbox.Record(new ConfirmationEvent {Address="0001"}, new LightModuleState {Address="0001",BlockNo="01",CorrelationId="SHUTDOWN-TEST"});
+    services.AddSingleton(outbox);
+    services.AddSingleton<IConfirmationJournal>(sp=>sp.GetRequiredService<ConfirmationOutbox>());
     services.AddSingleton<DeviceScanService>(); services.AddSingleton(new WebLogProvider());
     services.AddSingleton(sp => new DeviceLabelStore(settings.Mqtt.ClientDbPath, sp.GetRequiredService<ILogger<DeviceLabelStore>>()));
     services.AddSingleton(sp => new MqttBridgeService(settings.Mqtt, sp.GetRequiredService<AioiGateway>(), sp.GetRequiredService<PickingEngine>(),
         sp.GetRequiredService<LightModuleRegistry>(), sp.GetRequiredService<PreemptionGate>(), null, sp.GetRequiredService<DeviceLabelStore>(),
-        sp.GetRequiredService<DeviceScanService>(), sp.GetRequiredService<ILoggerFactory>()));
+        sp.GetRequiredService<DeviceScanService>(), sp.GetRequiredService<ILoggerFactory>(), confirmations:sp.GetRequiredService<ConfirmationOutbox>()));
     services.AddSingleton<DeviceCatalog>(sp => new DeviceCatalog(settings.Mqtt.ClientDbPath, sp.GetRequiredService<DeviceLabelStore>(), sp.GetRequiredService<LightModuleRegistry>()));
     services.AddSingleton(sp => new WebClientService(settings, sp.GetRequiredService<AioiGateway>(), sp.GetRequiredService<LightModuleRegistry>(),
         sp.GetRequiredService<PickingEngine>(), sp.GetRequiredService<DeviceCatalog>(), sp.GetRequiredService<WebLogProvider>(),

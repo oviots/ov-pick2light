@@ -25,6 +25,8 @@ namespace P2L.Mqtt;
 public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
 {
     private readonly Func<CancellationToken, Task>? _authorizeReconnect;
+    private readonly ConfirmationOutbox? _confirmations;
+    private readonly ConfirmationDeliveryService? _confirmationDelivery;
     private readonly MqttSettings          _settings;
     private readonly AioiGateway           _gateway;
     private readonly MqttCommandDispatcher _dispatcher;
@@ -51,9 +53,10 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                               DeviceLabelStore labelStore, DeviceScanService scanService,
                               ILoggerFactory loggerFactory,
                               Func<CancellationToken, Task>? authorizeReconnect = null,
-                              P2L.Shared.IP2LTelemetry? telemetry = null)
+                              P2L.Shared.IP2LTelemetry? telemetry = null, ConfirmationOutbox? confirmations = null)
     {
         _authorizeReconnect = authorizeReconnect;
+        _confirmations = confirmations;
         _settings    = settings;
         _gateway     = gateway;
         _gate        = gate;
@@ -61,6 +64,8 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
         _scanService = scanService;
         _log         = loggerFactory.CreateLogger<MqttBridgeService>();
         _client      = new MqttClientFactory().CreateMqttClient();
+        _confirmationDelivery = confirmations is null ? null : new ConfirmationDeliveryService(
+            confirmations, _client, settings.EventTopic, loggerFactory.CreateLogger<ConfirmationDeliveryService>(), settings.ConfirmApi);
         _publisher   = new MqttEventPublisher(_client, settings, engine, registry,
                            labelStore,
                            loggerFactory.CreateLogger<MqttEventPublisher>(), telemetry);
@@ -96,6 +101,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     public Task StartAsync(CancellationToken ct = default)
     {
         _publisher.Start();
+        _confirmationDelivery?.Start();
         _connectLoop = Task.Run(() => ConnectLoopAsync(_cts.Token), _cts.Token);
         _log.LogInformation("[MQTT] Bridge starting → {Host}:{Port} (TLS={Tls})",
             _settings.Host, _settings.Port, _settings.Tls.Enabled);
@@ -105,6 +111,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     public async ValueTask DisposeAsync()
     {
         await _cts.CancelAsync();
+        if (_confirmationDelivery is not null) await _confirmationDelivery.DisposeAsync();
         if (_connectLoop is not null)
             try { await _connectLoop; } catch (OperationCanceledException) { }
 
@@ -220,6 +227,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
         await _client.SubscribeAsync(sub, CancellationToken.None);
 
         // Publish online status
+        _confirmationDelivery?.Wake();
         _publisher.EnqueueStatus(online: true, gatewayConnected: _gateway.IsConnected);
     }
 
@@ -233,9 +241,37 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     private async Task OnMessageReceivedAsync(MqttApplicationMessageReceivedEventArgs args)
     {
         var payload = args.ApplicationMessage.Payload.ToArray();
+        if (TryHandleConfirmationAck(payload, args.ApplicationMessage.Retain)) return;
         // MQTT QoS acknowledgements should happen after command dispatch, not when
         // the payload is merely accepted into this process.
         await _dispatcher.HandleAsync(payload, _cts.Token);
+    }
+
+    private bool TryHandleConfirmationAck(byte[] payload, bool retained)
+    {
+        if (_confirmations is null) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return false;
+            static string? Text(JsonElement element, string name) =>
+                element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+            if (Text(root, "type") != "confirm_ack") return false;
+            if (retained) return true;
+            var id = Text(root, "eventId");
+            var block = Text(root, "blockNo");
+            var address = Text(root, "address");
+            var outcome = Text(root, "outcome");
+            if (id is null || block is null || address is null || outcome is null) return true;
+            if (_confirmations.Acknowledge(id, block, Text(root, "correlationId"), address, outcome))
+            {
+                if (outcome is "stored" or "applied") _log.LogDebug("[Confirm] WMS accepted event {EventId}", id);
+                else _log.LogWarning("[Confirm] WMS requires reconciliation: event {EventId}, block {Block}", id, block);
+            }
+            return true;
+        }
+        catch (JsonException) { return false; } // Existing dispatcher owns malformed command reporting.
     }
 
     // ─── Options builder ─────────────────────────────────────────────────

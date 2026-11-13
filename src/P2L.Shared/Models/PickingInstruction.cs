@@ -35,6 +35,10 @@ public sealed class PickingInstruction
     /// Optional caller-supplied trace ID carried through state and MQTT events.
     /// Reuse the same value for every command in one pick/batch session.
     /// </summary>
+    public string? CommandItemId { get; set; }
+    public string? PickingDetailId { get; set; }
+    public string AssignmentId { get; set; } = Guid.NewGuid().ToString("N");
+
     public string? CorrelationId { get; init; }
 
     /// <summary>Formats the quantity as the 5-character display data string.</summary>

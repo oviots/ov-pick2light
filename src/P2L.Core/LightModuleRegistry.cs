@@ -41,6 +41,9 @@ public sealed class LightModuleRegistry
                 BuzMode           = instruction.BuzMode,
                 BlockNo           = instruction.BlockNo,
                 CorrelationId     = instruction.CorrelationId,
+                CommandItemId = instruction.CommandItemId,
+                PickingDetailId = instruction.PickingDetailId,
+                AssignmentId = instruction.AssignmentId,
                 LastInstructionAt = DateTime.UtcNow,
             },
             (_, existing) =>
@@ -55,6 +58,9 @@ public sealed class LightModuleRegistry
                     existing.BuzMode           = instruction.BuzMode;
                     existing.BlockNo           = instruction.BlockNo;
                     existing.CorrelationId     = instruction.CorrelationId;
+                    existing.CommandItemId = instruction.CommandItemId;
+                    existing.PickingDetailId = instruction.PickingDetailId;
+                    existing.AssignmentId = instruction.AssignmentId;
                     existing.LastInstructionAt = DateTime.UtcNow;
                 }
                 return existing;
@@ -228,6 +234,9 @@ public sealed class LightModuleRegistry
                 AdjustedQuantity  = module.AdjustedQuantity,
                 BlockNo           = module.BlockNo,
                 CorrelationId     = module.CorrelationId,
+                CommandItemId = module.CommandItemId,
+                PickingDetailId = module.PickingDetailId,
+                AssignmentId = module.AssignmentId,
             };
         }
     }

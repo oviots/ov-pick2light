@@ -1,0 +1,116 @@
+{
+  "checkedAt": "2026-11-13T03:36:30.861834+00:00",
+  "production": {
+    "database": "sft_prod_ops_mml_aba_rocket",
+    "readOnly": true,
+    "sessionsRead": 12,
+    "detailsRead": 31,
+    "splitsRead": 3,
+    "latestSessionDate": {
+      "$date": "2026-11-12T14:09:40.805Z"
+    },
+    "sessionFields": [
+      "_id",
+      "Code",
+      "RocketCode",
+      "ClientCode",
+      "WarehouseCode",
+      "WarehouseSiteId",
+      "StoreCode",
+      "BlockCode",
+      "TotalItems",
+      "TotalQty",
+      "PickedQty",
+      "Status",
+      "CreatedDate"
+    ],
+    "detailFields": [
+      "_id",
+      "SessionCode",
+      "DemandSplitId",
+      "DemandDetailId",
+      "BlockCode",
+      "RocketCode",
+      "ClientCode",
+      "WarehouseCode",
+      "WarehouseSiteId",
+      "StoreCode",
+      "SKU",
+      "Uom",
+      "DemandQty",
+      "PickedQty",
+      "LocationLabel",
+      "SourceStorageId",
+      "LightAddress",
+      "Status",
+      "LightStatus"
+    ],
+    "blocks": [
+      {
+        "code": "01",
+        "zone": "BLOCK_001"
+      },
+      {
+        "code": "02",
+        "zone": "BLOCK_002"
+      },
+      {
+        "code": "03",
+        "zone": "BLOCK_003"
+      },
+      {
+        "code": "04",
+        "zone": "BLOCK_004"
+      }
+    ]
+  },
+  "controller": {
+    "host": "192.168.1.254",
+    "port": 5003,
+    "query": "Az0001..Az0030; no initialization/light command",
+    "modules": [
+      {
+        "address": "0008",
+        "status": "PowerOn",
+        "color": "Off",
+        "mode": "Off"
+      },
+      {
+        "address": "0014",
+        "status": "PowerOn",
+        "color": "Off",
+        "mode": "Off"
+      },
+      {
+        "address": "0017",
+        "status": "PowerOn",
+        "color": "Off",
+        "mode": "Off"
+      }
+    ]
+  },
+  "license": {
+    "api": "https://auth-supra.oviots.com",
+    "allowedBlocks": [
+      "01",
+      "02"
+    ],
+    "commandTopic": "p2l/uat/test01/commands",
+    "confirmTransport": "mqtt"
+  },
+  "uat": {
+    "host": "192.168.12.6",
+    "port": 37017,
+    "replicaSet": "rs0",
+    "database": "sft_uat_p2l_local_3lights_20261113",
+    "preflight": "passed; no MQTT connection or light commands",
+    "schedule": {
+      "collection": "SFT.ScheduleManagements",
+      "Name": "PICK_2_LIGHT_SCHEDULE",
+      "Status": "ENABLED",
+      "IsDeleted": 0
+    },
+    "wmsEntryPoint": "pick2light/schedule.start()",
+    "blocksHaveMqttConfig": true
+  }
+}
