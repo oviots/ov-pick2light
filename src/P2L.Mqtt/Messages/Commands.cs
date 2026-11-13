@@ -40,6 +40,7 @@ public sealed record LightOffCmd : MqttCommand
 /// <summary>Start a picking batch across multiple modules.</summary>
 public sealed record BatchStartCmd : MqttCommand
 {
+    public bool Relight { get; init; }
     public string                     BlockNo { get; init; } = "00";
     public LightColor                 Color   { get; init; } = LightColor.Green;
     public LightState                 LedMode { get; init; } = LightState.On;

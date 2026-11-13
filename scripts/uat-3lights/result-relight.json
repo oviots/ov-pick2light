@@ -1,0 +1,135 @@
+{
+  "stock": [
+    {
+      "LocationLabel": "TEST_BIN_0008",
+      "Qty": 86,
+      "PendingOutQty": 0
+    },
+    {
+      "LocationLabel": "TEST_BIN_0014",
+      "Qty": 81,
+      "PendingOutQty": 0
+    },
+    {
+      "LocationLabel": "TEST_BIN_0017",
+      "Qty": 83,
+      "PendingOutQty": 0
+    }
+  ],
+  "checkedAt": "2026-11-13T08:15:00.813Z",
+  "database": "sft_uat_p2l_local_3lights_20261113",
+  "batch": "P2L-RELIGHT-20261113-01",
+  "sessions": [
+    {
+      "Code": "430200000007",
+      "BlockCode": "02",
+      "TotalQty": 2,
+      "PickedQty": 2,
+      "Status": "Completed",
+      "IsRelightRequested": false
+    },
+    {
+      "Code": "430100000007",
+      "BlockCode": "01",
+      "TotalQty": 5,
+      "PickedQty": 5,
+      "Status": "Completed",
+      "IsRelightRequested": false
+    }
+  ],
+  "details": [
+    {
+      "SessionCode": "430100000007",
+      "DemandQty": 3,
+      "PickedQty": 3,
+      "LightAddress": "0008",
+      "Status": "Completed",
+      "LightLedMode": "Flash",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430100000007",
+      "DemandQty": 2,
+      "PickedQty": 2,
+      "LightAddress": "0014",
+      "Status": "Completed",
+      "LightLedMode": "Flash",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430200000007",
+      "DemandQty": 2,
+      "PickedQty": 2,
+      "LightAddress": "0017",
+      "Status": "Completed",
+      "LightLedMode": "Flash",
+      "LightStatus": "Confirmed"
+    }
+  ],
+  "signals": [
+    {
+      "Key": "2e5439a597e0464cb56deb4078e9dbba",
+      "SessionCode": "430100000007",
+      "Status": "Done",
+      "Data": {
+        "pickingDetailId": "6af6c5ff9a1b468dfcc0e296",
+        "address": "0014",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "5c4945eb3d8b4477b941c85c7af6a9d7",
+      "SessionCode": "430100000007",
+      "Status": "Done",
+      "Data": {
+        "pickingDetailId": "6af6c5ff9a1b468dfcc0e293",
+        "address": "0008",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "9df2fc7f3bb24409bc944f5e9cea8b8d",
+      "SessionCode": "430200000007",
+      "Status": "Done",
+      "Data": {
+        "pickingDetailId": "6af6c5fe9a1b468dfcc0e283",
+        "address": "0017",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    }
+  ],
+  "transactions": [
+    {
+      "_id": "OUT",
+      "count": 3,
+      "qty": -7
+    },
+    {
+      "_id": "IN",
+      "count": 3,
+      "qty": 7
+    },
+    {
+      "_id": "RESERVE",
+      "count": 3,
+      "qty": 7
+    }
+  ],
+  "duplicateTransactions": [],
+  "localPendingConfirmCount": 0,
+  "observedRelight": {
+    "block": "01",
+    "session": "430100000007",
+    "offAt": "2026-11-13 15:13:09",
+    "relightAt": "2026-11-13 15:13:32",
+    "relightedAddresses": [
+      "0008"
+    ],
+    "quantity": 3,
+    "alreadyConfirmedAddressNotRelit": "0014",
+    "transport": "mqtt"
+  }
+}

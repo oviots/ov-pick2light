@@ -1,0 +1,187 @@
+{
+  "checkedAt": "2026-11-13T07:49:55.455Z",
+  "database": "sft_uat_p2l_local_3lights_20261113",
+  "batch": "P2L-API-20261113-R15-01",
+  "sessions": [
+    {
+      "Code": "430200000003",
+      "BlockCode": "02",
+      "TotalQty": 2,
+      "PickedQty": 2,
+      "Status": "Completed"
+    },
+    {
+      "Code": "430100000003",
+      "BlockCode": "01",
+      "TotalQty": 5,
+      "PickedQty": 5,
+      "Status": "Completed"
+    },
+    {
+      "Code": "430200000004",
+      "BlockCode": "02",
+      "TotalQty": 3,
+      "PickedQty": 3,
+      "Status": "Completed"
+    },
+    {
+      "Code": "430100000004",
+      "BlockCode": "01",
+      "TotalQty": 5,
+      "PickedQty": 5,
+      "Status": "Completed"
+    }
+  ],
+  "details": [
+    {
+      "SessionCode": "430100000003",
+      "DemandQty": 3,
+      "PickedQty": 3,
+      "LightAddress": "0008",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430100000003",
+      "DemandQty": 2,
+      "PickedQty": 2,
+      "LightAddress": "0014",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430100000004",
+      "DemandQty": 1,
+      "PickedQty": 1,
+      "LightAddress": "0008",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430100000004",
+      "DemandQty": 4,
+      "PickedQty": 4,
+      "LightAddress": "0014",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430200000003",
+      "DemandQty": 2,
+      "PickedQty": 2,
+      "LightAddress": "0017",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    },
+    {
+      "SessionCode": "430200000004",
+      "DemandQty": 3,
+      "PickedQty": 3,
+      "LightAddress": "0017",
+      "Status": "Completed",
+      "LightStatus": "Confirmed"
+    }
+  ],
+  "signals": [
+    {
+      "Key": "857778f71df04b9cb8b86e137dfcd4bc",
+      "SessionCode": "430100000003",
+      "Status": "Done",
+      "Data": {
+        "pickingDetailId": "6af6bb4e9c6d4c09e280cb62",
+        "address": "0014",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "a20de5d7909b4e85bc51a992be2c2e87",
+      "SessionCode": "430100000003",
+      "Status": "Done",
+      "Data": {
+        "pickingDetailId": "6af6bb4e9c6d4c09e280cb60",
+        "address": "0008",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "b082a3f1d303473a80143b4f4acf34e0",
+      "SessionCode": "430100000004",
+      "Status": "Done",
+      "Data": {
+        "pickingDetailId": "6af6c0759c6d4c09e280dba0",
+        "address": "0014",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "bdd69031a3a04892b2012462ce6dedf2",
+      "SessionCode": "430100000004",
+      "Status": "Done",
+      "Data": {
+        "pickingDetailId": "6af6c0759c6d4c09e280db9d",
+        "address": "0008",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "d53dc8200016494784dacad03235f3a4",
+      "SessionCode": "430200000003",
+      "Status": "Done",
+      "Data": {
+        "pickingDetailId": "6af6bb4d9c6d4c09e280cb4d",
+        "address": "0017",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    },
+    {
+      "Key": "4e7935fdb23c4aecb154b7bee303e2e5",
+      "SessionCode": "430200000004",
+      "Status": "Done",
+      "Data": {
+        "pickingDetailId": "6af6bb6f9c6d4c09e280cc2a",
+        "address": "0017",
+        "transport": "mqtt"
+      },
+      "__vjob_result": null
+    }
+  ],
+  "transactions": [
+    {
+      "_id": "OUT",
+      "count": 6,
+      "qty": -15
+    },
+    {
+      "_id": "IN",
+      "count": 6,
+      "qty": 15
+    },
+    {
+      "_id": "RESERVE",
+      "count": 6,
+      "qty": 15
+    }
+  ],
+  "duplicateTransactions": [],
+  "localPendingConfirmCount": 0,
+  "verifiedBinStock": {
+    "0008": {
+      "Qty": 93,
+      "PendingOutQty": 0
+    },
+    "0014": {
+      "Qty": 89,
+      "PendingOutQty": 0
+    },
+    "0017": {
+      "Qty": 90,
+      "PendingOutQty": 0
+    }
+  },
+  "observedTransport": "mqtt"
+}

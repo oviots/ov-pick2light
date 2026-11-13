@@ -27,6 +27,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     private readonly Func<CancellationToken, Task>? _authorizeReconnect;
     private readonly ConfirmationOutbox? _confirmations;
     private readonly ConfirmationDeliveryService? _confirmationDelivery;
+    private readonly PickSessionPollingService? _pickSessionPolling;
     private readonly MqttSettings          _settings;
     private readonly AioiGateway           _gateway;
     private readonly MqttCommandDispatcher _dispatcher;
@@ -73,6 +74,10 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                            labelStore, scanService,
                            loggerFactory.CreateLogger<MqttCommandDispatcher>(), telemetry, settings.CommandTopic);
         _options     = BuildOptions(settings);
+        if (settings.PickSessionApi.Enabled)
+            _pickSessionPolling = new PickSessionPollingService(settings.PickSessionApi, registry,
+                (payload, ct) => _dispatcher.HandleApiAsync(payload, ct),
+                loggerFactory.CreateLogger<PickSessionPollingService>());
 
         _client.ApplicationMessageReceivedAsync += OnMessageReceivedAsync;
         _client.ConnectedAsync    += OnConnectedAsync;
@@ -102,6 +107,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     {
         _publisher.Start();
         _confirmationDelivery?.Start();
+        _pickSessionPolling?.Start();
         _connectLoop = Task.Run(() => ConnectLoopAsync(_cts.Token), _cts.Token);
         _log.LogInformation("[MQTT] Bridge starting → {Host}:{Port} (TLS={Tls})",
             _settings.Host, _settings.Port, _settings.Tls.Enabled);
@@ -111,6 +117,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     public async ValueTask DisposeAsync()
     {
         await _cts.CancelAsync();
+        if (_pickSessionPolling is not null) await _pickSessionPolling.DisposeAsync();
         if (_confirmationDelivery is not null) await _confirmationDelivery.DisposeAsync();
         if (_connectLoop is not null)
             try { await _connectLoop; } catch (OperationCanceledException) { }

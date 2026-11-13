@@ -11,6 +11,7 @@ internal sealed class RemoteConfigProvider : IDisposable
     private readonly LicenseApiClient _api;
     private string? _startupConfig;
     public P2L.Mqtt.Configuration.ConfirmApiSettings ConfirmApi { get; private set; } = new();
+    public P2L.Mqtt.Configuration.PickSessionApiSettings PickSessionApi { get; private set; } = new();
     public AxiomSettings? Axiom { get; private set; }
     public string[]? BlockNos { get; private set; }
     public RemoteConfigProvider() => _api = new(Environment.GetEnvironmentVariable("P2L_LICENSE_API_URL"));
@@ -49,6 +50,7 @@ internal sealed class RemoteConfigProvider : IDisposable
             values["Mqtt:" + char.ToUpperInvariant(topic[0]) + topic[1..]] = value;
         }
         ConfirmApi = P2L.Mqtt.Configuration.ConfirmApiSettings.FromRemote(result);
+        PickSessionApi = P2L.Mqtt.Configuration.PickSessionApiSettings.FromRemote(result, BlockNos ?? [block]);
         Axiom = AxiomSettings.FromRemote(result);
         _startupConfig = result.GetRawText();
         return values;

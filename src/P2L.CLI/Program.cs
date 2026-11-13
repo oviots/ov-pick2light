@@ -94,6 +94,7 @@ var appSettings = new AppSettings
     Mqtt = new MqttSettings
     {
         ConfirmApi = remoteConfig.ConfirmApi,
+        PickSessionApi = remoteConfig.PickSessionApi,
         Enabled           = Cfg_Bool  (config, "Mqtt:Enabled",           false),
         Host              = Cfg_String(config, "Mqtt:Host",              "localhost"),
         Port              = Cfg_Int   (config, "Mqtt:Port",              8883),

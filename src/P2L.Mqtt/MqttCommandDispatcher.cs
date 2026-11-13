@@ -44,9 +44,13 @@ internal sealed class MqttCommandDispatcher
         _commandTopic = commandTopic;
     }
 
-    public async Task HandleAsync(byte[] payload, CancellationToken ct)
+    public Task HandleAsync(byte[] payload, CancellationToken ct) => HandleCommandAsync(payload, ct, fromApi: false);
+
+    public Task HandleApiAsync(byte[] payload, CancellationToken ct) => HandleCommandAsync(payload, ct, fromApi: true);
+
+    private async Task HandleCommandAsync(byte[] payload, CancellationToken ct, bool fromApi)
     {
-        _telemetry?.Record("command_received", _commandTopic, System.Text.Encoding.UTF8.GetString(payload));
+        if (!fromApi) _telemetry?.Record("command_received", _commandTopic, System.Text.Encoding.UTF8.GetString(payload));
         string type;
         try
         {
@@ -132,8 +136,9 @@ internal sealed class MqttCommandDispatcher
                         _log.LogWarning("[MQTT] batch_start: no valid items after address resolution — command ignored");
                         break;
                     }
-                    await _engine.StartBatchAsync(instructions, ct);
-                    _log.LogInformation("[MQTT] batch_start count={C} block={B}", instructions.Count, cmd.BlockNo);
+                    if (fromApi) await _engine.ApplyApiBatchAsync(instructions, cmd.Relight, ct);
+                    else await _engine.StartBatchAsync(instructions, ct);
+                    if (!fromApi) _log.LogInformation("[MQTT] batch_start count={C} block={B}", instructions.Count, cmd.BlockNo);
                     break;
                 }
 

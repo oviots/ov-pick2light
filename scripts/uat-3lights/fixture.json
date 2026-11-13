@@ -1,7 +1,7 @@
 {
   "database": "sft_uat_p2l_local_3lights_20261113",
   "fixture": "P2L-LOCAL-3LIGHTS-20261113",
-  "scope": {"ClientCode":"P2L_TEST", "WarehouseCode":"LOCAL", "WarehouseSiteId":"LOCAL_3LIGHTS"},
+  "scope": {"ClientCode":"MML", "WarehouseCode":"MIENNAM", "WarehouseSiteId":"1335"},
   "rocketCode":"P2L-LOCAL-3LIGHTS-20261113",
   "gateway":{"host":"192.168.1.254","port":5003,"blockNos":["01","02"]},
   "blocks":[

@@ -17,7 +17,7 @@ public sealed class PickingEngine : IDisposable
     {
         public required string BlockNo { get; init; }
         public required string? CorrelationId { get; init; }
-        public required string Signature { get; init; }
+        public required string Signature { get; set; }
         public HashSet<string> PendingAddresses { get; } = new();
         public HashSet<string> Addresses { get; } = new();
         public bool DispatchUncertain { get; set; }
@@ -114,6 +114,63 @@ public sealed class PickingEngine : IDisposable
     }
 
     /// <summary>Block 00 is the explicit global stop. Other values affect only that block.</summary>
+    /// <summary>Apply a WMS snapshot without replaying lights already received through MQTT or API.</summary>
+    public async Task ApplyApiBatchAsync(IReadOnlyList<PickingInstruction> instructions, bool relight = false, CancellationToken ct = default)
+    {
+        if (instructions.Count == 0) return;
+        var block = instructions[0].BlockNo;
+        var correlation = instructions[0].CorrelationId;
+        _blocks.Validate(block);
+        if (string.IsNullOrEmpty(correlation) || instructions.Any(i => i.BlockNo != block || i.CorrelationId != correlation || string.IsNullOrEmpty(i.PickingDetailId)))
+            throw new InvalidOperationException("API batch requires one block, session and exact detail IDs.");
+        if (instructions.Select(i => Address(i.Address)).Distinct().Count() != instructions.Count)
+            throw new InvalidOperationException("Duplicate address in API batch.");
+        await _operations.WaitAsync(ct);
+        try
+        {
+            BatchState batch;
+            List<PickingInstruction> lights;
+            lock (_lock)
+            {
+                if (_activeBatches.TryGetValue(block, out var current) &&
+                    (current.CorrelationId != correlation || current.Finishing || (current.DispatchUncertain && !relight)))
+                    throw new InvalidOperationException($"Block {block} belongs to another or uncertain session.");
+                var pending = instructions.Where(i =>
+                {
+                    var previous = _registry.Get(i.Address);
+                    var same = previous?.BlockNo == block && previous.CorrelationId == correlation && previous.PickingDetailId == i.PickingDetailId;
+                    if (same && previous!.DisplayData != i.FormattedDisplay)
+                        throw new InvalidOperationException("A command item cannot change quantity when retried.");
+                    if (same && (!relight || previous!.Status != ModuleStatus.Operating)) return false;
+                    return !WasConfirmed(i.PickingDetailId);
+                }).ToArray();
+                if (pending.Length == 0) return;
+                ValidateOwnership(block, correlation, pending.Select(i => Address(i.Address)));
+                batch = current ?? new BatchState {BlockNo = block, CorrelationId = correlation, Signature = ""};
+                _activeBatches[block] = batch;
+                foreach (var instruction in pending)
+                {
+                    var address = Address(instruction.Address);
+                    batch.Addresses.Add(address); batch.PendingAddresses.Add(address);
+                    _registry.SetInstructed(instruction);
+                }
+                lights = _registry.All.Where(m => m.BlockNo == block && m.Status == ModuleStatus.Operating)
+                    .Select(m => new PickingInstruction {Address = m.Address, Quantity = int.Parse(m.DisplayData.Trim()),
+                        Color = m.Color, LedMode = m.LedMode, SegMode = m.SegMode, BuzMode = m.BuzMode,
+                        BlockNo = m.BlockNo, CorrelationId = m.CorrelationId}).ToList();
+            }
+            try
+            {
+                try { await _gateway.InstructBatchAsync(lights, ct); }
+                catch (AioiNackException) { await _gateway.OverwriteBatchAsync(lights, ct); }
+                lock (_lock) { batch.DispatchUncertain = false; batch.Signature = BuildBatchSignature(instructions); }
+                _log.LogInformation("[PickSession API] Applied session {Session}, block {Block}, relight={Relight}", correlation, block, relight);
+            }
+            catch { lock (_lock) batch.DispatchUncertain = true; throw; }
+        }
+        finally { _operations.Release(); }
+    }
+
     public async Task FinishBatchAsync(string blockNo = "00", CancellationToken ct = default, string? correlationId = null)
     {
         if (blockNo != "00") _blocks.Validate(blockNo);
