@@ -21,6 +21,12 @@ namespace P2L.CLI.Web;
 /// <summary>Loopback-only UI hosted in the Bridge process. Never reads a key or exposes broker credentials.</summary>
 internal sealed class WebClientService : IAsyncDisposable
 {
+    // RecursiveDir metadata uses backslashes when the assembly is built on Windows.
+    private static readonly Dictionary<string, string> AssetNames = typeof(WebClientService).Assembly
+        .GetManifestResourceNames()
+        .Where(name => name.StartsWith("P2L.Web/", StringComparison.Ordinal))
+        .ToDictionary(name => name.Replace('\\', '/'), name => name, StringComparer.Ordinal);
+
     private readonly AppSettings _settings;
     private readonly AioiGateway _gateway;
     private readonly LightModuleRegistry _registry;
@@ -155,7 +161,9 @@ internal sealed class WebClientService : IAsyncDisposable
     private async Task AssetAsync(HttpContext context)
     {
         var path = context.Request.Path == "/" ? "index.html" : context.Request.Path.Value!.TrimStart('/');
-        await using var stream = typeof(WebClientService).Assembly.GetManifestResourceStream("P2L.Web/" + path);
+        if (!AssetNames.TryGetValue("P2L.Web/" + path, out var resource))
+        { context.Response.StatusCode = 404; return; }
+        await using var stream = typeof(WebClientService).Assembly.GetManifestResourceStream(resource);
         if (stream is null) { context.Response.StatusCode = 404; return; }
         var extension = Path.GetExtension(path);
         context.Response.ContentType = extension switch {".js" => "application/javascript; charset=utf-8", ".css" => "text/css; charset=utf-8", ".html" => "text/html; charset=utf-8", ".svg" => "image/svg+xml", _ => "application/octet-stream"};

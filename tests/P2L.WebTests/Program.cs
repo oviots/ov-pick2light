@@ -55,7 +55,8 @@ try
     }
     var page = await http.GetStringAsync("/");
     Require(page.Contains("/static/js/integrated.js") && page.Contains("Dashboard"), "Embedded page missing");
-    Require((await http.GetAsync("/static/js/app.js")).Content.Headers.ContentType!.MediaType == "application/javascript", "JS MIME type");
+    using var script = await http.GetAsync("/static/js/app.js");
+    Require(script.IsSuccessStatusCode && script.Content.Headers.ContentType?.MediaType == "application/javascript", "Embedded JS missing or wrong MIME type");
     Require((await http.GetStringAsync("/static/js/integrated.js")).Contains("Bridge owns license"), "Integrated overlay missing");
     Require((await http.GetAsync("/static/css/style.css")).IsSuccessStatusCode, "CSS missing");
     Console.WriteLine("PASS: HTML, JS and CSS embedded in the Bridge assembly");
