@@ -29,6 +29,10 @@ internal static class TlsChecks
             using var signed = leafRequest.Create(root, DateTimeOffset.UtcNow.AddDays(-2),
                 scenario == "expired" ? DateTimeOffset.UtcNow.AddDays(-1) : DateTimeOffset.UtcNow.AddDays(2), RandomNumberGenerator.GetBytes(16));
             using var leaf = signed.CopyWithPrivateKey(leafKey);
+            // Schannel requires a persisted private key for the local TLS server.
+            using var windowsLeaf = OperatingSystem.IsWindows()
+                ? X509CertificateLoader.LoadPkcs12(leaf.Export(X509ContentType.Pfx), null)
+                : null;
             using var otherKey = RSA.Create(2048);
             using var other = new CertificateRequest("CN=Unknown CA", otherKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
                 .CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
@@ -40,7 +44,7 @@ internal static class TlsChecks
                 {
                     using var tcp = await listener.AcceptTcpClientAsync(timeout.Token);
                     using var ssl = new SslStream(tcp.GetStream());
-                    await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions {ServerCertificate = leaf}, timeout.Token);
+                    await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions {ServerCertificate = windowsLeaf ?? leaf}, timeout.Token);
                     var header = new byte[2];
                     await ssl.ReadExactlyAsync(header, timeout.Token);
                     var length = header[1] & 127;
@@ -59,7 +63,11 @@ internal static class TlsChecks
                     await ssl.WriteAsync(packet[6] == 5 ? new byte[] {0x20, 3, 0, 0, 0} : new byte[] {0x20, 2, 0, 0}, timeout.Token);
                     return true;
                 }
-                catch (Exception ex) when (ex is System.Security.Authentication.AuthenticationException or IOException) { return false; }
+                catch (Exception ex) when (ex is System.Security.Authentication.AuthenticationException or IOException)
+                {
+                    Console.WriteLine($"TLS fixture server ({scenario}): {ex.Message}; {ex.InnerException?.Message}");
+                    return false;
+                }
             });
             var settings = new MqttSettings {Host = "localhost", Port = ((IPEndPoint)listener.LocalEndpoint).Port,
                 Username = "fixture-user", Password = "fixture-password",
@@ -68,7 +76,10 @@ internal static class TlsChecks
             using var client = new MqttClientFactory().CreateMqttClient();
             var accepted = false;
             try { await client.ConnectAsync(options, timeout.Token); accepted = true; }
-            catch (MQTTnet.Exceptions.MqttCommunicationException) { }
+            catch (MQTTnet.Exceptions.MqttCommunicationException ex)
+            {
+                Console.WriteLine($"TLS fixture client ({scenario}): {ex.Message}; {ex.InnerException?.Message}");
+            }
             finally { listener.Stop(); }
             var credentialsSent = await server;
             if (accepted != (scenario == "valid") || credentialsSent != accepted) throw new Exception("TLS validation failed: " + scenario);

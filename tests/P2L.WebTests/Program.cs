@@ -95,7 +95,7 @@ try
     using var socket = new ClientWebSocket();
     socket.Options.SetRequestHeader("Origin", server.Url);
     await socket.ConnectAsync(new Uri(server.Url.Replace("http:", "ws:") + "/ws"), default);
-    async Task<JsonObject> ReceiveUntil(string type)
+    async Task<JsonObject> ReceiveUntil(string type, Func<JsonObject, bool>? matches = null)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         var bytes = new byte[65536];
@@ -105,13 +105,15 @@ try
             WebSocketReceiveResult received;
             do { received = await socket.ReceiveAsync(bytes, timeout.Token); full.Write(bytes, 0, received.Count); } while (!received.EndOfMessage);
             var frame = JsonNode.Parse(full.ToArray())!.AsObject();
-            if (frame["type"]?.GetValue<string>() == type) return frame;
+            if (frame["type"]?.GetValue<string>() == type && (matches is null || matches(frame))) return frame;
         }
     }
     var init = await ReceiveUntil("init");
     Require(init["data"]!["devices"]!.AsArray().Count == 1, "WS initial devices missing");
     registry.SetInstructed(new PickingInstruction {Address = "0008", Quantity = 5, Color = LightColor.Blue, BlockNo = "01"});
-    var update = await ReceiveUntil("state_update");
+    // A periodic snapshot queued before SetInstructed can arrive first.
+    var update = await ReceiveUntil("state_update", frame =>
+        frame["data"]![0]!["status"]!.GetValue<string>() == "OPERATING");
     Require(update["data"]![0]!["status"]!.GetValue<string>() == "OPERATING", "WS does not reflect core state");
     await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", default);
     Console.WriteLine("PASS: WebSocket init and live device state share Bridge registry");
