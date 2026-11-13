@@ -35,7 +35,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     private readonly DeviceScanService     _scanService;
     private readonly ILogger               _log;
     private readonly IMqttClient           _client;
-    private readonly MqttClientOptions     _options;
+    private readonly MqttClientOptions?    _options;
     private readonly PreemptionGate        _gate;
     private readonly CsvPickTaskRunner?    _csvRunner;
 
@@ -73,7 +73,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
         _dispatcher  = new MqttCommandDispatcher(engine, _publisher, gate, csvRunner,
                            labelStore, scanService,
                            loggerFactory.CreateLogger<MqttCommandDispatcher>(), telemetry, settings.CommandTopic);
-        _options     = BuildOptions(settings);
+        _options     = settings.Enabled ? BuildOptions(settings) : null;
         if (settings.PickSessionApi.Enabled)
             _pickSessionPolling = new PickSessionPollingService(settings.PickSessionApi, registry,
                 (payload, ct) => _dispatcher.HandleApiAsync(payload, ct),
@@ -93,11 +93,12 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
     }
 
     public bool IsConnected => _client.IsConnected;
+    public bool MqttEnabled => _settings.Enabled;
 
     /// <summary>Local UI commands share the MQTT dispatcher's gate and ordering without requiring extra broker ACLs.</summary>
     public Task HandleLocalCommandAsync(byte[] payload, CancellationToken ct = default)
     {
-        if (!_client.IsConnected) throw new InvalidOperationException("MQTT broker is disconnected");
+        if (_settings.Enabled && !_client.IsConnected) throw new InvalidOperationException("MQTT broker is disconnected");
         return _dispatcher.HandleAsync(payload, ct);
     }
 
@@ -108,9 +109,13 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
         _publisher.Start();
         _confirmationDelivery?.Start();
         _pickSessionPolling?.Start();
-        _connectLoop = Task.Run(() => ConnectLoopAsync(_cts.Token), _cts.Token);
-        _log.LogInformation("[MQTT] Bridge starting → {Host}:{Port} (TLS={Tls})",
-            _settings.Host, _settings.Port, _settings.Tls.Enabled);
+        if (_settings.Enabled)
+        {
+            _connectLoop = Task.Run(() => ConnectLoopAsync(_cts.Token), _cts.Token);
+            _log.LogInformation("[MQTT] Bridge starting → {Host}:{Port} (TLS={Tls})",
+                _settings.Host, _settings.Port, _settings.Tls.Enabled);
+        }
+        else _log.LogInformation("[MQTT] Disabled; API transport started");
         return Task.CompletedTask;
     }
 
@@ -163,7 +168,7 @@ public sealed class MqttBridgeService : IAsyncDisposable, IDisposable
                     connectCts.CancelAfter(TimeSpan.FromSeconds(15));
 
                     if (_authorizeReconnect is not null) await _authorizeReconnect(connectCts.Token);
-                    await _client.ConnectAsync(_options, connectCts.Token);
+                    await _client.ConnectAsync(_options!, connectCts.Token);
                     delay = TimeSpan.FromSeconds(0.5); // reset back-off on success
 
                     // Wait here until the broker disconnects us

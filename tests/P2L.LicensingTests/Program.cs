@@ -15,6 +15,15 @@ static async Task Reject(Func<Task> action)
     throw new Exception("Expected rejection");
 }
 
+using (var defaults = new LicenseApiClient(null, new FakeHandler(request =>
+{
+    Require(request.RequestUri!.AbsoluteUri == "https://auth-supra.winmart.vn/api/p2l/v1/challenge", "Production license URL default");
+    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) {
+        Content = new StringContent("{\"Status\":true,\"Data\":{}}"),
+    });
+}))) await defaults.PostAsync("challenge", new JsonObject(), default);
+Console.WriteLine("PASS: missing license API URL defaults to production");
+
 using var key = RSA.Create(2048);
 var code = "P2L-" + new string('A', 48);
 var id = Convert.ToHexStringLower(SHA256.HashData(key.ExportSubjectPublicKeyInfo()));

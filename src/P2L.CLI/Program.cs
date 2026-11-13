@@ -16,6 +16,12 @@ using P2L.Mqtt.Configuration;
 using P2L.Shared.Constants;
 using Spectre.Console.Cli;
 
+if (args is ["--version"])
+{
+    Console.WriteLine(typeof(RemoteConfigProvider).Assembly.GetName().Version!.ToString(3));
+    return 0;
+}
+
 // Inspect local business receipts even when authen or MQTT is unreachable.
 if (args is ["confirms"])
 {
@@ -41,9 +47,11 @@ if (args.Length > 0 && args[0] == "license")
 
 // ─── Configuration ────────────────────────────────────────────────────────
 
-// ProgramData\P2L — writable by NT SERVICE\* accounts; used for logs and DB.
+// Windows services use ProgramData; desktop platforms use the current user's data directory.
 var appDataBase = Path.Combine(
-    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+    Environment.GetFolderPath(OperatingSystem.IsWindows()
+        ? Environment.SpecialFolder.CommonApplicationData
+        : Environment.SpecialFolder.LocalApplicationData),
     "P2L");
 
 var config = new ConfigurationBuilder()
@@ -87,13 +95,14 @@ var appSettings = new AppSettings
         Port    = Cfg_Int   (config, "Gateway:Port",    AioiConstants.DefaultTcpPort),
         BlockNo = Cfg_String(config, "Gateway:BlockNo", "00"),
     },
-    LogDirectory        = Cfg_String(config, "LogDirectory",        Path.Combine(appDataBase, "logs")),
+    LogDirectory        = Cfg_String(config, "LogDirectory",        Path.Combine(AppContext.BaseDirectory, "logs")),
     MaxLogFileSizeBytes = Cfg_Long  (config, "MaxLogFileSizeBytes", 10 * 1024 * 1024),
     EnableStatePersistence = Cfg_Bool(config, "EnableStatePersistence", false),
     StartMinimizedOnWindows = Cfg_Bool(config, "StartMinimizedOnWindows", true),
     Mqtt = new MqttSettings
     {
         ConfirmApi = remoteConfig.ConfirmApi,
+        AckApi = remoteConfig.AckApi,
         PickSessionApi = remoteConfig.PickSessionApi,
         Enabled           = Cfg_Bool  (config, "Mqtt:Enabled",           false),
         Host              = Cfg_String(config, "Mqtt:Host",              "localhost"),
@@ -215,8 +224,8 @@ services.AddSingleton(sp => new CsvPickTaskRunner(sp.GetRequiredService<PickingE
 if (appSettings.EnableStatePersistence)
     services.AddSingleton<RegistryPersistenceService>();
 
-// MQTT bridge (optional — only registered when Enabled=true)
-if (appSettings.Mqtt.Enabled)
+// The bridge also owns API polling/delivery, independent of the MQTT connection.
+if (appSettings.Mqtt.Enabled || appSettings.Mqtt.PickSessionApi.Enabled || appSettings.Mqtt.ConfirmApi.Enabled)
 {
     services.AddSingleton(appSettings.Mqtt);
     services.AddSingleton(sp =>
@@ -275,7 +284,7 @@ var app        = new CommandApp<RootCommand>(registrar);
 app.Configure(cfg =>
 {
     cfg.SetApplicationName("p2l");
-    cfg.SetApplicationVersion("1.0.0");
+    cfg.SetApplicationVersion(typeof(RemoteConfigProvider).Assembly.GetName().Version!.ToString(3));
 
     cfg.AddBranch("light", branch =>
     {

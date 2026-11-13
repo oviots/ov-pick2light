@@ -1,416 +1,107 @@
-# .github/workflows/build-all.yml
-# Cross-platform build: Linux x64/arm64, macOS arm64/x64, Windows x64
-#
-# Trigger:
-#   - Manual: Actions → "Build All Platforms" → Run workflow
-#   - Tag:    git tag v1.0.0 && git push origin v1.0.0
-#
-# Outputs (GitHub Artifacts + Release on tag):
-#   p2l-<version>-linux-x64.tar.gz
-#   p2l-<version>-linux-arm64.tar.gz
-#   p2l-<version>-osx-arm64.tar.gz
-#   p2l-<version>-osx-x64.tar.gz
-#   p2l-<version>-win-x64.zip
-#   P2L-<version>-x64.msi
-
 name: Build All Platforms
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version (e.g. 1.0.0)"
+        description: 'Release version (X.Y.Z)'
         required: true
-        default: "1.0.0"
-      targets:
-        description: "Platforms to build"
-        required: true
-        default: all
-        type: choice
-        options: [all, linux, windows, macos]
+        default: '1.0.3'
   push:
-    tags:
-      - "v*"
+    tags: ['v*']
+
+permissions:
+  contents: read
 
 env:
-  VERSION: ${{ github.event.inputs.version || '1.0.0' }}
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ── Linux x64 ──────────────────────────────────────────────────────────────
-  linux-x64:
-    name: Linux x64
+  version:
     runs-on: ubuntu-24.04
-    if: |
-      github.event_name == 'push' ||
-      github.event.inputs.targets == 'all' ||
-      github.event.inputs.targets == 'linux'
+    outputs:
+      value: ${{ steps.resolve.outputs.value }}
+    steps:
+      - id: resolve
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          VERSION="$REQUESTED_VERSION"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VERSION="${GITHUB_REF#refs/tags/v}"; fi
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release version'; exit 1; }
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    name: ${{ matrix.runtime }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: linux-x64
+            runner: ubuntu-24.04
+          - runtime: linux-arm64
+            runner: ubuntu-24.04-arm
+          - runtime: osx-x64
+            runner: macos-15-intel
+          - runtime: osx-arm64
+            runner: macos-15
+          - runtime: win-x64
+            runner: windows-latest
+          - runtime: win-arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "10.x"
-
+          dotnet-version: '10.x'
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
-      - name: Install system deps
-        run: sudo apt-get install -y python3-dev
-
-      - name: Build .NET AOT (linux-x64)
-        run: |
-          dotnet publish src/P2L.CLI \
-            -c Release -r linux-x64 \
-            --self-contained true \
-            -p:PublishAot=true \
-            -p:InvariantGlobalization=true \
-            -p:StripSymbols=true \
-            -p:UsePortableLinuxSharedLibraries=true \
-            -o artifacts/linux-x64
-
-      - name: Build p2l-client (PyInstaller)
-        run: |
-          python3 -m venv .venv
-          .venv/bin/pip install -q pyinstaller -r client/requirements.txt
-          .venv/bin/pyinstaller client/p2l-client.spec \
-            --distpath artifacts/linux-x64 \
-            --workpath .pyinstaller-work
-
-      - name: Package tar.gz
-        run: |
-          VERSION=${{ env.VERSION }}
-          STAGING="dist/staging/p2l-${VERSION}-linux-x64"
-          mkdir -p "$STAGING/bin" "$STAGING/config" "$STAGING/deploy"
-          cp artifacts/linux-x64/p2l            "$STAGING/bin/"
-          cp artifacts/linux-x64/p2l-client     "$STAGING/bin/"
-          cp artifacts/linux-x64/libe_sqlite3.so "$STAGING/bin/" 2>/dev/null || true
-          cp config/p2l_config.json                    "$STAGING/config/"
-          cp deploy/install.sh                   "$STAGING/deploy/" 2>/dev/null || true
-          cp deploy/p2l.service                  "$STAGING/deploy/" 2>/dev/null || true
-          cp deploy/p2l-client.service           "$STAGING/deploy/" 2>/dev/null || true
-          mkdir -p dist
-          tar -czf "dist/p2l-${VERSION}-linux-x64.tar.gz" -C "dist/staging" "p2l-${VERSION}-linux-x64"
-          ls -lh dist/
-
+          python-version: '3.13'
+      - name: Check license defaults (local HTTP fixture)
+        run: dotnet run --project tests/P2L.LicensingTests -c Release -p:PublishAot=false
+      - name: Check bundled SQLite and embedded web resources (local fixtures)
+        run: dotnet publish tests/P2L.WebTests -c Release -r ${{ matrix.runtime }} --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=embedded -p:DebugSymbols=false -o artifacts/web-smoke
+      - name: Run bundled resource checks
+        run: python -c "import pathlib, subprocess; d = pathlib.Path('artifacts/web-smoke').resolve(); p = d / ('P2L.WebTests.exe' if '${{ matrix.runtime }}'.startswith('win-') else 'P2L.WebTests'); subprocess.run([str(p)], cwd=d, check=True, timeout=120)"
+      - name: Publish standalone executable
+        run: dotnet publish src/P2L.CLI -c Release -r ${{ matrix.runtime }} -p:PublishProfile=singlefile -p:DebugType=embedded -p:DebugSymbols=false -p:Version=${{ env.VERSION }} -o artifacts/${{ matrix.runtime }}
+      - name: Verify standalone startup and package executable with PDF
+        run: python deploy/package-release.py --runtime ${{ matrix.runtime }} --version ${{ env.VERSION }} --publish-dir artifacts/${{ matrix.runtime }}
       - uses: actions/upload-artifact@v4
         with:
-          name: p2l-${{ env.VERSION }}-linux-x64
-          path: dist/p2l-*-linux-x64.tar.gz
+          name: p2l-${{ env.VERSION }}-${{ matrix.runtime }}
+          path: dist/*.zip
+          if-no-files-found: error
           retention-days: 30
 
-  # ── Linux arm64 ────────────────────────────────────────────────────────────
-  linux-arm64:
-    name: Linux arm64
-    runs-on: ubuntu-24.04-arm
-    if: |
-      github.event_name == 'push' ||
-      github.event.inputs.targets == 'all' ||
-      github.event.inputs.targets == 'linux'
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.x"
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install system deps
-        run: sudo apt-get install -y python3-dev
-
-      - name: Build .NET AOT (linux-arm64)
-        run: |
-          dotnet publish src/P2L.CLI \
-            -c Release -r linux-arm64 \
-            --self-contained true \
-            -p:PublishAot=true \
-            -p:InvariantGlobalization=true \
-            -p:StripSymbols=true \
-            -p:UsePortableLinuxSharedLibraries=true \
-            -o artifacts/linux-arm64
-
-      - name: Build p2l-client (PyInstaller)
-        run: |
-          python3 -m venv .venv
-          .venv/bin/pip install -q pyinstaller -r client/requirements.txt
-          .venv/bin/pyinstaller client/p2l-client.spec \
-            --distpath artifacts/linux-arm64 \
-            --workpath .pyinstaller-work
-
-      - name: Package tar.gz
-        run: |
-          VERSION=${{ env.VERSION }}
-          STAGING="dist/staging/p2l-${VERSION}-linux-arm64"
-          mkdir -p "$STAGING/bin" "$STAGING/config" "$STAGING/deploy"
-          cp artifacts/linux-arm64/p2l            "$STAGING/bin/"
-          cp artifacts/linux-arm64/p2l-client     "$STAGING/bin/"
-          cp artifacts/linux-arm64/libe_sqlite3.so "$STAGING/bin/" 2>/dev/null || true
-          cp config/p2l_config.json                      "$STAGING/config/"
-          cp deploy/install.sh                     "$STAGING/deploy/" 2>/dev/null || true
-          cp deploy/p2l.service                    "$STAGING/deploy/" 2>/dev/null || true
-          cp deploy/p2l-client.service             "$STAGING/deploy/" 2>/dev/null || true
-          mkdir -p dist
-          tar -czf "dist/p2l-${VERSION}-linux-arm64.tar.gz" -C "dist/staging" "p2l-${VERSION}-linux-arm64"
-          ls -lh dist/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: p2l-${{ env.VERSION }}-linux-arm64
-          path: dist/p2l-*-linux-arm64.tar.gz
-          retention-days: 30
-
-  # ── macOS arm64 (Apple Silicon) ────────────────────────────────────────────
-  osx-arm64:
-    name: macOS arm64
-    runs-on: macos-latest
-    if: |
-      github.event_name == 'push' ||
-      github.event.inputs.targets == 'all' ||
-      github.event.inputs.targets == 'macos'
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.x"
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Homebrew deps (OpenSSL + Brotli for AOT linker)
-        run: brew install openssl@3 brotli
-
-      - name: Build .NET AOT (osx-arm64)
-        run: |
-          export LIBRARY_PATH="$(brew --prefix openssl@3)/lib:$(brew --prefix brotli)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
-          dotnet publish src/P2L.CLI \
-            -c Release -r osx-arm64 \
-            --self-contained true \
-            -p:PublishAot=true \
-            -p:InvariantGlobalization=true \
-            -p:StripSymbols=true \
-            -o artifacts/osx-arm64
-
-      - name: Build p2l-client (PyInstaller)
-        run: |
-          python3 -m venv .venv
-          .venv/bin/pip install -q pyinstaller -r client/requirements.txt
-          .venv/bin/pyinstaller client/p2l-client.spec \
-            --distpath artifacts/osx-arm64 \
-            --workpath .pyinstaller-work
-
-      - name: Package tar.gz
-        run: |
-          VERSION=${{ env.VERSION }}
-          STAGING="dist/staging/p2l-${VERSION}-osx-arm64"
-          mkdir -p "$STAGING/bin" "$STAGING/config"
-          cp artifacts/osx-arm64/p2l           "$STAGING/bin/"
-          cp artifacts/osx-arm64/p2l-client    "$STAGING/bin/"
-          cp artifacts/osx-arm64/libe_sqlite3.dylib "$STAGING/bin/" 2>/dev/null || true
-          cp config/p2l_config.json                   "$STAGING/config/"
-          mkdir -p dist
-          tar -czf "dist/p2l-${VERSION}-osx-arm64.tar.gz" -C "dist/staging" "p2l-${VERSION}-osx-arm64"
-          ls -lh dist/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: p2l-${{ env.VERSION }}-osx-arm64
-          path: dist/p2l-*-osx-arm64.tar.gz
-          retention-days: 30
-
-  # ── macOS x64 (Intel) ──────────────────────────────────────────────────────
-  # osx-x64:
-  #   name: macOS x64 (Intel)
-  #   runs-on: macos-13
-  #   if: |
-  #     github.event_name == 'push' ||
-  #     github.event.inputs.targets == 'all' ||
-  #     github.event.inputs.targets == 'macos'
-  #   steps:
-  #     - uses: actions/checkout@v4
-
-  #     - uses: actions/setup-dotnet@v4
-  #       with:
-  #         dotnet-version: "10.x"
-
-  #     - uses: actions/setup-python@v5
-  #       with:
-  #         python-version: "3.12"
-
-  #     - name: Install Homebrew deps
-  #       run: brew install openssl@3 brotli
-
-  #     - name: Build .NET AOT (osx-x64)
-  #       run: |
-  #         export LIBRARY_PATH="$(brew --prefix openssl@3)/lib:$(brew --prefix brotli)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
-  #         dotnet publish src/P2L.CLI \
-  #           -c Release -r osx-x64 \
-  #           --self-contained true \
-  #           -p:PublishAot=true \
-  #           -p:InvariantGlobalization=true \
-  #           -p:StripSymbols=true \
-  #           -o artifacts/osx-x64
-
-  #     - name: Build p2l-client (PyInstaller)
-  #       run: |
-  #         python3 -m venv .venv
-  #         .venv/bin/pip install -q pyinstaller -r client/requirements.txt
-  #         .venv/bin/pyinstaller --onefile --name p2l-client \
-  #           --distpath artifacts/osx-x64 \
-  #           --workpath .pyinstaller-work \
-  #           --specpath .pyinstaller-work \
-  #           client/run.py
-
-  #     - name: Package tar.gz
-  #       run: |
-  #         VERSION=${{ env.VERSION }}
-  #         STAGING="dist/staging/p2l-${VERSION}-osx-x64"
-  #         mkdir -p "$STAGING/bin" "$STAGING/config"
-  #         cp artifacts/osx-x64/p2l              "$STAGING/bin/"
-  #         cp artifacts/osx-x64/p2l-client       "$STAGING/bin/"
-  #         cp artifacts/osx-x64/libe_sqlite3.dylib "$STAGING/bin/" 2>/dev/null || true
-  #         cp config/p2l_config.json                    "$STAGING/config/"
-  #         mkdir -p dist
-  #         tar -czf "dist/p2l-${VERSION}-osx-x64.tar.gz" -C "dist/staging" "p2l-${VERSION}-osx-x64"
-  #         ls -lh dist/
-
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: p2l-${{ env.VERSION }}-osx-x64
-  #         path: dist/p2l-*-osx-x64.tar.gz
-  #         retention-days: 30
-
-  # ── Windows x64 ────────────────────────────────────────────────────────────
-  windows-x64:
-    name: Windows x64
-    runs-on: windows-latest
-    if: |
-      github.event_name == 'push' ||
-      github.event.inputs.targets == 'all' ||
-      github.event.inputs.targets == 'windows'
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.x"
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Python deps + PyInstaller
-        run: pip install -q pyinstaller -r client/requirements.txt
-
-      - name: Install WiX 5
-        run: |
-          dotnet tool install --global wix --version 5.0.2
-          wix extension add WixToolset.UI.wixext/5.0.2 --global
-          wix extension add WixToolset.Util.wixext/5.0.2 --global
-
-      - name: Build .NET AOT (win-x64)
-        run: |
-          dotnet publish src/P2L.CLI `
-            -c Release -r win-x64 `
-            --self-contained true `
-            -p:PublishAot=true `
-            -p:InvariantGlobalization=true `
-            -p:StripSymbols=true `
-            -o artifacts/win-x64
-
-      - name: Build p2l-client.exe (PyInstaller)
-        run: |
-          pyinstaller client/p2l-client.spec `
-            --distpath artifacts/win-x64 `
-            --workpath .pyinstaller-work
-
-      - name: Verify binaries
-        run: |
-          @('p2l.exe', 'p2l-client.exe', 'e_sqlite3.dll') | ForEach-Object {
-            $p = "artifacts/win-x64/$_"
-            if (-not (Test-Path $p)) { throw "Missing: $p" }
-            "$_ — $([math]::Round((Get-Item $p).Length/1MB,1)) MB"
-          }
-
-      - name: Build MSI (WiX 5)
-        run: |
-          dotnet build deploy/P2L.Installer/P2L.Installer.wixproj `
-            -c Release `
-            -p:Platform=x64 `
-            -p:ProductVersion=${{ env.VERSION }} `
-            "-p:BinaryPath=$(Resolve-Path 'artifacts/win-x64')" `
-            "-p:ConfigPath=$(Resolve-Path 'deploy/P2L.Installer/Assets')" `
-            "-p:LicenseRtf=$(Resolve-Path 'deploy/P2L.Installer/Assets/License.rtf')" `
-            -o dist
-
-      - name: Create zip archive
-        run: |
-          $v = "${{ env.VERSION }}"
-          $staging = "dist/staging/p2l-$v-win-x64"
-          New-Item -ItemType Directory -Force "$staging/bin","$staging/config" | Out-Null
-          Copy-Item artifacts/win-x64/p2l.exe        "$staging/bin/"
-          Copy-Item artifacts/win-x64/p2l-client.exe "$staging/bin/"
-          Copy-Item artifacts/win-x64/e_sqlite3.dll  "$staging/bin/"
-          Copy-Item config/p2l_config.json                 "$staging/config/"
-          Copy-Item deploy/P2L.Installer/Assets/p2l_client_config.json "$staging/config/"
-          Compress-Archive -Path $staging -DestinationPath "dist/p2l-$v-win-x64.zip" -Force
-          Get-ChildItem dist -File | ForEach-Object { "$($_.Name) — $([math]::Round($_.Length/1MB,1)) MB" }
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: p2l-${{ env.VERSION }}-win-x64
-          path: |
-            dist/*.msi
-            dist/*.zip
-          retention-days: 30
-
-  # ── GitHub Release (on tag v*) ─────────────────────────────────────────────
   release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    needs: [linux-x64, linux-arm64, osx-arm64, windows-x64]
     if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, build]
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.value }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: release-assets
+          pattern: p2l-${{ env.VERSION }}-*
           merge-multiple: true
-
-      - name: List assets
-        run: ls -lh release-assets/
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "P2L ${{ env.VERSION }}"
-          files: release-assets/**
-          body: |
-            ## Pick2Light ${{ env.VERSION }}
-
-            | Platform | Download |
-            |----------|----------|
-            | Windows x64 | `P2L-${{ env.VERSION }}-x64.msi` (installer) · `.zip` |
-            | Linux x64   | `p2l-${{ env.VERSION }}-linux-x64.tar.gz` |
-            | Linux arm64 | `p2l-${{ env.VERSION }}-linux-arm64.tar.gz` |
-            | macOS arm64 | `p2l-${{ env.VERSION }}-osx-arm64.tar.gz` |
-
-            ### Windows silent install
-            ```cmd
-            msiexec /i P2L-${{ env.VERSION }}-x64.msi /qn
-            ```
-
-            ### Linux install
-            ```bash
-            tar -xzf p2l-${{ env.VERSION }}-linux-x64.tar.gz
-            sudo ./p2l-${{ env.VERSION }}-linux-x64/deploy/install.sh
-            ```
+          path: dist
+      - name: Publish release
+        working-directory: dist
+        env:
+          GH_REPO: ${{ github.repository }}
+        run: |
+          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 6
+          sha256sum *.zip > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" *.zip SHA256SUMS.txt --verify-tag --title "P2L $VERSION" --notes 'Standalone P2L for Windows, Linux and macOS (x64 / ARM64). Each ZIP contains one executable and a simple Vietnamese PDF covering license activation and Terminal use. Default license service: https://auth-supra.winmart.vn; P2L_LICENSE_API_URL can override it.'

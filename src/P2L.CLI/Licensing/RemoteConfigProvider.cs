@@ -11,6 +11,7 @@ internal sealed class RemoteConfigProvider : IDisposable
     private readonly LicenseApiClient _api;
     private string? _startupConfig;
     public P2L.Mqtt.Configuration.ConfirmApiSettings ConfirmApi { get; private set; } = new();
+    public P2L.Mqtt.Configuration.AckApiSettings AckApi { get; private set; } = new();
     public P2L.Mqtt.Configuration.PickSessionApiSettings PickSessionApi { get; private set; } = new();
     public AxiomSettings? Axiom { get; private set; }
     public string[]? BlockNos { get; private set; }
@@ -22,6 +23,7 @@ internal sealed class RemoteConfigProvider : IDisposable
         var gateway = result.GetProperty("gateway");
         BlockNos = RemoteBlocks.Read(gateway);
         var mqtt = result.GetProperty("mqtt");
+        var mqttEnabled = !mqtt.TryGetProperty("enabled", out var enabled) || enabled.GetBoolean();
         static string Text(JsonElement node, string name)
         {
             var value = node.GetProperty(name).GetString();
@@ -29,13 +31,13 @@ internal sealed class RemoteConfigProvider : IDisposable
         }
         static string Port(JsonElement node) => node.GetProperty("port").GetInt32() is >= 1 and <= 65535
             ? node.GetProperty("port").GetInt32().ToString() : throw new InvalidDataException("Remote port invalid");
-        var ca = RemoteTls.ReadCa(mqtt.GetProperty("tls"));
+        var ca = mqttEnabled ? RemoteTls.ReadCa(mqtt.GetProperty("tls")) : null;
         var block = Text(gateway, "blockNo");
         if (block.Length != 2 || block.Any(c => c < '0' || c > '9')) throw new InvalidDataException("Remote block invalid");
         var values = new Dictionary<string, string?>
         {
             ["Gateway:Host"] = Text(gateway, "host"), ["Gateway:Port"] = Port(gateway), ["Gateway:BlockNo"] = block,
-            ["Mqtt:Enabled"] = "true", ["Mqtt:Host"] = Text(mqtt, "host"), ["Mqtt:Port"] = Port(mqtt),
+            ["Mqtt:Enabled"] = mqttEnabled ? "true" : "false", ["Mqtt:Host"] = Text(mqtt, "host"), ["Mqtt:Port"] = Port(mqtt),
             ["Mqtt:ClientId"] = Text(mqtt, "clientId"), ["Mqtt:Username"] = Text(mqtt, "username"), ["Mqtt:Password"] = Text(mqtt, "password"),
             ["Mqtt:Tls:Enabled"] = "true", ["Mqtt:Tls:AllowUntrustedCerts"] = "false",
             ["Mqtt:Tls:CaCertPem"] = ca,
@@ -50,7 +52,10 @@ internal sealed class RemoteConfigProvider : IDisposable
             values["Mqtt:" + char.ToUpperInvariant(topic[0]) + topic[1..]] = value;
         }
         ConfirmApi = P2L.Mqtt.Configuration.ConfirmApiSettings.FromRemote(result);
+        AckApi = P2L.Mqtt.Configuration.AckApiSettings.FromRemote(result);
         PickSessionApi = P2L.Mqtt.Configuration.PickSessionApiSettings.FromRemote(result, BlockNos ?? [block]);
+        if (!mqttEnabled && (!PickSessionApi.Enabled || !ConfirmApi.Enabled))
+            throw new InvalidDataException("MQTT disabled requires PickSession API and Confirm API");
         Axiom = AxiomSettings.FromRemote(result);
         _startupConfig = result.GetRawText();
         return values;

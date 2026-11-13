@@ -4,7 +4,8 @@
 // ── State ──────────────────────────────────────────────────────────────────
 const state = {
   connected: false,      // P2L service is running
-  mqttConnected: false,  // Python client → MQTT broker
+  mqttConnected: false,
+  mqttEnabled: true,
   host: 'localhost',
   port: 8883,
   devices: {},           // address → device object
@@ -23,6 +24,8 @@ const COLOR_HEX = {
   OFF: '#374151', RED: '#ef4444', GREEN: '#22c55e', BLUE: '#3b82f6',
   YELLOW: '#eab308', CYAN: '#06b6d4', MAGENTA: '#d946ef', WHITE: '#e2e8f0',
 };
+
+function transportReady() { return state.connected && (!state.mqttEnabled || state.mqttConnected); }
 
 const LED_MODES = ['ON', 'FLASH', 'HIGH_FLASH'];
 
@@ -54,7 +57,7 @@ function initTabs() {
       // Hide overlay on settings/about tabs so users can configure even when disconnected
       const overlay = $('disconnected-overlay');
       if (overlay) {
-        if (!state.mqttConnected && DATA_TABS.has(tab)) overlay.classList.remove('hidden');
+        if (!transportReady() && DATA_TABS.has(tab)) overlay.classList.remove('hidden');
         else overlay.classList.add('hidden');
       }
     });
@@ -115,6 +118,7 @@ function handleWsMessage(msg) {
       if (state.allowedBlocks && $('batch-block') && !state.allowedBlocks.includes($('batch-block').value)) $('batch-block').value = state.defaultBlock;
       state.connected = msg.data.connected;
       state.mqttConnected = msg.data.mqtt_connected || false;
+      state.mqttEnabled = msg.data.mqtt_enabled !== false;
       state.host = msg.data.host;
       state.port = msg.data.port;
       // Clear stale rows from previous session
@@ -132,10 +136,11 @@ function handleWsMessage(msg) {
     case 'connection_changed':
       state.connected = msg.data.connected;
       state.mqttConnected = msg.data.mqtt_connected || false;
+      state.mqttEnabled = msg.data.mqtt_enabled !== false;
       state.host = msg.data.host || state.host;
       state.port = msg.data.port || state.port;
       updateConnectionUI();
-      if (msg.data.mqtt_connected !== undefined) {
+      if (state.mqttEnabled && msg.data.mqtt_connected !== undefined) {
         toast(msg.data.mqtt_connected
           ? `MQTT broker connected: ${msg.data.host}:${msg.data.port}`
           : 'MQTT broker disconnected', msg.data.mqtt_connected ? 'success' : 'warning');
@@ -217,29 +222,30 @@ function updateConnectionUI() {
   const badge = $('connection-badge');
   badge.className = 'connection-badge' + (state.connected ? ' connected' : '');
   let label;
-  if (state.connected && state.mqttConnected) label = `Online · ${state.host}:${state.port}`;
+  if (state.connected && !state.mqttEnabled) label = 'Online · API (MQTT disabled)';
+  else if (state.connected && state.mqttConnected) label = `Online · ${state.host}:${state.port}`;
   else if (state.connected) label = 'Service Running';
   else label = 'Disconnected';
   badge.innerHTML = `<span class="dot"></span>${label}`;
 
-  $('btn-connect').disabled = state.mqttConnected;
-  $('btn-disconnect').disabled = !state.mqttConnected;
+  $('btn-connect').disabled = !state.mqttEnabled || state.mqttConnected;
+  $('btn-disconnect').disabled = !state.mqttEnabled || !state.mqttConnected;
 
-  // Show/hide disconnected overlay — hide on settings/about tabs or when MQTT connected
+  // API-only mode is ready without a broker connection.
   const overlay = $('disconnected-overlay');
   if (overlay) {
     const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab ?? 'dashboard';
     const DATA_TABS = new Set(['dashboard', 'devices', 'batch', 'events', 'logs']);
-    if (state.mqttConnected || !DATA_TABS.has(activeTab)) overlay.classList.add('hidden');
+    if (transportReady() || !DATA_TABS.has(activeTab)) overlay.classList.add('hidden');
     else overlay.classList.remove('hidden');
   }
 
-  // Show "Scan Devices" sub-tab only when MQTT is connected
+  // Show scanning while the local transport is available.
   const scanTabBtn = $('sub-tab-btn-scan');
   if (scanTabBtn && scanTabBtn.dataset.integrated !== 'true') {
-    scanTabBtn.style.display = state.mqttConnected ? '' : 'none';
-    // If scan sub-tab is active but we just disconnected, switch back to client sub-tab
-    if (!state.mqttConnected && scanTabBtn.classList.contains('active')) {
+    scanTabBtn.style.display = transportReady() ? '' : 'none';
+    // Return to the client tab if the transport becomes unavailable.
+    if (!transportReady() && scanTabBtn.classList.contains('active')) {
       scanTabBtn.classList.remove('active');
       document.querySelector('#sub-pane-scan')?.classList.remove('active');
       document.querySelector('.sub-tab-btn[data-subtab="client"]')?.classList.add('active');
@@ -561,6 +567,7 @@ async function connect() {
     const s = await api('GET', '/api/status');
     state.connected = s.connected;
     state.mqttConnected = s.mqtt_connected || false;
+    state.mqttEnabled = s.mqtt_enabled !== false;
     state.host = s.host;
     state.port = s.port;
     updateConnectionUI();
@@ -1425,6 +1432,7 @@ $('btn-clear-events')?.addEventListener('click', () => {
     const status = await api('GET', '/api/status');
     state.connected = status.connected;
     state.mqttConnected = status.mqtt_connected || false;
+    state.mqttEnabled = status.mqtt_enabled !== false;
     state.host = status.host;
     state.port = status.port;
     updateConnectionUI();
@@ -1447,6 +1455,7 @@ $('btn-clear-events')?.addEventListener('click', () => {
       const s = await api('GET', '/api/status');
       state.connected = s.connected;
       state.mqttConnected = s.mqtt_connected || false;
+    state.mqttEnabled = s.mqtt_enabled !== false;
       state.host = s.host;
       state.port = s.port;
       updateConnectionUI();

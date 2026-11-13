@@ -7,9 +7,11 @@ namespace P2L.CLI.Licensing;
 
 internal sealed class LicenseApiClient : IDisposable
 {
+    internal const string DefaultUrl = "https://auth-supra.winmart.vn";
     private readonly HttpClient _http;
     public LicenseApiClient(string? address, HttpMessageHandler? handler = null)
     {
+        address ??= DefaultUrl;
         if (!Uri.TryCreate(address?.TrimEnd('/') + "/", UriKind.Absolute, out var uri) || uri.Scheme != "https"
             || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
             throw new InvalidOperationException("Configure an HTTPS P2L_LICENSE_API_URL before starting P2L.");

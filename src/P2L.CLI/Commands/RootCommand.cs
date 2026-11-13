@@ -60,7 +60,7 @@ public sealed class RootCommand : AsyncCommand<RootCommand.Settings>
         if (_mqtt is not null)
         {
             await _mqtt.StartAsync(cts.Token);
-            AnsiConsole.MarkupLine("[green]MQTT bridge started.[/]");
+            AnsiConsole.MarkupLine(_mqtt.MqttEnabled ? "[green]MQTT bridge started.[/]" : "[green]API transport started (MQTT disabled).[/]");
         }
         else if (_offlineBuffer is not null)
         {

@@ -98,7 +98,7 @@ public sealed class ServeCommand : AsyncCommand<ServeCommand.Settings>
         if (_mqtt is not null)
         {
             await _mqtt.StartAsync(_cts.Token);
-            _logger.LogInformation("MQTT bridge started.");
+            _logger.LogInformation(_mqtt.MqttEnabled ? "MQTT bridge started." : "API transport started (MQTT disabled).");
         }
         else if (_offlineBuffer is not null)
         {

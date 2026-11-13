@@ -71,7 +71,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
         _registry.StateChanged += OnStateChanged;
         _engine.ItemConfirmed  += OnItemConfirmed;
         _engine.BlockBatchCompleted += OnBatchCompleted;
-        _drain = Task.Run(() => DrainAsync(_cts.Token));
+        if (_settings.Enabled) _drain = Task.Run(() => DrainAsync(_cts.Token));
     }
 
     public async ValueTask DisposeAsync()
@@ -96,6 +96,7 @@ internal sealed class MqttEventPublisher : IAsyncDisposable
     {
         if (_telemetry is not null && BuildMessage(evt) is { } message)
             _telemetry.Record("event", message.Topic, System.Text.Encoding.UTF8.GetString(message.Payload));
+        if (!_settings.Enabled) return;
         _queue.Writer.TryWrite(evt);
     }
 

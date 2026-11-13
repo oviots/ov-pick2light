@@ -80,7 +80,8 @@ internal sealed class WebClientService : IAsyncDisposable
     });
     private JsonObject Connection() => new()
     {
-        ["connected"] = true, ["mqtt_connected"] = _visible && _mqttConnected(), ["gateway_connected"] = _gateway.IsConnected,
+        ["connected"] = true, ["mqtt_enabled"] = _settings.Mqtt.Enabled,
+        ["mqtt_connected"] = _visible && _mqttConnected(), ["gateway_connected"] = _gateway.IsConnected,
         ["host"] = _settings.Mqtt.Host, ["port"] = _settings.Mqtt.Port,
         ["block_no"] = _settings.Gateway.BlockNo,
         ["block_nos"] = new JsonArray((_settings.Gateway.BlockNos ?? new[] {_settings.Gateway.BlockNo}).Select(b => (JsonNode)JsonValue.Create(b)!).ToArray())
@@ -176,7 +177,7 @@ internal sealed class WebClientService : IAsyncDisposable
     }
     private async Task SendAsync(JsonObject command, CancellationToken ct)
     {
-        if (!_visible || !_mqttConnected()) throw new InvalidOperationException("MQTT unavailable");
+        if (!_visible || (_settings.Mqtt.Enabled && !_mqttConnected())) throw new InvalidOperationException("MQTT unavailable");
         await _dispatch(Encoding.UTF8.GetBytes(command.ToJsonString()), ct);
     }
     private async Task ApiAsync(HttpContext context, JsonObject body)
@@ -192,7 +193,7 @@ internal sealed class WebClientService : IAsyncDisposable
         {
             ["integrated"] = true, ["block_no"] = _settings.Gateway.BlockNo,
             ["block_nos"] = new JsonArray((_settings.Gateway.BlockNos ?? new[] {_settings.Gateway.BlockNo}).Select(b => (JsonNode)JsonValue.Create(b)!).ToArray()),
-            ["mqtt"] = new JsonObject {["enabled"] = true, ["host"] = _settings.Mqtt.Host, ["port"] = _settings.Mqtt.Port, ["client_id"] = _settings.Mqtt.ClientId,
+            ["mqtt"] = new JsonObject {["enabled"] = _settings.Mqtt.Enabled, ["host"] = _settings.Mqtt.Host, ["port"] = _settings.Mqtt.Port, ["client_id"] = _settings.Mqtt.ClientId,
                 ["command_topic"] = _settings.Mqtt.CommandTopic, ["event_topic"] = _settings.Mqtt.EventTopic, ["devices_topic"] = _settings.Mqtt.DevicesTopic,
                 ["status_topic"] = _settings.Mqtt.StatusTopic, ["tls"] = new JsonObject {["enabled"] = _settings.Mqtt.Tls.Enabled}},
             ["service"] = new JsonObject {["binary_path"] = Environment.ProcessPath, ["args"] = new JsonArray("serve"), ["auto_start"] = false}
@@ -235,7 +236,7 @@ internal sealed class WebClientService : IAsyncDisposable
         }
         else if (method == "POST" && path == "/api/connect")
         {
-            if (!_mqttConnected()) throw new InvalidOperationException("MQTT unavailable");
+            if (_settings.Mqtt.Enabled && !_mqttConnected()) throw new InvalidOperationException("MQTT unavailable");
             _visible = true; result = new JsonObject {["status"] = "connected", ["service_started"] = false};
         }
         else if (method == "POST" && path == "/api/disconnect") { _visible = false; result = new JsonObject {["status"] = "disconnected"}; }

@@ -44,7 +44,18 @@ server.MapPost("/poll", async (HttpContext ctx) => {
     }
     await ctx.Response.WriteAsJsonAsync(payload);
 });
+var ackCalls = 0;
+server.MapPost("/ack-unused", () => { Interlocked.Increment(ref ackCalls); return new {ok=true}; });
+var confirmCalls = 0;
+server.MapPost("/events", async (HttpContext ctx) => {
+    Check(ctx.Request.Headers.Authorization == "Bearer " + token, "Confirm Bearer missing");
+    using var body = await JsonDocument.ParseAsync(ctx.Request.Body);
+    var ids = body.RootElement.GetProperty("events").EnumerateArray().Select(e => e.GetProperty("eventId").GetString()).ToArray();
+    Interlocked.Increment(ref confirmCalls);
+    await ctx.Response.WriteAsJsonAsync(new {storedEventIds = ids});
+});
 await server.StartAsync();
+var brokerTrap = new TcpListener(IPAddress.Loopback, 0); brokerTrap.Start();
 var dir = Path.Combine(Path.GetTempPath(), "p2l-poll-"+Guid.NewGuid().ToString("N")); Directory.CreateDirectory(dir);
 await using var controller = new FakeController();
 await using var gateway = new AioiGateway("127.0.0.1",controller.Port,NullLogger.Instance);
@@ -55,7 +66,10 @@ var labels = new DeviceLabelStore(Path.Combine(dir,"devices.db"),NullLogger<Devi
 await gateway.StartAsync();
 lock(sync) commands = [Batch("01","S1",false,("0008","D1"),("0014","D2")), Batch("02","S2",false,("0017","D4"))];
 var bridge = new MqttBridgeService(new MqttSettings {
-    Host="127.0.0.1",Port=1,Tls=new(){Enabled=false},OfflineBufferPath=Path.Combine(dir,"offline.jsonl"),
+    Enabled=false,Host="127.0.0.1",Port=((IPEndPoint)brokerTrap.LocalEndpoint).Port,
+    Tls=new(){Enabled=true,CaCertPath="/not-configured-in-api-mode.crt"},OfflineBufferPath=Path.Combine(dir,"offline.jsonl"),
+    AckApi=new(){Enabled=true,Url=server.Urls.Single()+"/ack-unused",Token=token},
+    ConfirmApi=new(){Enabled=true,Url=server.Urls.Single()+"/events",Token=token,PollIntervalMs=100},
     PickSessionApi=new(){Enabled=true,Url=server.Urls.Single()+"/poll",Token=token,BlockNos=["01","02"],PollIntervalMs=100}},
     gateway,engine,registry,new PreemptionGate(),null,labels,new DeviceScanService(gateway,registry,NullLogger<DeviceScanService>.Instance),NullLoggerFactory.Instance,confirmations:outbox);
 await bridge.StartAsync();
@@ -78,7 +92,8 @@ Console.WriteLine("PASS one-shot relight applies once");
 await controller.Confirm("0008"); await Until(() => registry.Get("0008")?.Status == ModuleStatus.Completed);
 before = controller.Commands.Count; polled = calls; await Until(() => calls >= polled+3);
 Check(controller.Commands.Count == before,"stale snapshot relit a locally confirmed detail");
-Console.WriteLine("PASS Confirm retained locally prevents stale API replay");
+await Until(() => confirmCalls > 0 && outbox.ReadPending().Count == 0);
+Console.WriteLine("PASS MQTT-disabled Confirm uses API and accepted receipt is removed from SQLite");
 lock(sync) {commands=[]; inactive=["02"];}
 await Until(() => registry.Get("0017")?.Status != ModuleStatus.Operating);
 Check(registry.Get("0014")?.Status == ModuleStatus.Operating,"Deactive affected another block");
@@ -88,6 +103,11 @@ Check(controller.Commands.Count==before,"API failure changed lights");
 await bridge.DisposeAsync(); // Dispose is tested separately below by stopping polling.
 var stoppedCalls=calls; await Task.Delay(250); Check(calls==stoppedCalls,"polling survived shutdown");
 Console.WriteLine("PASS API errors preserve existing work; shutdown stops polling");
+Check(!brokerTrap.Pending(), "MQTT disabled still opened a broker connection");
+Check(!File.Exists(Path.Combine(dir,"offline.jsonl")), "MQTT disabled still wrote an offline buffer");
+Check(ackCalls == 0, "ACK API must remain configuration-only until flow integration is requested");
+brokerTrap.Stop();
+Console.WriteLine("PASS MQTT disabled never connects or writes MQTT offline events while both APIs run");
 await server.StopAsync();
 
 sealed class FakeController : IAsyncDisposable

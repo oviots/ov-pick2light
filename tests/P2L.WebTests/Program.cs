@@ -31,7 +31,7 @@ var labels = new DeviceLabelStore(path, NullLogger<DeviceLabelStore>.Instance);
 var settings = new AppSettings
 {
     Gateway = new GatewaySettings {Host = "127.0.0.1", Port = gatewayPort, BlockNo = "01"},
-    Mqtt = new MqttSettings {Host = "fixture.example", Password = "SECRET-MUST-NOT-LEAK", Username = "fixture",
+    Mqtt = new MqttSettings {Enabled = true, Host = "fixture.example", Password = "SECRET-MUST-NOT-LEAK", Username = "fixture",
         ConfirmApi = new() {Enabled=true, Url="https://fixture.example/confirm/events", Token="CONFIRM-API-SECRET-MUST-NOT-LEAK-123456"},
         ClientDbPath = path, ClientId = "fixture-bridge", CommandTopic = "fixture/commands"}
 };
@@ -155,11 +155,27 @@ try
         "Buffer-only service did not create parent directory and preserve JSONL envelope");
     Console.WriteLine("PASS: buffer-only service creates nested parent directories before writing");
 
+    await using (var apiUi = new WebClientService(new AppSettings {Gateway=settings.Gateway,
+        Mqtt=new MqttSettings {Enabled=false,ClientDbPath=path}}, gateway, registry, engine, catalog, logs,
+        (bytes,ct)=>{commands.Add(JsonNode.Parse(bytes)!.AsObject());return Task.CompletedTask;},()=>false,
+        NullLogger<WebClientService>.Instance))
+    {
+        await apiUi.StartAsync(0,default);
+        using var apiHttp = new HttpClient {BaseAddress=new Uri(apiUi.Url)};
+        var status = JsonNode.Parse(await apiHttp.GetStringAsync("/api/status"))!;
+        Require(status["mqtt_enabled"]!.GetValue<bool>()==false && status["mqtt_connected"]!.GetValue<bool>()==false,
+            "API-only UI misreports MQTT connection");
+        using var result = await apiHttp.PostAsync("/api/scan-devices?addr_from=1&addr_to=2",new StringContent("{}",Encoding.UTF8,"application/json"));
+        Require(result.IsSuccessStatusCode && commands[^1]["type"]!.GetValue<string>()=="scan_devices",
+            "API-only local controls still require MQTT");
+    }
+    Console.WriteLine("PASS API-only web UI exposes disabled MQTT and local controls work without broker");
+
     var publisherPath = Path.Combine(directory, "missing-publisher", "events.jsonl");
     var blackhole = new TcpListener(IPAddress.Loopback, 0); blackhole.Start();
     try
     {
-        await using var mqtt = new MqttBridgeService(new MqttSettings {Host = "127.0.0.1",
+        await using var mqtt = new MqttBridgeService(new MqttSettings {Enabled = true, Host = "127.0.0.1",
             Port = ((IPEndPoint)blackhole.LocalEndpoint).Port, Tls = new MqttTlsSettings {Enabled = false},
             OfflineBufferPath = publisherPath}, gateway, engine, registry, new P2L.Core.Services.PreemptionGate(), null,
             labels, new P2L.Core.Services.DeviceScanService(gateway, registry, NullLogger<P2L.Core.Services.DeviceScanService>.Instance),

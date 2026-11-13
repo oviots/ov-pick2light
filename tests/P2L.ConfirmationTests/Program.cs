@@ -74,7 +74,7 @@ await engine.QuickLightAsync("0021", 3, blockNo:"02", correlationId:"SESSION-B")
 Console.WriteLine("PASS: failed disk write withholds hardware ACK and keeps Operating; retry commits, healthy block continues");
 
 var portProbe = new TcpListener(IPAddress.Loopback, 0); portProbe.Start(); var port = ((IPEndPoint)portProbe.LocalEndpoint).Port; portProbe.Stop();
-var settings = new MqttSettings { Host="127.0.0.1", Port=port, Tls=new() {Enabled=false}, OfflineBufferPath=Path.Combine(dir,"offline.jsonl") };
+var settings = new MqttSettings {Enabled = true,  Host="127.0.0.1", Port=port, Tls=new() {Enabled=false}, OfflineBufferPath=Path.Combine(dir,"offline.jsonl") };
 var labels = new DeviceLabelStore(Path.Combine(dir,"devices.db"), NullLogger<DeviceLabelStore>.Instance);
 var bridge = new MqttBridgeService(settings, gateway, engine, registry, new PreemptionGate(), null, labels,
     new DeviceScanService(gateway, registry, NullLogger<DeviceScanService>.Instance), NullLoggerFactory.Instance, confirmations:outbox);

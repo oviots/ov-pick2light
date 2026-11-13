@@ -16,7 +16,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def api_url() -> str:
-    value = os.environ.get('P2L_LICENSE_API_URL', '').rstrip('/')
+    value = os.environ.get('P2L_LICENSE_API_URL', 'https://auth-supra.winmart.vn').rstrip('/')
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise LicenseError('Chưa cấu hình HTTPS P2L_LICENSE_API_URL hợp lệ')

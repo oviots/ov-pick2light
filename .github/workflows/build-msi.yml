@@ -1,12 +1,10 @@
 # .github/workflows/build-msi.yml
 # Build the P2L Windows MSI installer.
-# Triggered manually (workflow_dispatch) or on tags matching v*.
+# Legacy installer: manual only. Production tags use the single-file ZIP workflow.
 #
 # Run from macOS / any OS via GitHub CLI:
 #   gh workflow run build-msi.yml -f version=1.0.0 -f platform=x64
 #
-# Or push a tag:
-#   git tag v1.0.0 && git push origin v1.0.0
 
 name: Build P2L Windows MSI
 
@@ -23,10 +21,6 @@ on:
         default: x64
         type: choice
         options: [x64, arm64]
-
-  push:
-    tags:
-      - "v*"
 
 jobs:
   build-msi:

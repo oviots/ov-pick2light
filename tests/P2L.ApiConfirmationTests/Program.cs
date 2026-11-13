@@ -40,7 +40,7 @@ await using var gateway=new AioiGateway("127.0.0.1",1,NullLogger.Instance);
 var registry=new LightModuleRegistry();using var engine=new PickingEngine(gateway,registry,NullLogger<PickingEngine>.Instance);
 var labels=new DeviceLabelStore(Path.Combine(dir,"devices.db"),NullLogger<DeviceLabelStore>.Instance);
 var scan=new DeviceScanService(gateway,registry,NullLogger<DeviceScanService>.Instance);
-MqttBridgeService Bridge(ConfirmationOutbox outbox,bool enabled=true)=>new(new MqttSettings{
+MqttBridgeService Bridge(ConfirmationOutbox outbox,bool enabled=true)=>new(new MqttSettings{Enabled = true,
     Host="127.0.0.1",Port=1,Tls=new(){Enabled=false},OfflineBufferPath=Path.Combine(dir,"offline.jsonl"),
     ConfirmApi=new(){Enabled=enabled,Url=url,Token=token,PollIntervalMs=100,BatchSize=2}},
     gateway,engine,registry,new PreemptionGate(),null,labels,scan,NullLoggerFactory.Instance,confirmations:outbox);

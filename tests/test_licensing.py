@@ -93,6 +93,12 @@ class LicensingTests(unittest.TestCase):
             with patch.dict(os.environ, {'P2L_LICENSE_API_URL': address}):
                 with self.assertRaises(LicenseError): api_url()
 
+    def test_default_license_api_and_explicit_override(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(api_url(), 'https://auth-supra.winmart.vn')
+        with patch.dict(os.environ, {'P2L_LICENSE_API_URL': 'https://auth-supra.oviots.com/'}):
+            self.assertEqual(api_url(), 'https://auth-supra.oviots.com')
+
     def test_changed_reconnect_config_is_rejected_before_mutating_live_settings(self):
         config = AppConfig(mqtt=MqttConfig(host='old-host', password='old-password'))
         changed = {'version': 2, 'gateway': {'blockNo': '01'}, 'mqtt': {

@@ -39,7 +39,7 @@ var registry = new LightModuleRegistry();
 using var engine = new PickingEngine(gateway, registry, NullLogger<PickingEngine>.Instance, new BlockPolicy(new[] {"01", "02"}));
 var labels = new DeviceLabelStore(Path.Combine(directory, "devices.db"), NullLogger<DeviceLabelStore>.Instance);
 var telemetry = new Capture();
-var mqtt = new MqttBridgeService(new MqttSettings {Host = "127.0.0.1", Port = 1, Tls = new MqttTlsSettings {Enabled = false}, OfflineBufferPath = Path.Combine(directory, "offline.jsonl")},
+var mqtt = new MqttBridgeService(new MqttSettings {Enabled = true, Host = "127.0.0.1", Port = 1, Tls = new MqttTlsSettings {Enabled = false}, OfflineBufferPath = Path.Combine(directory, "offline.jsonl")},
     gateway, engine, registry, new PreemptionGate(), null, labels, new DeviceScanService(gateway, registry, NullLogger<DeviceScanService>.Instance), NullLoggerFactory.Instance, telemetry: telemetry);
 await mqtt.StartAsync(); await gateway.StartAsync();
 var confirmed = new ConcurrentQueue<(string Address, string? Block, string? Session)>();

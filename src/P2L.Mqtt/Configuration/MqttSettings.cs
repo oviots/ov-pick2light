@@ -39,6 +39,8 @@ public sealed class MqttSettings
 
     public ConfirmApiSettings ConfirmApi { get; init; } = new();
 
+    public AckApiSettings AckApi { get; init; } = new();
+
     public MqttTlsSettings Tls  { get; init; } = new();
 }
 

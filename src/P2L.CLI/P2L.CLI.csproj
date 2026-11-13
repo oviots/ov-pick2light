@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>p2l</AssemblyName>
+    <Version>1.0.3</Version>
     <!-- Native AOT single-file binary -->
     <PublishAot>true</PublishAot>
     <SelfContained>true</SelfContained>
@@ -30,6 +31,7 @@
   <ItemGroup>
     <Content Include="config\p2l_config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory Condition="'$(PublishSingleFile)' == 'true'">Never</CopyToPublishDirectory>
       <Link>config\p2l_config.json</Link>
     </Content>
   </ItemGroup>
